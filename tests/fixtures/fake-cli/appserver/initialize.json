@@ -1,0 +1,12 @@
+{
+  "_fake": {
+    "source": "measured 2026-11-16 (codex 0.163.0)",
+    "evidence": "Measured initialize key set; runtime home/platform; synthetic userAgent."
+  },
+  "payload": {
+    "userAgent": "codex-cli 0.163.0 (orcexe-fake)",
+    "codexHome": "",
+    "platformFamily": "",
+    "platformOs": ""
+  }
+}

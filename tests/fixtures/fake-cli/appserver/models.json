@@ -1,0 +1,339 @@
+{
+  "_fake": {
+    "source": "measured 2026-11-16 (codex 0.163.0)",
+    "evidence": "Measured model/list data/nextCursor and full item key set; all values synthetic."
+  },
+  "payload": {
+    "data": [
+      {
+        "id": "gpt-6.1-sol",
+        "displayName": "gpt-6.1-sol",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": true,
+        "model": "gpt-6.1-sol",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "gpt-6.1-terra",
+        "displayName": "gpt-6.1-terra",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "gpt-6.1-terra",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "gpt-6-luna",
+        "displayName": "gpt-6-luna",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "gpt-6-luna",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "fake-model-4",
+        "displayName": "fake-model-4",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "fake-model-4",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "fake-model-5",
+        "displayName": "fake-model-5",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "fake-model-5",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "fake-model-6",
+        "displayName": "fake-model-6",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "fake-model-6",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "fake-model-7",
+        "displayName": "fake-model-7",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "fake-model-7",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      },
+      {
+        "id": "fake-model-8",
+        "displayName": "fake-model-8",
+        "hidden": false,
+        "additionalSpeedTiers": [],
+        "availabilityNux": null,
+        "availableAccessPrograms": [],
+        "defaultReasoningEffort": "medium",
+        "defaultServiceTier": "default",
+        "description": "Synthetic fixture model",
+        "inputModalities": [
+          "text"
+        ],
+        "isDefault": false,
+        "model": "fake-model-8",
+        "modelSpecialty": null,
+        "multiAgentVersion": null,
+        "serviceTiers": [
+          {
+            "id": "default",
+            "name": "Default"
+          }
+        ],
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "medium",
+            "description": "Synthetic effort"
+          },
+          {
+            "reasoningEffort": "high",
+            "description": "Synthetic effort"
+          }
+        ],
+        "supportsPersonality": false,
+        "upgrade": null,
+        "upgradeInfo": null
+      }
+    ],
+    "nextCursor": null
+  }
+}

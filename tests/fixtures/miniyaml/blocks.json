@@ -1,0 +1,1 @@
+{"tasks": [{"name": "build", "args": ["--json", "can't # stop: here"], "result": {"code": 0, "flags": [true, false, null]}}, {"name": "review", "args": []}], "empty": null, "next": "value", "nested": {"one": {"two": "value", "three": "value"}, "other": "x"}}

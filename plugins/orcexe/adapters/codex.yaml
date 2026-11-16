@@ -1,0 +1,109 @@
+schema: orcexe.manifest.v1
+tool: codex
+family: openai
+binary: [codex] # Y
+bin_env: ORCEXE_BIN_CODEX
+min_version: "0.159.0" # D: GPT-6.1 Terra
+version_cmd: [codex, --version] # Y
+version_regex: '(\d+\.\d+\.\d+)' # Y
+version_sample: 'codex-cli 0.163.0' # Y
+verified_on: {date: '2026-11-14', version: '0.163.0', os: macos-arm64} # Y
+install: # D; display text only
+  macos_linux_wsl: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
+  windows_powershell: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"'
+  npm: 'npm install -g @openai/codex'
+  brew: 'brew install --cask codex'
+auth:
+  status_cmd: [codex, login, status]
+  logged_in: {exit_code: 0}
+  logged_out: {exit_code: 1}
+  login_cmd: [codex, login]
+  device_cmd: [codex, login, --device-auth]
+  plan: {source: app-server, method: account/read, field: planType}
+  allowed_fields: [planType]
+  forbidden_fields: [email, workspaceRouting]
+models:
+  source: app-server
+  method: model/list
+quota:
+  source: app-server
+  method: account/rateLimits/read
+  fields: [primary.usedPercent, primary.windowDurationMins, primary.resetsAt, secondary, rateLimitReachedType]
+  nullable_fields: [secondary]
+  read_only_consumes_quota: false
+  exec_exhaustion: null
+exec:
+  argv: [codex, exec, -C, '{workdir}', -m, '{model}', -c, 'model_reasoning_effort={effort}', --json, -o, '{final}', '{prompt}']
+  stdin: devnull
+  requires_git_repo: true
+  effort:
+    mode: config
+    values: [low, medium, high, xhigh, max, ultra]
+    model_dependent: true
+  profiles:
+    write: {extra: [-s, workspace-write]}
+    review: {extra: [-s, read-only], read_only: true}
+  forbidden_argv: [--dangerously-bypass-approvals-and-sandbox, --dangerously-bypass-hook-trust, --skip-git-repo-check, --approve-for-me]
+events:
+  format: jsonl
+  stream: stdout
+  types: [thread.started, turn.started, turn.completed, turn.failed, 'item.*', error]
+  success: {last_type: turn.completed, absent_types: [turn.failed]}
+  final_text: {type: item.completed, item_type: agent_message, field: item.text}
+  usage:
+    type: turn.completed
+    map: {input: usage.input_tokens, cached_read: usage.cached_input_tokens, output: usage.output_tokens, reasoning: usage.reasoning_output_tokens}
+  model_actual: null
+  error: {field: error.message, format: text}
+exit_codes: {usage: 2, runtime: 1} # ?: not documented
+side_effects:
+  - id: E1
+    file: '${CODEX_HOME:-~/.codex}/config.toml'
+    table: projects
+    entry: '[projects."<dir>"] trust_level = "trusted"'
+    profile: write
+    requires_git_repo: true
+    config_override_prevents: false
+    handler: trust-ledger
+windows: {native: true, sandbox_native: true, wsl2: true, wsl1: false}
+evidence:
+  binary: Y
+  min_version: D
+  version_cmd: Y
+  version_regex: Y
+  version_sample: Y
+  verified_on: Y
+  install: D
+  auth.status_cmd: D+Y
+  auth.logged_in: D+Y
+  auth.logged_out: D+Y
+  auth.login_cmd: D
+  auth.device_cmd: D
+  auth.plan: D+Y
+  auth.allowed_fields: Y
+  auth.forbidden_fields: Y
+  models: D+Y
+  quota.source: D+Y
+  quota.method: D+Y
+  quota.fields: D+Y
+  quota.nullable_fields: D+Y
+  quota.read_only_consumes_quota: Y
+  quota.exec_exhaustion: '?'
+  exec.argv: D+Y
+  exec.stdin: Y
+  exec.requires_git_repo: D
+  exec.effort: D
+  exec.profiles.write: D+Y
+  exec.profiles.review: D+Y
+  exec.forbidden_argv: D
+  events.format: D+Y
+  events.stream: D+Y
+  events.types: D+Y
+  events.success: D+Y
+  events.final_text: D
+  events.usage: D+Y
+  events.model_actual: '?'
+  events.error: Y
+  exit_codes: '?'
+  side_effects: Y
+  windows: D

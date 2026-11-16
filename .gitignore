@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.orcexe/
+._*
+.DS_Store
+*.bak

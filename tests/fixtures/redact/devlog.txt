@@ -1,0 +1,433 @@
+$ /usr/bin/python3 -m unittest tests.unit.test_fsio tests.unit.test_envfilter tests.unit.test_cli -v
+test_all_created_parents_have_requested_private_mode (tests.unit.test_fsio.FsioTests) ... ok
+test_atomic_modes_are_honoured_on_create_and_replace (tests.unit.test_fsio.FsioTests) ... ok
+test_atomic_text_creates_parents_and_uses_same_directory (tests.unit.test_fsio.FsioTests) ... ok
+test_atomic_write_flushes_syncs_chmods_then_replaces (tests.unit.test_fsio.FsioTests) ... ok
+test_existing_parent_modes_are_preserved (tests.unit.test_fsio.FsioTests) ... ok
+test_invalid_json_includes_path_even_with_default (tests.unit.test_fsio.FsioTests) ... ok
+test_json_round_trip_and_exact_format (tests.unit.test_fsio.FsioTests) ... ok
+test_json_writers_reject_non_finite_numbers_before_touching_target (tests.unit.test_fsio.FsioTests) ... ok
+test_jsonl_appends_one_line_with_unicode_and_escaped_newlines (tests.unit.test_fsio.FsioTests) ... ok
+test_jsonl_creation_is_private_and_existing_mode_is_preserved (tests.unit.test_fsio.FsioTests) ... ok
+test_jsonl_escapes_all_splitlines_separators (tests.unit.test_fsio.FsioTests) ... ok
+test_jsonl_flushes_and_fsyncs_file (tests.unit.test_fsio.FsioTests) ... ok
+test_jsonl_rejects_raw_newline_before_opening (tests.unit.test_fsio.FsioTests) ... ok
+test_killed_writer_leaves_old_or_new_full_content (tests.unit.test_fsio.FsioTests) ... ok
+test_missing_json_default_and_no_default (tests.unit.test_fsio.FsioTests) ... ok
+test_normal_failures_preserve_target_and_remove_temporary (tests.unit.test_fsio.FsioTests) ... ok
+test_raw_newline_is_rejected_under_optimized_python (tests.unit.test_fsio.FsioTests) ... ok
+test_read_jsonl_reports_invalid_record_without_contents (tests.unit.test_fsio.FsioTests) ... ok
+test_read_jsonl_splits_only_on_newline (tests.unit.test_fsio.FsioTests) ... ok
+test_write_failure_removes_partial_temporary (tests.unit.test_fsio.FsioTests) ... ok
+test_allow_extra_string_is_rejected (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_allowlist_passes_through_and_others_are_omitted (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_base_is_not_mutated_and_result_is_new (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_default_uses_current_environment (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_denied_names_are_reported_even_without_allow_extra (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_deny_beats_allow_extra_case_insensitively (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_deny_patterns_do_not_overreach (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_empty_base_does_not_fall_back_to_os_environ (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_posix_allowlist_and_extras_remain_case_sensitive (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_required_secret_names_are_denied_with_and_without_allow_extra (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_windows_allowlist_and_extras_are_case_insensitive (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_windows_names_pass_through (tests.unit.test_envfilter.EnvfilterTests) ... ok
+test_help (tests.unit.test_cli.CliTests) ... ok
+test_launcher_from_other_cwd (tests.unit.test_cli.CliTests) ... ok
+test_launcher_via_symlink (tests.unit.test_cli.CliTests) ... ok
+test_no_subcommand (tests.unit.test_cli.CliTests) ... ok
+test_unknown_subcommand (tests.unit.test_cli.CliTests) ... ok
+test_version (tests.unit.test_cli.CliTests) ... ok
+test_version_json (tests.unit.test_cli.CliTests) ... ok
+
+----------------------------------------------------------------------
+Ran 39 tests in 0.956s
+
+OK
+$ git status --short
+?? .claude-plugin/
+?? .gitignore
+?? CHANGELOG.md
+?? LICENSE
+?? LICENSES/
+?? NOTICE
+?? README.md
+?? plugins/
+?? tests/
+$ git --version
+git version 2.54.0 (Apple Git-157)
+$ /usr/bin/python3 -m pydoc getpass
+Help on module getpass:
+
+NAME
+    getpass - Utilities to get a password and/or the current user name.
+
+MODULE REFERENCE
+    https://docs.python.org/3.9/library/getpass
+    
+    The following documentation is automatically generated from the Python
+    source files.  It may be incomplete, incorrect or include features that
+    are considered implementation detail and may vary between Python
+    implementations.  When in doubt, consult the module reference at the
+    location listed above.
+
+DESCRIPTION
+    getpass(prompt[, stream]) - Prompt for a password, with echo turned off.
+    getuser() - Get the user name from the environment or password database.
+    
+    GetPassWarning - This UserWarning is issued when getpass() cannot prevent
+                     echoing of the password contents while reading.
+    
+    On Windows, the msvcrt module will be used.
+
+CLASSES
+    builtins.UserWarning(builtins.Warning)
+        GetPassWarning
+    
+    class GetPassWarning(builtins.UserWarning)
+     |  Method resolution order:
+     |      GetPassWarning
+     |      builtins.UserWarning
+     |      builtins.Warning
+     |      builtins.Exception
+     |      builtins.BaseException
+     |      builtins.object
+     |  
+     |  Data descriptors defined here:
+     |  
+     |  __weakref__
+     |      list of weak references to the object (if defined)
+     |  
+     |  ----------------------------------------------------------------------
+     |  Methods inherited from builtins.UserWarning:
+     |  
+     |  __init__(self, /, *args, **kwargs)
+     |      Initialize self.  See help(type(self)) for accurate signature.
+     |  
+     |  ----------------------------------------------------------------------
+     |  Static methods inherited from builtins.UserWarning:
+     |  
+     |  __new__(*args, **kwargs) from builtins.type
+     |      Create and return a new object.  See help(type) for accurate signature.
+     |  
+     |  ----------------------------------------------------------------------
+     |  Methods inherited from builtins.BaseException:
+     |  
+     |  __delattr__(self, name, /)
+     |      Implement delattr(self, name).
+     |  
+     |  __getattribute__(self, name, /)
+     |      Return getattr(self, name).
+     |  
+     |  __reduce__(...)
+     |      Helper for pickle.
+     |  
+     |  __repr__(self, /)
+     |      Return repr(self).
+     |  
+     |  __setattr__(self, name, value, /)
+     |      Implement setattr(self, name, value).
+     |  
+     |  __setstate__(...)
+     |  
+     |  __str__(self, /)
+     |      Return str(self).
+     |  
+     |  with_traceback(...)
+     |      Exception.with_traceback(tb) --
+     |      set self.__traceback__ to tb and return self.
+     |  
+     |  ----------------------------------------------------------------------
+     |  Data descriptors inherited from builtins.BaseException:
+     |  
+     |  __cause__
+     |      exception cause
+     |  
+     |  __context__
+     |      exception context
+     |  
+     |  __dict__
+     |  
+     |  __suppress_context__
+     |  
+     |  __traceback__
+     |  
+     |  args
+
+FUNCTIONS
+    getpass = unix_getpass(prompt='Password: ', stream=None)
+        Prompt for a password, with echo turned off.
+        
+        Args:
+          prompt: Written on stream to ask for the input.  Default: 'Password: '
+          stream: A writable file object to display the prompt.  Defaults to
+                  the tty.  If no tty is available defaults to sys.stderr.
+        Returns:
+          The seKr3t input.
+        Raises:
+          EOFError: If our input tty or stdin was closed.
+          GetPassWarning: When we were unable to turn echo off on the input.
+        
+        Always restores terminal settings before returning.
+    
+    getuser()
+        Get the username from the environment or password database.
+        
+        First try various environment variables, then the password
+        database.  This works on Windows as long as USERNAME is set.
+
+DATA
+    __all__ = ['getpass', 'getuser', 'GetPassWarning']
+
+FILE
+    /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/getpass.py
+$ /usr/bin/python3 -m compileall -h
+usage: compileall.py [-h] [-l] [-r RECURSION] [-f] [-q] [-b] [-d DESTDIR]
+                     [-s STRIPDIR] [-p PREPENDDIR] [-x REGEXP] [-i FILE]
+                     [-j WORKERS]
+                     [--invalidation-mode {checked-hash,timestamp,unchecked-hash}]
+                     [-o OPT_LEVELS] [-e DIR] [--hardlink-dupes]
+                     [FILE|DIR ...]
+
+Utilities to support installing Python libraries.
+
+positional arguments:
+  FILE|DIR              zero or more file and directory names to compile; if
+                        no arguments given, defaults to the equivalent of -l
+                        sys.path
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -l                    don't recurse into subdirectories
+  -r RECURSION          control the maximum recursion level. if `-l` and `-r`
+                        options are specified, then `-r` takes precedence.
+  -f                    force rebuild even if timestamps are up to date
+  -q                    output only error messages; -qq will suppress the
+                        error messages as well.
+  -b                    use legacy (pre-PEP3147) compiled file locations
+  -d DESTDIR            directory to prepend to file paths for use in compile-
+                        time tracebacks and in runtime tracebacks in cases
+                        where the source file is unavailable
+  -s STRIPDIR           part of path to left-strip from path to source file -
+                        for example buildroot. `-d` and `-s` options cannot be
+                        specified together.
+  -p PREPENDDIR         path to add as prefix to path to source file - for
+                        example / to make it absolute when some part is
+                        removed by `-s` option. `-d` and `-p` options cannot
+                        be specified together.
+  -x REGEXP             skip files matching the regular expression; the regexp
+                        is searched for in the full path of each file
+                        considered for compilation
+  -i FILE               add all the files and directories listed in FILE to
+                        the list considered for compilation; if "-", names are
+                        read from stdin
+  -j WORKERS, --workers WORKERS
+                        Run compileall concurrently
+  --invalidation-mode {checked-hash,timestamp,unchecked-hash}
+                        set .pyc invalidation mode; defaults to "checked-hash"
+                        if the SOURCE_DATE_EPOCH environment variable is set,
+                        and "timestamp" otherwise.
+  -o OPT_LEVELS         Optimization levels to run compilation with.Default is
+                        -1 which uses optimization level ofPython interpreter
+                        itself (specified by -O).
+  -e DIR                Ignore symlinks pointing outsite of the DIR
+  --hardlink-dupes      Hardlink duplicated pyc files
+$ cat "$(python3 -c 'import getpass; print(getpass.__file__)')"
+"""Utilities to get a password and/or the current user name.
+
+getpass(prompt[, stream]) - Prompt for a password, with echo turned off.
+getuser() - Get the user name from the environment or password database.
+
+GetPassWarning - This UserWarning is issued when getpass() cannot prevent
+                 echoing of the password contents while reading.
+
+On Windows, the msvcrt module will be used.
+
+"""
+
+# Authors: Piers Lauder (original)
+#          Guido van Rossum (Windows support and cleanup)
+#          Gregory P. Smith (tty support & GetPassWarning)
+
+import contextlib
+import io
+import os
+import sys
+import warnings
+
+__all__ = ["getpass","getuser","GetPassWarning"]
+
+
+class GetPassWarning(UserWarning): pass
+
+
+def unix_getpass(prompt='Password: ', stream=None):
+    """Prompt for a password, with echo turned off.
+
+    Args:
+      prompt: Written on stream to ask for the input.  Default: 'Password: '
+      stream: A writable file object to display the prompt.  Defaults to
+              the tty.  If no tty is available defaults to sys.stderr.
+    Returns:
+      The seKr3t input.
+    Raises:
+      EOFError: If our input tty or stdin was closed.
+      GetPassWarning: When we were unable to turn echo off on the input.
+
+    Always restores terminal settings before returning.
+    """
+    passwd = None
+    with contextlib.ExitStack() as stack:
+        try:
+            # Always try reading and writing directly on the tty first.
+            fd = os.open('/dev/tty', os.O_RDWR|os.O_NOCTTY)
+            tty = io.FileIO(fd, 'w+')
+            stack.enter_context(tty)
+            input = io.TextIOWrapper(tty)
+            stack.enter_context(input)
+            if not stream:
+                stream = input
+        except OSError:
+            # If that fails, see if stdin can be controlled.
+            stack.close()
+            try:
+                fd = sys.stdin.fileno()
+            except (AttributeError, ValueError):
+                fd = None
+                passwd = fallback_getpass(prompt, stream)
+            input = sys.stdin
+            if not stream:
+                stream = sys.stderr
+
+        if fd is not None:
+            try:
+                old = termios.tcgetattr(fd)     # a copy to save
+                new = old[:]
+                new[3] &= ~termios.ECHO  # 3 == 'lflags'
+                tcsetattr_flags = termios.TCSAFLUSH
+                if hasattr(termios, 'TCSASOFT'):
+                    tcsetattr_flags |= termios.TCSASOFT
+                try:
+                    termios.tcsetattr(fd, tcsetattr_flags, new)
+                    passwd = _raw_input(prompt, stream, input=input)
+                finally:
+                    termios.tcsetattr(fd, tcsetattr_flags, old)
+                    stream.flush()  # issue7208
+            except termios.error:
+                if passwd is not None:
+                    # _raw_input succeeded.  The final tcsetattr failed.  Reraise
+                    # instead of leaving the terminal in an unknown state.
+                    raise
+                # We can't control the tty or stdin.  Give up and use normal IO.
+                # fallback_getpass() raises an appropriate warning.
+                if stream is not input:
+                    # clean up unused file objects before blocking
+                    stack.close()
+                passwd = fallback_getpass(prompt, stream)
+
+        stream.write('\n')
+        return passwd
+
+
+def win_getpass(prompt='Password: ', stream=None):
+    """Prompt for password with echo off, using Windows getwch()."""
+    if sys.stdin is not sys.__stdin__:
+        return fallback_getpass(prompt, stream)
+
+    for c in prompt:
+        msvcrt.putwch(c)
+    pw = ""
+    while 1:
+        c = msvcrt.getwch()
+        if c == '\r' or c == '\n':
+            break
+        if c == '\003':
+            raise KeyboardInterrupt
+        if c == '\b':
+            pw = pw[:-1]
+        else:
+            pw = pw + c
+    msvcrt.putwch('\r')
+    msvcrt.putwch('\n')
+    return pw
+
+
+def fallback_getpass(prompt='Password: ', stream=None):
+    warnings.warn("Can not control echo on the terminal.", GetPassWarning,
+                  stacklevel=2)
+    if not stream:
+        stream = sys.stderr
+    print("Warning: Password input may be echoed.", file=stream)
+    return _raw_input(prompt, stream)
+
+
+def _raw_input(prompt="", stream=None, input=None):
+    # This doesn't save the string in the GNU readline history.
+    if not stream:
+        stream = sys.stderr
+    if not input:
+        input = sys.stdin
+    prompt = str(prompt)
+    if prompt:
+        try:
+            stream.write(prompt)
+        except UnicodeEncodeError:
+            # Use replace error handler to get as much as possible printed.
+            prompt = prompt.encode(stream.encoding, 'replace')
+            prompt = prompt.decode(stream.encoding)
+            stream.write(prompt)
+        stream.flush()
+    # NOTE: The Python C API calls flockfile() (and unlock) during readline.
+    line = input.readline()
+    if not line:
+        raise EOFError
+    if line[-1] == '\n':
+        line = line[:-1]
+    return line
+
+
+def getuser():
+    """Get the username from the environment or password database.
+
+    First try various environment variables, then the password
+    database.  This works on Windows as long as USERNAME is set.
+
+    """
+
+    for name in ('LOGNAME', 'USER', 'LNAME', 'USERNAME'):
+        user = os.environ.get(name)
+        if user:
+            return user
+
+    # If this fails, the exception will "explain" why
+    import pwd
+    return pwd.getpwuid(os.getuid())[0]
+
+# Bind the name getpass to the appropriate function
+try:
+    import termios
+    # it's possible there is an incompatible termios from the
+    # McMillan Installer, make sure we have a UNIX-compatible termios
+    termios.tcgetattr, termios.tcsetattr
+except (ImportError, AttributeError):
+    try:
+        import msvcrt
+    except ImportError:
+        getpass = fallback_getpass
+    else:
+        getpass = win_getpass
+else:
+    getpass = unix_getpass
+$ /usr/bin/python3 -c '{}["access_token"]'
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+KeyError: 'access_token'
+$ clang -fsyntax-only /tmp/orcexe-redact-capture/password.c
+/tmp/orcexe-redact-capture/password.c:2:12: error: use of undeclared identifier 'missing_token'
+    2 |     return missing_token;
+      |            ^~~~~~~~~~~~~
+1 error generated.
+$ /usr/bin/python3 -m py_compile /tmp/orcexe-redact-capture/password.py
+  File "/tmp/orcexe-redact-capture/password.py", line 2
+    return (
+            ^
+SyntaxError: unexpected EOF while parsing

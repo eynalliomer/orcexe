@@ -1,0 +1,14 @@
+{"...": "...", "apiKeySource": "none", "claude_code_version": "2.1.310", "model": "claude-haiku-5-5", "permissionMode": "default", "session_id": "<id>", "subtype": "init", "type": "system"}
+{"message": {"content": [{"text": "OK", "type": "text"}], "model": "claude-haiku-5-5"}, "session_id": "<id>", "type": "assistant"}
+{"rate_limit_info": {"isUsingOverage": false, "overageDisabledReason": "out_of_credits", "overageStatus": "rejected", "rateLimitType": "five_hour", "resetsAt": 1794685800, "status": "allowed", "unifiedWindows": {"five_hour": {"resetsAt": 1794685800, "status": "allowed", "utilization": 0.44}, "seven_day": {"resetsAt": 1795035600, "status": "allowed", "utilization": 0.74}}}, "type": "rate_limit_event"}
+{"duration_ms": 4008, "is_error": false, "modelUsage": {"claude-haiku-5-5": {"cacheCreationInputTokens": 26187, "cacheReadInputTokens": 21539, "contextWindow": 1000000, "costBasis": "list", "costUSD": 0.00545499, "inputTokens": 2, "outputTokens": 4}}, "num_turns": 1, "permission_denials": [], "result": "OK", "stop_reason": "end_turn", "subtype": "success", "terminal_reason": "completed", "total_cost_usd": 0.00545499, "type": "result", "usage": {"cache_creation_input_tokens": 26187, "cache_read_input_tokens": 21539, "input_tokens": 2, "output_tokens": 4}}
+{"thread_id": "<id>", "type": "thread.started"}
+{"type": "turn.started"}
+{"item": {"id": "item_0", "text": "OK", "type": "agent_message"}, "type": "item.completed"}
+{"type": "turn.completed", "usage": {"cache_write_input_tokens": 0, "cached_input_tokens": 11520, "input_tokens": 17296, "output_tokens": 5, "reasoning_output_tokens": 0}}
+{"apiKeySource": "login", "cwd": "<path>", "model": "Composer 2.5 Fast", "permissionMode": "default", "session_id": "<id>", "subtype": "init", "type": "system"}
+{"message": {"content": [{"text": "Reply with the word OK", "type": "text"}], "role": "user"}, "session_id": "<id>", "type": "user"}
+{"session_id": "<id>", "subtype": "delta", "text": "The", "timestamp_ms": 1794675552044, "type": "thinking"}
+{"session_id": "<id>", "subtype": "completed", "timestamp_ms": 1794675552547, "type": "thinking"}
+{"message": {"content": [{"text": "OK", "type": "text"}], "role": "assistant"}, "session_id": "<id>", "type": "assistant"}
+{"duration_api_ms": 4215, "duration_ms": 4215, "is_error": false, "request_id": "<id>", "result": "OK", "session_id": "<id>", "subtype": "success", "type": "result", "usage": {"cacheReadTokens": 4160, "cacheWriteTokens": 0, "inputTokens": 10550, "outputTokens": 105}}

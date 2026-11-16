@@ -1,0 +1,5 @@
+{"_fake":{"scenario":"quota","source":"synthetic","evidence":"T10 \u00a75: quota exhaustion exec shape unknown; \u00a73C fault injection"}}
+{"type":"thread.started","thread_id":"fake-thread-0001"}
+{"type":"turn.started"}
+{"type":"error","message":"usage limit reached"}
+{"type":"turn.failed","error":{"message":"usage limit reached"}}

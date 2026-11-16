@@ -1,0 +1,28 @@
+{
+  "_fake": {
+    "source": "measured 2026-11-16 (codex 0.163.0)",
+    "evidence": "Error objects were not observed on this date; retained synthetic error codes/wording from T10, with the measured envelope (no jsonrpc)."
+  },
+  "payload": {
+    "not_initialized": {
+      "code": -32002,
+      "message": "not initialized"
+    },
+    "parse": {
+      "code": -32700,
+      "message": "Parse error"
+    },
+    "method": {
+      "code": -32601,
+      "message": "Method not found"
+    },
+    "params": {
+      "code": -32602,
+      "message": "Invalid params: clientInfo.name required"
+    },
+    "request": {
+      "code": -32600,
+      "message": "Invalid Request"
+    }
+  }
+}

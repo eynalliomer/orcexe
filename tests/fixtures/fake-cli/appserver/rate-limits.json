@@ -1,0 +1,46 @@
+{
+  "_fake": {
+    "source": "measured 2026-11-16 (codex 0.163.0)",
+    "evidence": "Measured rate-limits top-level/window key sets; all values synthetic, including accountId and fixed reset epoch; exhausted state is fault injection."
+  },
+  "payload": {
+    "ordinaryUsageAllowed": true,
+    "rateLimits": {
+      "limitId": "codex",
+      "primary": {
+        "usedPercent": 23,
+        "windowDurationMins": 10080,
+        "resetsAt": 1800000000
+      },
+      "secondary": null,
+      "rateLimitReachedType": null,
+      "planType": "plus",
+      "credits": null,
+      "individualLimit": null,
+      "limitName": "Synthetic Codex limit",
+      "normalModelSlug": "gpt-6-luna",
+      "spendControlReached": false
+    },
+    "accountId": "fake-rate-limit-account",
+    "rateLimitResetCredits": null,
+    "rateLimitUpsell": null,
+    "rateLimitsByLimitId": {
+      "codex": {
+        "limitId": "codex",
+        "primary": {
+          "usedPercent": 23,
+          "windowDurationMins": 10080,
+          "resetsAt": 1800000000
+        },
+        "secondary": null,
+        "rateLimitReachedType": null,
+        "planType": "plus",
+        "credits": null,
+        "individualLimit": null,
+        "limitName": "Synthetic Codex limit",
+        "normalModelSlug": "gpt-6-luna",
+        "spendControlReached": false
+      }
+    }
+  }
+}

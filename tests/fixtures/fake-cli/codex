@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Evidence-backed Codex fixture. Never invokes Codex or contacts a service.
+
+Login/app-server shapes measured 2026-11-16 (codex 0.163.0); all values fake.
+See T10 sections 3 and 5 and each fixture's _fake provenance header. Strict
+parse-error wording beyond unknown flags is synthetic, as is RPC validation.
+"""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from _fake_common import (emit, in_git_repo, read_payload, read_stream,
+                          record_call, signal_ready, trust_project)
+
+
+EXEC_SCENARIOS = {"success", "write", "invalid-model", "auth-401",
+                  "warning-first", "no-final", "quota", "stall", "commit",
+                  "big-line", "background-child"}
+SCENARIOS = EXEC_SCENARIOS | {"auth-missing", "quota-exhausted"}
+USAGE = "Usage: codex exec [OPTIONS] [PROMPT]"
+
+
+class ArgumentError(Exception):
+    pass
+
+
+def parse_exec(argv):
+    options = {"directory": os.getcwd(), "sandbox": "read-only",
+               "json": False, "output": None, "skip_git": False,
+               "prompt": None}
+    values = {"-C": "directory", "-m": "model", "-s": "sandbox",
+              "-o": "output", "-c": "config"}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in values:
+            if index + 1 == len(argv) or (argv[index + 1].startswith("-")
+                                          and argv[index + 1] != "-"):
+                raise ArgumentError("error: a value is required for '{}'".format(token))
+            value = argv[index + 1]
+            key = values[token]
+            if key == "config":
+                if "=" not in value or not value.split("=", 1)[0]:
+                    raise ArgumentError("error: expected key=value for '-c'")
+                options.setdefault("config", []).append(value)
+            else:
+                options[key] = value
+            index += 2
+            continue
+        if token == "--json":
+            options["json"] = True
+        elif token == "--skip-git-repo-check":
+            options["skip_git"] = True
+        elif token.startswith("-") and token != "-":
+            raise ArgumentError("error: unexpected argument '{}' found".format(token))
+        elif options["prompt"] is not None:
+            raise ArgumentError("error: unexpected argument '{}' found".format(token))
+        else:
+            options["prompt"] = token
+        index += 1
+    if options["sandbox"] not in {"read-only", "workspace-write", "danger-full-access"}:
+        raise ArgumentError("error: invalid value for '-s'")
+    return options
+
+
+def exec_run(options, scenario):
+    directory = Path(options["directory"]).resolve()
+    if options["prompt"] == "-":
+        sys.stdin.read()  # EOF precedes trust writes and model activity.
+    trust_project(directory, options["sandbox"], in_git_repo(directory))
+    stream_name = scenario
+    if scenario in {"write", "commit"} and options["sandbox"] == "read-only":
+        stream_name = "write-read-only"
+    events = read_stream(HERE / "streams" / ("codex-" + stream_name + ".jsonl"))
+
+    if scenario == "background-child":
+        # Only stdout is inherited. The detached child exits naturally in 5s.
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],
+                         stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    final_text = None
+    failed = False
+    for event in events:
+        item = event.get("item", {})
+        if item.get("type") == "reasoning" and scenario == "big-line":
+            # Store the shape, not five megabytes of repeated fixture text.
+            item["text"] = "x" * (5 * 1024 * 1024)
+        if event["type"] == "item.completed" and item.get("type") == "file_change":
+            (directory / "orcexe-fake-output.txt").write_text("OK\n", encoding="utf-8")
+            if scenario == "commit":
+                for args in (["git", "add", "--", "orcexe-fake-output.txt"],
+                             ["git", "commit", "-m", "fake"]):
+                    completed = subprocess.run(args, cwd=str(directory),
+                                               stdin=subprocess.DEVNULL,
+                                               stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE)
+                    if completed.returncode:
+                        sys.stderr.write(completed.stderr.decode("utf-8", "replace"))
+                        return 1
+        if item.get("type") == "agent_message":
+            final_text = item["text"]
+        failed = failed or event["type"] == "turn.failed"
+        if options["json"]:
+            emit(event)
+    if scenario in {"invalid-model", "auth-401"}:
+        print("Reading additional input from stdin...", file=sys.stderr, flush=True)
+    if scenario in {"stall", "background-child"}:
+        signal_ready()
+    if scenario == "stall":
+        time.sleep(float(os.environ.get("ORCEXE_FAKE_SLEEP", "3600")))
+    if final_text is not None:
+        if options["output"]:
+            output = Path(options["output"])
+            if not output.is_absolute():
+                output = directory / output
+            output.write_text(final_text, encoding="utf-8")
+        if not options["json"]:
+            print(final_text, flush=True)
+    return int(failed)
+
+
+def app_server():
+    directory = HERE / "appserver"
+    errors = read_payload(directory, "errors")
+    initialized = False
+    notification_index = 0
+
+    def notify(method, params):
+        nonlocal notification_index
+        emit({"method": method, "params": params,
+              "emittedAtMs": 1800000000000 + notification_index})
+        notification_index += 1
+
+    def error(request_id, name):
+        emit({"id": request_id, "error": errors[name]})
+
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+        except ValueError:
+            error(None, "parse")
+            continue
+        if not isinstance(request, dict) or not isinstance(request.get("method"), str):
+            error(request.get("id") if isinstance(request, dict) else None, "request")
+            continue
+        method = request["method"]
+        request_id = request.get("id")
+        if method == "initialize":
+            params = request.get("params")
+            info = params.get("clientInfo") if isinstance(params, dict) else None
+            if not isinstance(info, dict) or not isinstance(info.get("name"), str) or not info["name"]:
+                error(request_id, "params")
+                continue
+            initialized = True
+            result = read_payload(directory, "initialize")
+            # No HOME lookup, even when CODEX_HOME is absent.
+            result["codexHome"] = os.environ.get("CODEX_HOME", "")
+            result["platformFamily"] = "windows" if os.name == "nt" else "unix"
+            result["platformOs"] = sys.platform
+            notify("remoteControl/status/changed", {"status": "disconnected"})
+        elif not initialized:
+            error(request_id, "not_initialized")
+            continue
+        elif method == "initialized" and "id" not in request:
+            continue
+        elif method == "account/read":
+            result = read_payload(directory, "account")
+        elif method == "account/rateLimits/read":
+            scenario = os.environ.get("ORCEXE_FAKE_APPSERVER_SCENARIO",
+                                      os.environ.get("ORCEXE_FAKE_SCENARIO"))
+            suffix = "-exhausted" if scenario == "quota-exhausted" else ""
+            result = read_payload(directory, "rate-limits" + suffix)
+        elif method == "model/list":
+            result = read_payload(directory, "models")
+        else:
+            error(request_id, "method")
+            continue
+        if "id" in request:
+            notify("account/updated", {"planType": "plus", "workspaceId": "fake-workspace"})
+            emit({"id": request_id, "result": result})
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    scenario = os.environ.get("ORCEXE_FAKE_SCENARIO", "success")
+    options = None
+    failure = None
+    code = 2
+    if scenario not in SCENARIOS:
+        failure = "orcexe-fake: unknown scenario " + scenario
+        code = 3
+    elif argv and argv[0] == "exec":
+        try:
+            options = parse_exec(argv[1:])
+        except ArgumentError as exc:
+            failure = str(exc) + "\n" + USAGE
+        if options is not None:
+            if scenario not in EXEC_SCENARIOS:
+                failure = "orcexe-fake: unknown scenario " + scenario
+                code = 3
+            elif not Path(options["directory"]).is_dir():
+                failure = "Error: No such file or directory (os error 2)"
+                code = 1
+            elif not options["skip_git"] and not in_git_repo(options["directory"]):
+                # Synthetic: real message text has not been measured (T10 §5).
+                failure = "orcexe-fake: not inside a git repository"
+                code = 1
+    elif argv not in (["--version"], ["login", "status"], ["app-server"]):
+        failure = "error: unexpected argument '{}' found\n{}".format(
+            argv[0] if argv else "", USAGE)
+    if argv == ["app-server"] and os.environ.get("ORCEXE_FAKE_APPSERVER_SCENARIO") not in (
+            None, "normal", "quota-exhausted"):
+        failure = "orcexe-fake: unknown app-server scenario"
+        code = 3
+    record_call(argv, scenario, options is not None and failure is None)
+    if failure is not None:
+        print(failure, file=sys.stderr, flush=True)
+        return code
+    if argv == ["--version"]:
+        print("codex-cli 0.163.0 (orcexe-fake)", flush=True)
+        return 0
+    if argv == ["login", "status"]:
+        missing = scenario == "auth-missing"
+        print("Not logged in" if missing else "Logged in using ChatGPT", file=sys.stderr, flush=True)
+        return int(missing)
+    if argv == ["app-server"]:
+        return app_server()
+    return exec_run(options, scenario)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,19 @@
+{
+  "_fake": {
+    "source": "measured 2026-11-16 (codex 0.163.0)",
+    "evidence": "T10 account/read shape retained; measured envelope (no jsonrpc); identifying values and workspace routing are synthetic privacy canaries."
+  },
+  "payload": {
+    "account": {
+      "type": "chatgpt",
+      "email": "fake-user@example.invalid",
+      "planType": "plus"
+    },
+    "requiresOpenaiAuth": true,
+    "workspaceRouting": {
+      "accountId": "fake-acct",
+      "backendOrigin": "https://example.invalid",
+      "workspaceId": "fake-workspace"
+    }
+  }
+}

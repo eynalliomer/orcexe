@@ -1,0 +1,5 @@
+{"_fake":{"scenario":"write-read-only","source":"synthetic","evidence":"T10 \u00a73C: write refusal; exact denial stream/message unmeasured"}}
+{"type":"thread.started","thread_id":"fake-thread-0001"}
+{"type":"turn.started"}
+{"type":"error","message":"orcexe-fake: read-only sandbox refuses file writes"}
+{"type":"turn.failed","error":{"message":"orcexe-fake: read-only sandbox refuses file writes"}}

@@ -1,0 +1,4 @@
+{"_fake":{"scenario":"no-final","source":"synthetic","evidence":"T10 \u00a73C: deliberately missing turn.completed"}}
+{"type":"thread.started","thread_id":"fake-thread-0001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}

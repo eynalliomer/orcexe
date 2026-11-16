@@ -1,0 +1,40 @@
+{
+  "tool": "codex",
+  "family": "openai",
+  "binary": ["codex"],
+  "bin_env": "ORCEXE_BIN_CODEX",
+  "min_version": "0.159.0",
+  "version_cmd": ["codex", "--version"],
+  "version_regex": "(\\d+\\.\\d+\\.\\d+)",
+  "verified_on": {"date": "2026-11-14", "version": "0.163.0", "os": "macos-arm64"},
+  "install": {"macos_linux_wsl": "…", "windows_powershell": "…", "size_mb": null},
+  "auth": {
+    "status_cmd": ["codex", "login", "status"],
+    "logged_in": {"exit_code": 0},
+    "plan": {"source": "app-server", "method": "account/read", "field": "planType"},
+    "allowed_fields": ["planType"],
+    "forbidden_fields": ["email", "workspaceRouting"],
+    "login_cmd": ["codex", "login"]
+  },
+  "models": {"source": "app-server", "method": "model/list"},
+  "quota": {"source": "app-server", "method": "account/rateLimits/read"},
+  "exec": {
+    "argv": ["codex", "exec", "-C", "{workdir}", "-m", "{model}", "-c", "model_reasoning_effort={effort}", "--json", "-o", "{final}", "{prompt}"],
+    "stdin": "devnull",
+    "requires_git_repo": true,
+    "effort": {"mode": "config", "values": ["low", "medium", "high", "xhigh", "max"]},
+    "profiles": {"write": {"extra": ["-s", "workspace-write"]}, "review": {"extra": ["-s", "read-only"]}},
+    "forbidden_argv": ["--yolo", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
+  },
+  "events": {
+    "format": "jsonl",
+    "success": {"last_type": "turn.completed", "absent_types": ["turn.failed"]},
+    "final_text": {"type": "item.completed", "item_type": "agent_message", "field": "item.text"},
+    "usage": {"type": "turn.completed", "map": {"input": "usage.input_tokens", "cached_read": "usage.cached_input_tokens", "output": "usage.output_tokens", "reasoning": "usage.reasoning_output_tokens"}},
+    "model_actual": null
+  },
+  "exit_codes": {"usage": 2, "runtime": 1},
+  "side_effects": [{"id": "codex-trust-write", "file": "${CODEX_HOME:-~/.codex}/config.toml", "table": "projects", "handler": "trust-ledger"}],
+  "windows": {"native": true, "sandbox_native": true, "wsl2": true},
+  "evidence": {"auth.logged_in": "Y", "quota": "Y", "exec.argv": "D+Y", "side_effects": "Y", "windows": "D"}
+}

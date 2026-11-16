@@ -1,0 +1,25 @@
+## 0.1.0 — unreleased
+
+- Disable Git replacement objects and grafts in every gate Git call; fingerprint loose/packed replacement refs, grafts, shallow boundaries, alternates and worktree-local controls. Before running commands, verify the complete private checkout against base-tree blob OIDs in one hash batch, with the target checked against its verified bytes; incomplete or mismatched checkouts remain unverified.
+- Treat PHP and Ruby source edits as `code_change_unverifiable` (escalated) in the v0.1 fast lane. Preserve `#` as code in all supported C-like languages, including C/C++ preprocessor directives and Rust outer/inner attributes.
+- Require pre-executor Git-control fingerprints and branch binding; inspect every commit, added bytes, whole-file secrets and comment/docstring-only source edits, then run project checks in a private base checkout with verified target bytes and an isolated home (main `node_modules` is user-owned, linked with read-only intent). Always replace the gate receipt on failures.
+- Gate the union of base-to-HEAD, base-to-index (read-only), and raw worktree diffs. Each distinct file version is checked for scope, whitespace, secrets and test-floor regressions; identical diffs count once, while differing versions share the summed line budget. Versions of the allowed target may differ; any change outside it fails scope, even when restored on disk.
+- Reject all untracked files, including ignored and self-ignoring files, with `scope: untracked_ignored:<count>`. The closed cache exemption permits only regular `*.pyc` files inside `__pycache__/` directories and regular files inside `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`; `.gitignore`/`.gitattributes`, symlinks and special files are never exempt. No exemptions for `node_modules/`, `.env*`, `build/`, `dist/` or `*.egg-info`.
+- Validate the worktree's root gitfile against trusted main-repository registration before using it; reject replacement directories, changed pointers and symlinks, and refuse nested `.git` entries (including embedded repositories and submodules) without following them.
+
+- Add a deterministic fast-lane gate with raw temporary-index diffs, scope and test-floor checks, base-defined project commands, redacted evidence, and fail-closed acceptance (VARSAYIM: 50 changed lines; project commands have no network sandbox).
+- Add per-task managed Git worktrees with persistent ownership receipts, main-worktree write guards, and bundle/patch archives verified before removal.
+- Exclude third-party and generated trees from fast classification, sample classifier combinations by default (full set with `ORCEXE_SLOW_TESTS=1`), and make post-stop pipe draining independent of leader-reaping timing while keeping denied stops bounded.
+- Require complete English/Turkish editing patterns for the fast lane, with allowed document/source targets, closed vocabulary and suffixes (up to three), and limits of 200 characters and 25 tokens. Unknown text and excluded targets select standard; existing risk rules retain precedence and project risk maps remain add-only.
+- Harden lane classification with NFKC/Unicode format-character normalization, mixed-script detection, destructive and outward-action signals, sensitive-data stems, and broader scope detection. Conservative prefix matching also flags benign uses such as `postgres`, `tagline`, and `apply formatting`.
+- Add a deterministic, conservative lane classifier with additive project risk maps and NUL-safe tracked-file discovery.
+- Match Codex 0.163.0 shapes measured 2026-11-16: stderr login status, app-server envelopes without jsonrpc, interleaved notifications, full synthetic rate-limit/model fixtures, and model reasoning efforts. Count ignored protocol noise and keep account identifiers out of probe results.
+- Stabilize per-detector growth measurements with interleaved minimum timings and bounded re-measurement near the unchanged 2.5 threshold.
+- Add the Codex adapter with bounded app-server probes, confirmed quota/auth classification, and hashed trust warnings; v0.1 supports ChatGPT login only and never forwards API keys.
+- Add the shared adapter lifecycle, validated run results, Git snapshots, and adapter contract/manifest parity suites.
+- Make timing tests load-tolerant with readiness handshakes, scaled bounds, CPU-time performance checks, and a repeatable CPU stress harness.
+- Add the repository skeleton, CLI launchers, and version command.
+- Add a bounded streaming process runner with explicit environments, timeouts, cancellation, and process tree cleanup.
+- Add a strict, bounded YAML subset parser with source-position errors and deterministic configuration types.
+- Add validated immutable capability manifests, evidence coverage, safe argv construction, and the Codex manifest.
+- Add an evidence-labelled fake Codex CLI with exec streams, login, app-server fixtures, and quota-free runner tests.

@@ -1,0 +1,6 @@
+{"_fake":{"scenario":"auth-401","source":"measured","evidence":"T10 \u00a75: invalid-model error flow / auth 401; fixed warning and error text"}}
+{"type":"thread.started","thread_id":"fake-thread-0001"}
+{"type":"item.completed","item":{"id":"warning_0","type":"error","message":"Model metadata for the requested model not found"}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"status\":401,\"error\":{\"code\":\"unauthorized\",\"message\":\"401 Unauthorized\"}}"}
+{"type":"turn.failed","error":{"message":"{\"status\":401,\"error\":{\"code\":\"unauthorized\",\"message\":\"401 Unauthorized\"}}"}}

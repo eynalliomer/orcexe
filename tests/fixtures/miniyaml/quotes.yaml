@@ -1,0 +1,8 @@
+"true": 'false'
+'1': "null"
+"b.c": "hash # colon: comma, braces{} brackets[]"
+quote: 'it''s fine'
+escapes: "\\ \" \/ \n \t \r \0 \u0131"
+plain: a#b
+apostrophe: don't
+traps: [yes, no, on, off, 2026-11-14, 0.159.0, 0x1F, 010, .inf, True, NULL]

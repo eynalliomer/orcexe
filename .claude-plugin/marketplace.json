@@ -1,0 +1,16 @@
+{
+  "name": "orcexe",
+  "owner": {"name": "Ömer Faruk Eynallı"},
+  "metadata": {
+    "description": "Orchestrate AI coding tools through a Python CLI and Claude Code plugin.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "orcexe",
+      "source": "./plugins/orcexe",
+      "description": "Orchestrate AI coding tools through a Python CLI and Claude Code plugin.",
+      "version": "0.1.0"
+    }
+  ]
+}

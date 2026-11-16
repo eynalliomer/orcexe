@@ -1,0 +1,3 @@
+{"_fake":{"scenario":"stall","source":"synthetic","evidence":"T10 \u00a73C: sleeping subprocess fault injection"}}
+{"type":"thread.started","thread_id":"fake-thread-0001"}
+{"type":"turn.started"}
