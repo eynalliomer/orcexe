@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Offline Claude Code fixture; measured 2026-11-14 (claude 2.1.310).
+
+All identities and token/cost values are synthetic. Never reads user config.
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from _fake_common import edit_file, emit, read_stream, record_call, signal_ready
+
+SCENARIOS = {"success", "write", "invalid-model", "auth-missing", "quota", "stall",
+             "commit", "model-mismatch", "hooks"}
+
+
+def parse_exec(argv):
+    values = {"--output-format": "format", "--model": "model", "--effort": "effort",
+              "--permission-mode": "permission"}
+    # Inferred from 2.1.310 --help (<values...>), not executed against the CLI.
+    variadic = {"--add-dir": "add_dirs", "--allowedTools": "allowed",
+                "--allowed-tools": "allowed", "--disallowedTools": "disallowed",
+                "--disallowed-tools": "disallowed"}
+    switches = {"-p": "print", "--verbose": "verbose",
+                "--no-session-persistence": "fresh", "--strict-mcp-config": "strict",
+                "--include-hook-events": "hooks"}
+    options = {"permission": "plan", "prompt": None}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in values or token in variadic:
+            if index + 1 == len(argv) or argv[index + 1].startswith("-"):
+                raise ValueError("error: option '{}' argument missing".format(token))
+            if token in variadic:
+                index += 1
+                while index < len(argv) and not argv[index].startswith("-"):
+                    options.setdefault(variadic[token], []).append(argv[index])
+                    index += 1
+                continue
+            options[values[token]] = argv[index + 1]
+            index += 2
+            continue
+        if token in switches:
+            options[switches[token]] = True
+        elif token.startswith("-"):
+            raise ValueError("error: unknown option '{}'".format(token))
+        elif options["prompt"] is not None:
+            raise ValueError("error: too many arguments")
+        else:
+            options["prompt"] = token
+        index += 1
+    for name, choices in (("format", {"stream-json"}),
+                          ("effort", {"low", "medium", "high", "xhigh", "max"}),
+                          ("permission", {"acceptEdits", "plan"})):
+        if name in options and options[name] not in choices:
+            raise ValueError("error: invalid value for " + name)
+    if not options.get("print") or not options.get("verbose") or options.get("format") != "stream-json":
+        raise ValueError("error: expected -p --output-format stream-json --verbose PROMPT")
+    if not options["prompt"]:
+        try:
+            options["prompt"] = sys.stdin.read() if not sys.stdin.isatty() else ""
+        except (OSError, ValueError):  # empty or closed stdin provides no input
+            options["prompt"] = ""
+        if not options["prompt"]:
+            raise ValueError("Error: Input must be provided either through stdin or as a prompt argument when using --print")
+    return options
+
+
+def main():
+    argv = sys.argv[1:]
+    scenario = os.environ.get("ORCEXE_FAKE_SCENARIO", "success")
+    options, failure = None, None
+    if argv not in (["--version"], ["auth", "status", "--json"]):
+        try:
+            options = parse_exec(argv)
+        except ValueError as error:
+            failure = str(error)
+    if scenario not in SCENARIOS:
+        failure = "orcexe-fake: unknown scenario " + scenario
+    record_call(argv, scenario, options is not None and failure is None)
+    if failure:
+        print(failure, file=sys.stderr, flush=True)
+        return 1
+    if argv == ["--version"]:
+        print("2.1.310 (Claude Code)", flush=True)
+        return 0
+    if argv == ["auth", "status", "--json"]:
+        # Measured 2026-11-17 (claude 2.1.310): one pretty-printed document,
+        # unlike the executor's stream-json events. Compact mode is regression-only.
+        auth = dict(loggedIn=scenario != "auth-missing", authMethod="claude.ai",
+                    apiProvider="firstParty", email="claude-fake@example.invalid",
+                    orgId="fake-claude-org-id", orgName="fake-claude-org-name",
+                    subscriptionType="pro", analyticsDisabled=True,
+                    projectsDirectory="/synthetic/projects", configDirectory="/synthetic/claude-config")
+        print(json.dumps(auth, indent=None if os.environ.get("ORCEXE_FAKE_AUTH_COMPACT") == "1" else 2),
+              flush=True)
+        return int(scenario == "auth-missing")
+    if scenario == "invalid-model":
+        print("There's an issue with the selected model ({}). It may not exist or you may not have access to it.".format(options.get("model", "unknown")), flush=True)
+        return 1
+    if scenario == "auth-missing":
+        print("Please run /login", file=sys.stderr, flush=True)
+        return 1
+    events = read_stream(HERE / "streams" / ("claude-" + scenario + ".jsonl"))
+    if scenario in {"write", "commit", "success"} and options["permission"] == "acceptEdits":
+        edited = edit_file(Path.cwd())
+        if scenario in {"write", "commit"} and not edited:
+            Path("orcexe-fake-output.txt").write_text("OK\n", encoding="utf-8")
+        if scenario == "commit":
+            for args in (["git", "add", "--", "orcexe-fake-output.txt"], ["git", "commit", "-m", "fake"]):
+                result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True)
+                if result.returncode:
+                    sys.stderr.buffer.write(result.stderr)
+                    return 1
+    actual = "claude-haiku-5-5" if scenario == "model-mismatch" else options.get("model", "claude-sonnet-5-5")
+    for event in events:
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            event["model"] = actual
+            event["permissionMode"] = options["permission"]
+        elif event.get("type") == "assistant":
+            event["message"]["model"] = actual
+        elif event.get("type") == "result" and event.get("modelUsage"):
+            event["modelUsage"] = {actual: next(iter(event["modelUsage"].values()))}
+        emit(event)
+    if scenario == "stall":
+        signal_ready()
+        time.sleep(float(os.environ.get("ORCEXE_FAKE_SLEEP", "3600")))
+    return int(scenario == "quota")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

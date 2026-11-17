@@ -1,0 +1,2 @@
+{"_fake":"measured 2026-11-14 (claude 2.1.310); synthetic values"}
+{"type":"system","subtype":"init","model":"claude-sonnet-5-5","permissionMode":"plan","apiKeySource":"none","claude_code_version":"2.1.310","session_id":"fake-session","tools":["Read","Edit"]}

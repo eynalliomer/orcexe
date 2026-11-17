@@ -30,7 +30,12 @@ class AdapterContract:
         self.brief = self.directory / "source.md"
         self.brief_text = "UNIQUE_BRIEF_CONTENT_" + "Do the task exactly.\n" * 1000
         self.brief.write_text(self.brief_text, encoding="utf-8")
-        self.manifest = load_manifest(ROOT / "plugins" / "orcexe" / "adapters" / "codex.yaml")
+        self.claude = self.adapter_name == "claude-code"
+        self.manifest = load_manifest(ROOT / "plugins" / "orcexe" / "adapters" / ("claude.yaml" if self.claude else "codex.yaml"))
+        self.bin_env = self.manifest.data["bin_env"]
+        self.exec_token = "-p" if self.claude else "exec"
+        self.env.update(ORCEXE_BIN_CLAUDE_CODE=str(FAKE / ("claude.cmd" if os.name == "nt" else "claude")),
+                        CLAUDE_CONFIG_DIR=str(self.home / "claude"), ORCEXE_STATE_DIR=str(self.home / "state"))
         self.env.update(ORCEXE_BIN_CODEX=str(FAKE / ("codex.cmd" if os.name == "nt" else "codex")),
                         ORCEXE_FAKE_CALLS=str(self.calls), ORCEXE_FAKE_PYTHON=os.sys.executable,
                         PATH=os.pathsep.join((str(FAKE), self.env["PATH"])),
@@ -50,7 +55,8 @@ class AdapterContract:
             **dict(ADAPTER_OPTIONS.get(self.adapter_name, {}), **options))
 
     def request(self, name="run", profile="review", workdir=None):
-        return RunRequest(name, "T11", "codex", "gpt-6-luna", "low", profile,
+        return RunRequest(name, "T11", self.manifest.tool,
+            "claude-sonnet-5-5" if self.claude else "gpt-6-luna", "low", profile,
             str(workdir or self.work), str(self.brief),
             str(self.main / ".orcexe" / "runs" / name), timeout_s=scaled(4), stall_s=scaled(3))
 
@@ -86,6 +92,15 @@ class AdapterContract:
                 self.assertIn(str(directory / "brief.md"), prompt)
                 if req.profile == "review":
                     self.assertEqual(argv[-2:], ["-s", "read-only"])
+            elif argv[0] == "-p":
+                self.assertEqual(call["cwd"], str(req.workdir))
+                self.assertIn("--add-dir", argv)
+                if str(directory) in argv:
+                    prompt = argv[1]  # Claude's prompt immediately follows -p.
+                    self.assertIn(str(directory / "brief.md"), prompt)
+                    self.assertLessEqual(len(prompt), 600)
+                if req.profile == "review":
+                    self.assertEqual(argv[-2:], ["--permission-mode", "plan"])
 
     def run_scenario(self, scenario, req):
         adapter = self.make_adapter(scenario)
@@ -98,7 +113,7 @@ class AdapterContract:
         runner = proc.run
 
         def prepared(argv, **options):
-            if len(argv) > 1 and argv[1] == 'exec':
+            if len(argv) > 1 and argv[1] == self.exec_token:
                 return run_when_ready(runner, argv, ready.exists, self.addCleanup, **options)
             return runner(argv, **options)
 
@@ -108,6 +123,8 @@ class AdapterContract:
     def test_all_fake_scenarios(self):
         scenarios = ("success", "write", "invalid-model", "auth-401", "warning-first", "no-final",
                      "quota", "quota-unconfirmed", "stall", "commit", "big-line", "background-child")
+        if self.claude:
+            scenarios = ("success", "write", "invalid-model", "auth-missing", "quota", "stall", "commit", "model-mismatch", "hooks")
         table = {}
         for scenario in scenarios:
             with self.subTest(scenario=scenario):
@@ -137,6 +154,22 @@ class AdapterContract:
                 table[scenario] = (result["status"], result["warnings"])
         SCENARIO_RESULTS[self.adapter_name] = table
 
+    def test_codex_argv_remains_exact_for_both_profiles(self):
+        if self.claude:
+            return
+        for profile, sandbox in (("write", "workspace-write"), ("review", "read-only")):
+            req = self.request("argv-" + profile, profile)
+            self.calls.unlink(missing_ok=True)
+            self.adapter.run(req)
+            call, = [call for call in self.call_log() if call["model_call"]]
+            directory = Path(req.run_dir).resolve()
+            prompt = "Read the task brief at {} and carry it out. Follow its rules exactly.".format(directory / "brief.md")
+            expected = ["exec", "-C", str(Path(req.workdir).resolve()), "-m", req.model,
+                "-c", "model_reasoning_effort=" + req.effort, "--json", "-o",
+                str(directory / "final.md"), prompt, "-s", sandbox]
+            self.assertEqual(call["argv"], expected)
+            self.assertEqual(json.dumps(call["argv"]).encode(), json.dumps(expected).encode())
+
     def test_main_worktree_write_refused_and_attempts_append_only(self):
         req = self.request("refused", "write", self.main)
         result = self.adapter.run(req)
@@ -164,9 +197,12 @@ class AdapterContract:
         self.assert_result(req, result)
         external = replace(self.request("external", "write"), run_dir=str(self.directory / "external"))
         calls = self.call_log()
-        with self.assertRaisesRegex(ValueError, "read grants"):
-            self.adapter.run(external)
-        self.assertEqual(self.call_log(), calls)
+        if self.claude:
+            self.assertEqual(self.adapter.run(external)["status"], "completed")
+        else:
+            with self.assertRaisesRegex(ValueError, "read grants"):
+                self.adapter.run(external)
+            self.assertEqual(self.call_log(), calls)
         internal = replace(self.request("internal", "write"),
                            run_dir=str(self.work / ".orcexe" / "runs" / "internal"))
         result = self.adapter.run(internal)
@@ -179,10 +215,10 @@ class AdapterContract:
         self.assertEqual(result["warnings"], ["empty_diff"])
 
     def test_detect_hints_environment_and_missing_binary(self):
-        self.assertEqual(self.adapter.detect(), {"present": True, "version": "0.163.0",
-            "path": self.env["ORCEXE_BIN_CODEX"], "min_ok": True})
+        self.assertEqual(self.adapter.detect(), {"present": True, "version": "2.1.310" if self.claude else "0.163.0",
+            "path": self.env[self.bin_env], "min_ok": True})
         calls = self.call_log()
-        self.assertEqual(self.adapter.login_hint(), [self.env["ORCEXE_BIN_CODEX"], "login"])
+        self.assertEqual(self.adapter.login_hint(), [self.env[self.bin_env], *self.manifest.data["auth"]["login_cmd"][1:]])
         self.assertEqual(self.call_log(), calls)
         self.assertEqual(self.adapter.capabilities(), self.manifest.data)
         self.assertNotIn("OPENAI_API_KEY", self.adapter._environment())
@@ -202,13 +238,13 @@ class AdapterContract:
                 found = self.adapter.detect()
             self.assertEqual((found["version"], found["min_ok"]), (version, min_ok))
         path_env = dict(self.env)
-        del path_env["ORCEXE_BIN_CODEX"]
+        del path_env[self.bin_env]
         # Only fixture PATH search is permitted in this test.
         path_env["PATH"] = str(FAKE)
         searched = self.adapter_class(self.manifest, env=path_env)
-        self.assertEqual(searched._binary(), self.env["ORCEXE_BIN_CODEX"])
+        self.assertEqual(searched._binary(), self.env[self.bin_env])
         missing = self.make_adapter()
-        missing._env["ORCEXE_BIN_CODEX"] = str(self.directory / "nonexistent-cli")
+        missing._env[self.bin_env] = str(self.directory / "nonexistent-cli")
         self.assertEqual(missing.detect(), {"present": False, "version": None, "path": None, "min_ok": False})
         result = missing.run(self.request("spawn-error"))
         self.assertEqual((result["status"], result["exit_code"]), ("failed", None))
@@ -255,15 +291,20 @@ class AdapterContract:
         captured = {}
 
         def injected(argv, **options):
-            if len(argv) < 2 or argv[1] != "exec":
+            if len(argv) < 2 or argv[1] != self.exec_token:
                 return original_run(argv, **options)
             emit = options["on_line"]
-            emit(json.dumps({"type": "turn.failed"}))
+            emit(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}
+                            if self.claude else {"type": "turn.failed"}))
             for index in range(80):
                 emit(json.dumps({"type": "untrusted-" + str(index)}))
             emit("raw fake-user@example.invalid")
-            emit(json.dumps({"type": "item.completed", "item": {"type": "agent_message",
-                "text": "fake-user@example.invalid\nORCEXE_EXIT: DONE"}}))
+            if self.claude:
+                emit(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                    "terminal_reason": "completed", "result": "fake-user@example.invalid\nORCEXE_EXIT: DONE"}))
+            else:
+                emit(json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                    "text": "fake-user@example.invalid\nORCEXE_EXIT: DONE"}}))
             emit(json.dumps({"type": "turn.completed", "usage": {}}))
             return proc.ProcResult("exited", 1, scaled(.01), 85, 0, 0,
                                    "fake-user@example.invalid", False, None)
@@ -280,7 +321,8 @@ class AdapterContract:
         self.assertEqual((result["status"], result["self_report"]["exit"]), ("failed", "DONE"))
         self.assertLessEqual(len(captured["events"]), 32)
         self.assertLessEqual(len(captured["counts"]), len(self.manifest.data["events"]["types"]) + 1)
-        self.assertEqual(captured["counts"]["turn.failed"], 1)
+        self.assertEqual(captured["counts"]["result" if self.claude else "turn.failed"],
+                         2 if self.claude else 1)
         self.assert_result(req, result)
         records = [json.loads(line) for line in Path(result["events_path"]).read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any("_raw" in event for event in records))

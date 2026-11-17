@@ -19,10 +19,10 @@ GLOBAL_FORBIDDEN_ARGV = (
     "--yolo", "--force", "danger-full-access", "bypassPermissions", "--bare",
     "--full-auto", "--dangerously-*",
 )
-_PLACEHOLDERS = frozenset(("workdir", "model", "effort", "final", "prompt"))
+_PLACEHOLDERS = frozenset(("workdir", "run_dir", "model", "effort", "final", "prompt"))
 _REQUIRED_PLACEHOLDERS = ("workdir", "model", "prompt")
 _FAMILIES = {"codex": "openai", "claude-code": "anthropic", "cursor": "cursor"}
-_REVIEW_RULES = {"codex": ("-s", "read-only")}
+_REVIEW_RULES = {"codex": ("-s", "read-only"), "claude-code": ("--permission-mode", "plan")}
 _TAGS = ("D", "Y", "D+Y", "?")
 _SOURCES = ("app-server", "stream", "cmd", "none")
 # Command/version/install facts and uncertain exit codes also carry evidence;
@@ -377,7 +377,8 @@ def validate(data: dict) -> None:
         _string(quota["exec_exhaustion"], "quota.exec_exhaustion")
 
     execution = data["exec"]
-    _mapping(execution, "exec", ("argv", "stdin", "requires_git_repo", "effort", "profiles", "forbidden_argv"))
+    _mapping(execution, "exec", ("argv", "stdin", "requires_git_repo", "effort", "profiles", "forbidden_argv"), ("workdir_via",))
+    _choice(execution.get("workdir_via", "argv"), "exec.workdir_via", ("argv", "cwd"))
     _strings(execution["argv"], "exec.argv", True)
     _choice(execution["stdin"], "exec.stdin", ("devnull",))
     _boolean(execution["requires_git_repo"], "exec.requires_git_repo")
@@ -397,6 +398,8 @@ def validate(data: dict) -> None:
             if base_names.count(name) > 1:
                 _fail(path, "duplicate required placeholder {{{}}}".format(name))
     for name in _REQUIRED_PLACEHOLDERS:
+        if name == "workdir" and execution.get("workdir_via", "argv") == "cwd":
+            continue
         if base_names.count(name) != 1:
             _fail("exec.argv", "expected exactly one {{{}}}".format(name))
     for profile, config in execution["profiles"].items():
@@ -522,6 +525,13 @@ class Manifest:
     def is_uncertain(self, path) -> bool:
         return self.evidence(path) == "?"
 
+    def placeholders(self, profile) -> frozenset:
+        """Return the names used by this profile, without weakening substitution."""
+        if not isinstance(profile, str) or profile not in self.data["exec"]["profiles"]:
+            _fail("exec.profiles." + str(profile), "unknown profile")
+        return frozenset(name for token, path in _argv_locations(self.data["exec"], profile)
+                         for name in _placeholders(token, path))
+
     def build_argv(self, profile, **values) -> list[str]:
         """Substitute values as argv data, with rules for each placeholder kind.
 
@@ -547,9 +557,11 @@ class Manifest:
             if name == "prompt":
                 if len(value) > 8000:
                     _fail(path, "prompt exceeds 8,000 characters")
-            elif name in ("workdir", "final"):
+            elif name in ("workdir", "run_dir", "final"):
                 if not os.path.isabs(value):
                     _fail(path, "expected an absolute path")
+                if name == "run_dir" and not os.path.isdir(value):
+                    _fail(path, "expected an existing directory")
             else:
                 if any(c.isspace() for c in value):
                     _fail(path, "model and effort must be single values without whitespace")

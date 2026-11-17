@@ -25,6 +25,7 @@ import traceback
 from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, ledger, redact, route, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
+from orcexe.adapters.claude_code import ClaudeCodeAdapter
 
 
 BRIEF = """# Task
@@ -400,13 +401,14 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
             return blocked("Lane: {}; signals: {}\nthis task needs the standard/risky lane "
                 "(v0.2+: `orcexe plan`)".format(classification.lane, ", ".join(summary["signals"])),
                 "lane_" + classification.lane, exitcodes.UNSUPPORTED)
-        adapter = CodexAdapter()
-        access = route.gather_access([adapter])
+        registry = {"codex": CodexAdapter, "claude-code": ClaudeCodeAdapter}
+        access = route.gather_access([factory() for factory in registry.values()])
         decision = route.route("executor", "fast", access, route.load_roles(), constraints=model_constraint)
         summary["route"] = decision
         if decision["tool"] is None:
             return blocked("Route: {}; skipped: {}".format(decision["reason"],
                 json.dumps(decision["skipped"])), "route_" + decision["reason"], _route_exit(decision))
+        adapter = registry[decision["tool"]]()
         identity = _resolve_identity(main)
         if identity is None:
             return blocked("configure git user.name and user.email "

@@ -299,8 +299,10 @@ class Adapter(ABC):
             prompt = "Read the task brief at {} and carry it out. Follow its rules exactly.".format(
                 directory / "brief.md")
             _require(len(prompt) <= 600 and not prompt.startswith("-"), "brief pointer too long")
-            argv = self.manifest.build_argv(req.profile, workdir=str(Path(req.workdir).resolve()),
+            values = dict(workdir=str(Path(req.workdir).resolve()), run_dir=str(directory),
                 model=req.model, effort=req.effort, final=paths["final_text_path"], prompt=prompt)
+            argv = self.manifest.build_argv(req.profile, **{
+                name: values[name] for name in self.manifest.placeholders(req.profile)})
             detected = self.detect()
             # A missing binary must produce a spawn_error, never fall back to a
             # different CLI when an explicit binary override was requested.

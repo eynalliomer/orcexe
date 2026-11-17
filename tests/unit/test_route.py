@@ -20,7 +20,7 @@ PLUGIN = ROOT / "plugins/orcexe"
 FAKE = ROOT / "tests/fixtures/fake-cli"
 sys.path.insert(0, str(PLUGIN / "src"))
 
-from orcexe.adapters import CodexAdapter
+from orcexe.adapters import CodexAdapter, ClaudeCodeAdapter
 from orcexe.manifest import load_manifest
 from orcexe.miniyaml import load_path
 from orcexe.route import Access, gather_access, load_roles, route, validate_route
@@ -51,14 +51,14 @@ class RolesTests(unittest.TestCase):
         self.assertEqual(roles.evidence,
                          "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek")
         expected = {
-            "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium")],
-                         "standard": [(FIRST, "high"), (SECOND, "high")], "risky": [(FIRST, "high")]},
-            "evaluator": {"any": [(FIRST, "medium")]}, "auditor": {"any": [(FIRST, "high")]}}
+            "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium")],
+                         "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high")]},
+            "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}
         self.assertEqual({stage: {lane: [(c.model, c.effort) for c in candidates]
                                  for lane, candidates in lanes.items()}
                           for stage, lanes in roles.stages.items()}, expected)
         self.assertEqual({c.tool for lanes in roles.stages.values() for candidates in lanes.values()
-                          for c in candidates}, {"codex"})
+                          for c in candidates}, {"codex", "claude-code"})
         with self.assertRaises(FrozenInstanceError):
             roles.as_of = "2026-01-01"
         with self.assertRaises(TypeError):
@@ -180,7 +180,8 @@ class RouteTests(unittest.TestCase):
                 self.assertIsNone(result["tool"])
                 self.assertEqual(result["reason"], "no_eligible_candidate")
                 self.assertEqual(result["skipped"], [
-                    {"candidate": "codex/" + name, "reason": reason} for name in (FIRST, SECOND)])
+                    {"candidate": "codex/" + name, "reason": reason} for name in (FIRST, SECOND)] +
+                    [{"candidate": "claude-code/claude-sonnet-5-5", "reason": "tool_absent"}])
                 for name in (FIRST, SECOND):
                     self.assertIn("skip:codex/" + name + ":" + reason, result["basis"])
 
@@ -265,7 +266,7 @@ class RouteTests(unittest.TestCase):
     def test_nothing_eligible_retains_different_skip_reasons(self):
         result = self.choose(replace(SEEN, models={SECOND: EFFORTS}, quota_allowed=False))
         self.assertIsNone(result["tool"])
-        self.assertEqual([s["reason"] for s in result["skipped"]], ["model_unavailable", "quota_exhausted"])
+        self.assertEqual([s["reason"] for s in result["skipped"]], ["model_unavailable", "quota_exhausted", "tool_absent"])
 
     def test_any_fallback_and_exact_lane_precedence(self):
         for stage, effort in (("evaluator", "medium"), ("auditor", "high")):
@@ -273,12 +274,25 @@ class RouteTests(unittest.TestCase):
                 result = self.choose(stage=stage, lane=lane)
                 self.assertEqual(result["effort"], effort)
                 self.assertEqual(result["lane"], lane)
-                self.assertIn("prior:roles.yaml#{}.any[0]".format(stage), result["basis"])
+                self.assertIn("prior:roles.yaml#{}.any[1]".format(stage), result["basis"])
         candidate = self.roles.stages["executor"]["fast"]
         roles = replace(self.roles, stages={"executor": {"fast": candidate, "any": candidate[1:]}})
         result = route("executor", "fast", [replace(SEEN, models={})], roles)
-        self.assertEqual(len(result["skipped"]), 2)
+        self.assertEqual(len(result["skipped"]), 3)
         self.assertNotIn("prior:roles.yaml#executor.any[0]", result["basis"])
+
+    def test_claude_fallback_and_counter_family_reviewers(self):
+        claude = Access("claude-code", "anthropic", True, "ok", None, None, None)
+        access = [replace(SEEN, auth="missing"), claude]
+        result = route("executor", "fast", access, self.roles)
+        self.assertEqual((result["tool"], result["model"], result["confidence"]),
+                         ("claude-code", "claude-sonnet-5-5", "low"))
+        self.assertIn("access:not_seen", result["basis"])
+        for stage, model, effort in (("evaluator", "claude-sonnet-5-5", "medium"),
+                                     ("auditor", "claude-opus-5-5", "high")):
+            review = route(stage, "any", [SEEN, claude], self.roles)
+            self.assertEqual((review["tool"], review["model"], review["effort"]),
+                             ("claude-code", model, effort))
 
     def test_missing_prior_honest_failure(self):
         roles = replace(self.roles, stages={})
@@ -355,6 +369,26 @@ class GatherAccessTests(unittest.TestCase):
     def assert_once(self, adapter):
         for method in ("detect", "auth_status", "list_models", "quota"):
             getattr(adapter, method).assert_called_once_with()
+
+    def test_claude_probe_remains_model_free_and_access_not_seen(self):
+        env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+               if key in os.environ}
+        env.update(PATH=os.pathsep.join((str(Path(sys.executable).parent), os.defpath)),
+            HOME=str(self.directory), CODEX_HOME=str(self.directory / "codex"),
+            CLAUDE_CONFIG_DIR=str(self.directory / "claude"), ORCEXE_STATE_DIR=str(self.directory / "state"),
+            ORCEXE_BIN_CLAUDE_CODE=str(FAKE / ("claude.cmd" if os.name == "nt" else "claude")),
+            ORCEXE_FAKE_PYTHON=sys.executable, ORCEXE_FAKE_CALLS=str(self.calls))
+        adapter = ClaudeCodeAdapter(env=env, allow_extra=("ORCEXE_FAKE_PYTHON", "ORCEXE_FAKE_CALLS"),
+                                    detect_timeout_s=scaled(3), kill_grace_s=scaled(.1))
+        observed, = gather_access([adapter])
+        self.assertEqual(observed, Access("claude-code", "anthropic", True, "ok", None, None, None))
+        decision = route("executor", "fast", [observed], load_roles())
+        self.assertEqual(decision["tool"], "claude-code")
+        self.assertEqual(decision["confidence"], "low")
+        self.assertIn("access:not_seen", decision["basis"])
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["argv"] for call in calls], [["--version"], ["auth", "status", "--json"]])
+        self.assertFalse(any(call["model_call"] for call in calls))
 
     def test_fake_normal_exhausted_and_missing_binary_are_model_free(self):
         home = self.directory / "home"

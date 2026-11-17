@@ -1,0 +1,76 @@
+# Measured 2026-11-14 and rechecked 2026-11-17, Claude Code 2.1.310.
+schema: orcexe.manifest.v1
+tool: claude-code
+family: anthropic
+binary: [claude]
+bin_env: ORCEXE_BIN_CLAUDE_CODE
+min_version: '2.1.310'
+version_cmd: [claude, --version]
+version_regex: '(\d+\.\d+\.\d+)'
+version_sample: '2.1.310 (Claude Code)'
+verified_on: {date: '2026-11-17', version: '2.1.310', os: macos-arm64}
+install: {npm: 'npm install -g @anthropic-ai/claude-code'}
+auth:
+  status_cmd: [claude, auth, status, --json]
+  logged_in: {json_field: loggedIn, equals: true}
+  logged_out: {json_field: loggedIn, equals: false}
+  login_cmd: [claude, auth, login]
+  device_cmd: [claude, auth, login]
+  plan: {source: cmd, cmd: [claude, auth, status, --json], field: subscriptionType}
+  allowed_fields: [loggedIn, authMethod, subscriptionType, apiProvider]
+  forbidden_fields: [email, orgId, orgName, configDirectory, projectsDirectory]
+models: {source: none}
+quota:
+  source: stream
+  event: rate_limit_event
+  fields: [status, unifiedWindows.five_hour.utilization, unifiedWindows.five_hour.resetsAt, unifiedWindows.seven_day.utilization, unifiedWindows.seven_day.resetsAt]
+  nullable_fields: []
+  read_only_consumes_quota: true
+  exec_exhaustion: rejected
+exec:
+  # exec.positional_first: true — Y: prompt-first argv verified by a real run 2026-11-17 (claude 2.1.310, haiku)
+  # --add-dir, --allowedTools and --disallowedTools consume through the next flag.
+  argv: [claude, -p, '{prompt}', --output-format, stream-json, --verbose, --model, '{model}', --effort, '{effort}', --no-session-persistence, --strict-mcp-config, --include-hook-events, --add-dir, '{run_dir}']
+  workdir_via: cwd
+  stdin: devnull
+  requires_git_repo: false
+  effort: {mode: flag, values: [low, medium, high, xhigh, max], model_dependent: true}
+  profiles:
+    write: {extra: [--permission-mode, acceptEdits, --disallowedTools, 'Bash,WebFetch,WebSearch']}
+    review: {extra: [--permission-mode, plan], read_only: true}
+  forbidden_argv: [--dangerously-skip-permissions, bypassPermissions, --bare, --plugin-url]
+events:
+  format: jsonl
+  stream: stdout
+  types: [system, assistant, user, rate_limit_event, result]
+  success: {last_type: result, absent_types: []}
+  final_text: {type: result, item_type: success, field: result}
+  usage:
+    type: result
+    map: {input: usage.input_tokens, cached_read: usage.cache_read_input_tokens, output: usage.output_tokens, reasoning: unavailable}
+  model_actual: system.init.model
+  error: {field: result, format: text}
+exit_codes: {usage: 1, runtime: 1}
+# -p runs user/project hooks; --bare would disable subscription authentication.
+# acceptEdits also permits edits in --add-dir (the brief directory). This is
+# acceptable: the gate never trusts run_dir content modified during execution;
+# the adapter writes result.json afterwards. Cost is list price, not a bill.
+side_effects: []
+windows: {native: true, sandbox_native: false, wsl2: true, wsl1: false}
+evidence:
+  binary: Y
+  min_version: Y
+  version_cmd: Y
+  version_regex: Y
+  version_sample: Y
+  verified_on: Y
+  install: '?'
+  auth: Y
+  models: Y
+  quota: Y
+  exec: Y
+  exec.argv: Y # verified by a real orcexe do run 2026-11-17
+  events: Y
+  exit_codes: Y
+  side_effects: Y
+  windows: '?'

@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'plugins/orcexe/src'))
 from orcexe import classify, cli, do, exitcodes, gate_lite, ledger, proc, route, worktree
 from orcexe.adapters.codex import CodexAdapter
+from orcexe.adapters.claude_code import ClaudeCodeAdapter
 from orcexe.adapters.base import RunRequest
 
 FAKE = ROOT / 'tests/fixtures/fake-cli/codex'
@@ -55,6 +56,8 @@ class DoTests(unittest.TestCase):
         self.calls = self.root / 'calls.jsonl'
         self.env = dict(self.executor_env, HOME=str(self.home),
             CODEX_HOME=str(self.home / 'codex'), XDG_CACHE_HOME=str(self.home / 'cache'),
+            CLAUDE_CONFIG_DIR=str(self.home / 'claude'), ORCEXE_STATE_DIR=str(self.home / 'state'),
+            ORCEXE_BIN_CLAUDE_CODE=str(FAKE.with_name('claude')),
             ORCEXE_FAKE_CALLS=str(self.calls))
         for name in ('SystemRoot', 'SYSTEMROOT', 'WINDIR'):
             if name in os.environ:
@@ -62,6 +65,7 @@ class DoTests(unittest.TestCase):
         git_environment(self.env, self.root)
         self.templates.copy('do', self.repo, self.build_repository)
         self.original = (self.repo / 'src/app.py').read_bytes()
+        self.claude_scenario = "auth-missing"
         self.factory = do.CodexAdapter
         self.gate = gate_lite.gate
         self.addCleanup(mock.patch.stopall)
@@ -94,12 +98,18 @@ class DoTests(unittest.TestCase):
             detect_timeout_s=scaled(3), appserver_timeout_s=scaled(3), auth_timeout_s=scaled(3),
             kill_grace_s=scaled(.15))
 
+    def claude_adapter(self):
+        return ClaudeCodeAdapter(env=dict(self.env, ORCEXE_FAKE_SCENARIO=self.claude_scenario),
+            allow_extra=tuple(k for k in self.env if k.startswith("ORCEXE_FAKE_")),
+            detect_timeout_s=scaled(3), kill_grace_s=scaled(.15))
+
     def invoke(self, task=FAST, **options):
         # Keep production clocks real; scale every test-supplied deadline.
         def gate(**kwargs):
             return self.gate(command_timeout_s=scaled(10), total_timeout_s=scaled(20), **kwargs)
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(do, 'CodexAdapter', side_effect=self.adapter), \
+                mock.patch.object(do, 'ClaudeCodeAdapter', side_effect=self.claude_adapter), \
                 mock.patch.object(do.gate_lite, 'gate', side_effect=gate):
             return do.run_do(task, self.repo, timeout=scaled(options.pop('timeout', 10)), **options)
 
@@ -147,6 +157,22 @@ class DoTests(unittest.TestCase):
 
     def test_c11_english(self):
         self.check(self.invoke(), 'accepted', exitcodes.OK)
+
+    def test_codex_auth_missing_routes_to_claude_and_is_accepted(self):
+        self.env['ORCEXE_FAKE_SCENARIO'] = 'auth-missing'
+        self.claude_scenario = 'success'
+        result = self.invoke()
+        self.assertEqual((result['verdict'], result['exit_code']), ('accepted', exitcodes.OK), result)
+        self.assertEqual(result['route']['tool'], 'claude-code')
+        self.assertEqual(result['route']['confidence'], 'low')
+        self.assertIn('access:not_seen', result['route']['basis'])
+        executions = [c for c in self.call_log() if c['model_call']]
+        self.assertEqual(len(executions), 1)
+        self.assertEqual(executions[0]['argv'][0], '-p')
+        self.assertEqual(executions[0]['cwd'], result['worktree'])
+        self.assertEqual(result['changed_files'], ['src/app.py'])
+        self.assertEqual((self.repo / 'src/app.py').read_bytes(), self.original)
+        self.assertTrue(self.log().verify()['ok'])
 
     def test_c11_turkish(self):
         self.check(self.invoke("src/app.py'ye docstring ekle"), 'accepted', exitcodes.OK)
@@ -240,7 +266,7 @@ class DoTests(unittest.TestCase):
         self.assertEqual(result['exit_code'], exitcodes.FAIL, result)
         # Mixed skips: the shipped fallback model is absent from the live list.
         self.assertEqual({s['reason'] for s in result['route']['skipped']},
-                         {'quota_exhausted', 'model_unavailable'})
+                         {'quota_exhausted', 'model_unavailable', 'auth_missing'})
         self.assert_no_executor()
         self.assertTrue(self.log().verify()['ok'])
 

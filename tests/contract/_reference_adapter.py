@@ -8,7 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "plugins" / "orcexe" / "src"))
 
-from orcexe.adapters import Adapter, CodexAdapter
+from orcexe.adapters import Adapter, CodexAdapter, ClaudeCodeAdapter
 from tests.unit._timing import scaled
 
 
@@ -50,7 +50,7 @@ class ReferenceAdapter(Adapter):
 
 # T13 registers the production Codex adapter here; the same inherited test class
 # is instantiated for every registry entry by test_adapter_contract.
-ADAPTERS = {"reference": ReferenceAdapter, "codex": CodexAdapter}
+ADAPTERS = {"reference": ReferenceAdapter, "codex": CodexAdapter, "claude-code": ClaudeCodeAdapter}
 ADAPTER_OPTIONS = {"codex": {"appserver_timeout_s": scaled(5)}}
 
 
@@ -62,6 +62,9 @@ def expected_outcome(adapter, scenario, request):
                 "empty-write": ["empty_diff"]}.get(scenario, [])
     if scenario == "background-child" and sys.platform != "win32":
         warnings = ["pipes_held"]
+    if adapter == "claude-code":
+        status = {"quota": "quota", "auth-missing": "auth"}.get(scenario, status)
+        warnings += {"invalid-model": ["model_not_found"], "model-mismatch": ["model_mismatch"]}.get(scenario, [])
     if adapter == "codex":
         status = {"auth-401": "auth", "quota": "quota"}.get(scenario, status)
         warnings = warnings + {"invalid-model": ["model_not_found"],

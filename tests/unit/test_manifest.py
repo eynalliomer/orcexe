@@ -77,6 +77,35 @@ class ManifestTests(unittest.TestCase):
                     "/tmp/final result.txt", "Explain this code", "-s", sandbox,
                 ])
 
+    def test_profile_placeholders_cwd_and_run_dir(self):
+        import tempfile
+        codex = load_manifest(CODEX)
+        self.assertEqual(codex.placeholders("write"), frozenset(VALUES))
+        with self.assertRaises(ManifestError):
+            codex.placeholders("unknown")
+        raw = copy.deepcopy(self.raw)
+        raw["exec"]["workdir_via"] = "cwd"
+        raw["evidence"]["exec.workdir_via"] = "Y"
+        raw["exec"]["argv"].remove("{workdir}")
+        raw["exec"]["argv"] += ["{run_dir}"]
+        manifest = Manifest(raw)
+        expected = frozenset(("model", "effort", "final", "prompt", "run_dir"))
+        self.assertEqual(manifest.placeholders("review"), expected)
+        with tempfile.TemporaryDirectory(prefix="manifest-run-") as directory:
+            values = dict(VALUES, run_dir=directory)
+            del values["workdir"]
+            self.assertIn(directory, manifest.build_argv("review", **values))
+            for invalid in ("relative", "-bad", directory + "/missing", __file__):
+                with self.subTest(run_dir=invalid), self.assertRaises(ManifestError):
+                    manifest.build_argv("review", **dict(values, run_dir=invalid))
+            with self.assertRaises(ManifestError):
+                manifest.build_argv("review", **dict(values, workdir=directory))
+        del raw["exec"]["workdir_via"]
+        del raw["evidence"]["exec.workdir_via"]
+        self.assert_invalid(raw, "exec.argv")
+        raw["exec"]["workdir_via"] = "invalid"
+        self.assert_invalid(raw, "exec.workdir_via")
+
     def test_deep_read_only_detached_copy(self):
         manifest = Manifest(self.raw)
         self.raw["exec"]["argv"][0] = "changed"
@@ -283,7 +312,7 @@ class ManifestTests(unittest.TestCase):
         for tool, family in (("claude-code", "anthropic"), ("cursor", "cursor")):
             data = load_path(CODEX)
             data.update(tool=tool, family=family)
-            self.assert_invalid(data, "exec.profiles.review")
+            self.assert_invalid(data, "exec.profiles.review", exact=tool != "claude-code")
 
     def test_source_alternatives(self):
         alternatives = [
