@@ -104,13 +104,14 @@ class RedactTests(unittest.TestCase):
     def test_generated_secret_grid(self):
         count = 0
         canaries = set()
-        for case, obj, canary in must_redact():
+        for case, obj, canary in must_redact(sampled=not SLOW_TESTS):
             count += 1
             self.assertTrue(canary not in canaries, 'duplicate canary case id %d' % case)
             canaries.add(canary)
             self.assertTrue(canary not in rendered(obj), 'leak case id %d' % case)
-        self.assertTrue(count >= 25000, 'corpus coverage count')
-        print('must_redact=%d leaks=0' % count)
+        total = count if SLOW_TESTS else sum(1 for _ in must_redact())
+        self.assertTrue(total >= 25000, 'corpus coverage count')
+        print('must_redact sampled=%d total=%d leaks=0' % (count, total))
 
     def test_usage_grid_is_byte_identical(self):
         count = 0
@@ -400,24 +401,32 @@ class RedactTests(unittest.TestCase):
         rng = random.Random(SEED)
         secrets = [obj for _, obj, _ in must_redact() if isinstance(obj, str)]
         keep = [text for _, text in must_keep_usage()] + must_keep_devlog()
+        sampled = 0
         for case in range(20000):
             # Delimiters intentionally include adjacency and JSON escaping.
             parts = [rng.choice(secrets), rng.choice(keep), '[REDACTED:x]']
             rng.shuffle(parts)
             text = rng.choice(('', ' ', '\n', '; ', r'\n')).join(parts)
+            if not SLOW_TESTS and case % 20:
+                continue
+            sampled += 1
             once = redact_text(text)
             self.assertTrue(redact_text(once) == once, 'idempotence case id %d' % case)
-        print('idempotence=0/20000 violations')
+        print('idempotence sampled=%d total=20000 violations=0' % sampled)
 
     def test_adjacent_fragment_fuzz_text_and_objects(self):
         rng = random.Random(SEED)
+        sampled = 0
         for case in range(65000):
             text = ''.join(rng.choice(ADJACENT_FRAGMENTS) for _ in range(rng.randint(2, 9)))
             obj = text if case < 60000 else {'password': text, 'payload': [text, {'message': text}]}
+            if not SLOW_TESTS and case % 20:
+                continue
+            sampled += 1
             once = redact_text(obj) if isinstance(obj, str) else redact_obj(obj)
             twice = redact_text(once) if isinstance(once, str) else redact_obj(once)
             self.assertTrue(once == twice, 'adjacent idempotence case id %d' % case)
-        print('adjacent_idempotence=text:0/60000 objects:0/5000')
+        print('adjacent_idempotence sampled=%d total=65000 violations=0' % sampled)
 
     def test_delimited_fields_are_stable_in_one_pass(self):
         for case, text in enumerate(('?token=Fake19Value&password=Other19Value&',
@@ -478,6 +487,7 @@ class RedactTests(unittest.TestCase):
                                         'scan budget family id %d detector %s' % (case, detector.__name__))
         print('detector_scan_checks=%d max_work_per_byte=%.2f bound=64' % (count, worst))
 
+    @unittest.skipUnless(SLOW_TESTS, 'timing ratios/latency require ORCEXE_SLOW_TESTS=1')
     def test_each_detector_growth_ratio(self):
         chunk = '\n'.join(chunk for _, chunk in adversarial_families() if len(chunk) <= 2048)
         text = (chunk * (262144 // len(chunk) + 1))[:262144]
@@ -508,6 +518,7 @@ class RedactTests(unittest.TestCase):
             self.assertTrue(ratio < 2.5, 'detector growth id %d: %.3f' % (case, ratio))
         print('detector_ratios=%d max_ratio=%.3f' % (len(detectors), worst))
 
+    @unittest.skipUnless(SLOW_TESTS, 'timing ratios/latency require ORCEXE_SLOW_TESTS=1')
     def test_adversarial_growth_ratios_and_megabyte_cap(self):
         worst_ratio = (0.0, '')
         slowest = (0.0, '')
@@ -568,7 +579,7 @@ class RedactTests(unittest.TestCase):
         # Dense spans, dense protected placeholders, decoded mappings and PEM
         # state have distinct memory profiles. Time is measured without tracing.
         for case, (name, text) in enumerate(adversarial_1mb()):
-            if name not in FAST_1MB_FAMILIES[:(7 if SLOW_TESTS else 2)]:
+            if name not in FAST_1MB_FAMILIES[:(7 if SLOW_TESTS else 1)]:
                 continue
             tracemalloc.start()
             try:
@@ -578,7 +589,8 @@ class RedactTests(unittest.TestCase):
                 tracemalloc.stop()
             worst = max(worst, peak)
             self.assertTrue(peak < 64 * 1024 * 1024, '1MB memory case id %d' % case)
-        print('tracemalloc_peak=%.2fMiB' % (worst / 1024 / 1024))
+        print('1MiB memory sampled=%d total=7 tracemalloc_peak=%.2fMiB' %
+              (7 if SLOW_TESTS else 1, worst / 1024 / 1024))
 
     def test_compatibility_and_type_error(self):
         self.assertTrue(redact('ordinary') == redact_text('ordinary'), 'compatibility alias')

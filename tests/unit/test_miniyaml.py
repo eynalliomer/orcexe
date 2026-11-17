@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 from pathlib import Path
 import random
 import re
@@ -283,6 +284,8 @@ class MiniYamlTests(unittest.TestCase):
                     load_path(path)
                 self.assertEqual((caught.exception.line, caught.exception.col), position)
 
+    @unittest.skipUnless(os.environ.get('ORCEXE_SLOW_TESTS') == '1',
+                         'megabyte timing check requires ORCEXE_SLOW_TESTS=1')
     def test_adversarial_linear_time(self):
         # Long numeric-looking near matches exercise all numeric regex paths.
         text = "1" * (1024 * 1024 - 1) + "x"

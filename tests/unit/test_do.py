@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 
 from tests.unit._timing import scaled
+from tests.unit._fixtures import GitTemplates, git_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'plugins/orcexe/src'))
@@ -32,46 +33,55 @@ EXTEND = ' " Added documentation."\n'
 
 
 class DoTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.templates = GitTemplates(cls.addClassCleanup)
+        cls.executor_env = dict(
+            PATH=os.pathsep.join([str(Path(sys.executable).parent), os.defpath]),
+            ORCEXE_BIN_CODEX=str(FAKE), ORCEXE_FAKE_SCENARIO='success',
+            ORCEXE_FAKE_EDIT_FILE='src/app.py', ORCEXE_FAKE_EDIT_TEXT=EXTEND,
+            PYTHONDONTWRITEBYTECODE='1', GIT_CONFIG_NOSYSTEM='1',
+            GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+            GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
+            GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='orcexe-do-', dir=str(ROOT))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / 'repo'
-        self.repo.mkdir()
         self.home = self.root / 'home'
         self.home.mkdir()
         self.calls = self.root / 'calls.jsonl'
-        self.env = dict(PATH=os.pathsep.join([str(Path(sys.executable).parent), os.defpath]),
-            HOME=str(self.home), CODEX_HOME=str(self.home / 'codex'),
-            XDG_CACHE_HOME=str(self.home / 'cache'),
-            ORCEXE_BIN_CODEX=str(FAKE), ORCEXE_FAKE_CALLS=str(self.calls),
-            ORCEXE_FAKE_SCENARIO='success', ORCEXE_FAKE_EDIT_FILE='src/app.py',
-            ORCEXE_FAKE_EDIT_TEXT=EXTEND, PYTHONDONTWRITEBYTECODE='1',
-            GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
-            GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
-            GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+        self.env = dict(self.executor_env, HOME=str(self.home),
+            CODEX_HOME=str(self.home / 'codex'), XDG_CACHE_HOME=str(self.home / 'cache'),
+            ORCEXE_FAKE_CALLS=str(self.calls))
         for name in ('SystemRoot', 'SYSTEMROOT', 'WINDIR'):
             if name in os.environ:
                 self.env[name] = os.environ[name]
-        self.git('init', '-q')
-        self.git('config', 'user.name', 'Test')
-        self.git('config', 'user.email', 'test@example.invalid')
-        (self.repo / 'README.md').write_text('Example\n')
-        (self.repo / 'src').mkdir()
-        (self.repo / 'src/app.py').write_text('def app():\n    """Return nothing."""')
-        (self.repo / 'tests').mkdir()
-        (self.repo / 'tests/__init__.py').touch()
-        (self.repo / 'tests/test_app.py').write_text(
-            'import unittest\nfrom src.app import app\n'
-            'class AppTest(unittest.TestCase):\n'
-            '    def test_app(self):\n        self.assertIsNone(app())\n')
-        self.git('add', '.')
-        self.git('commit', '-qm', 'initial')
+        git_environment(self.env, self.root)
+        self.templates.copy('do', self.repo, self.build_repository)
         self.original = (self.repo / 'src/app.py').read_bytes()
         self.factory = do.CodexAdapter
         self.gate = gate_lite.gate
         self.addCleanup(mock.patch.stopall)
         mock.patch('builtins.input', side_effect=AssertionError('stdin read')).start()
+
+    def build_repository(self, directory):
+        self.git('init', '-q', '--template=', cwd=directory)
+        self.git('config', 'user.name', 'Test', cwd=directory)
+        self.git('config', 'user.email', 'test@example.invalid', cwd=directory)
+        (directory / 'README.md').write_text('Example\n')
+        (directory / 'src').mkdir()
+        (directory / 'src/app.py').write_text('def app():\n    """Return nothing."""')
+        (directory / 'tests').mkdir()
+        (directory / 'tests/__init__.py').touch()
+        (directory / 'tests/test_app.py').write_text(
+            'import unittest\nfrom src.app import app\n'
+            'class AppTest(unittest.TestCase):\n'
+            '    def test_app(self):\n        self.assertIsNone(app())\n')
+        self.git('add', '.', cwd=directory)
+        self.git('commit', '-qm', 'initial', cwd=directory)
 
     def git(self, *args, cwd=None):
         result = subprocess.run(['git', *args], cwd=str(cwd or self.repo), env=self.env,
@@ -688,7 +698,10 @@ from orcexe import do,proc
 from orcexe.adapters.codex import CodexAdapter
 ready=Path(sys.argv[2]); real=proc.run; popen=proc.subprocess.Popen
 def spawn(*args,**kwargs):
-    child=popen(*args,**kwargs); ready.write_text(str(child.pid)); return child
+    child=popen(*args,**kwargs)
+    pending=ready.with_name(ready.name+'.tmp')
+    pending.write_text(str(child.pid)); pending.replace(ready)
+    return child
 def run(argv,**kwargs):
     if len(argv)>1 and argv[1]=='exec':
         with mock.patch.object(proc.subprocess,'Popen',side_effect=spawn):

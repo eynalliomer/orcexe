@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repeat default unittest discovery under CPU load (stdlib only, Python 3.9).
+"""Repeat the test suite under CPU load (stdlib only, Python 3.9).
 
 Run from the repository root:
     python3 tests/tools/stress_suite.py --runs 5 --scale 3
@@ -36,6 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--scale", type=float, default=3)
+    parser.add_argument("--runner", choices=("parallel", "discover"), default="parallel")
     args = parser.parse_args()
     if args.runs <= 0:
         parser.error("--runs must be > 0")
@@ -57,9 +58,12 @@ def main():
         print("busy workers: {}; time scale: {}".format(len(workers), args.scale),
               flush=True)
         for index in range(1, args.runs + 1):
+            before = load_average()
             started = time.monotonic()
             suite = subprocess.Popen(
-                [sys.executable, "-m", "unittest", "discover"],
+                ([sys.executable, str(root / "tests/tools/run_tests.py")]
+                 if args.runner == "parallel" else
+                 [sys.executable, "-m", "unittest", "discover"]),
                 cwd=str(root), env=environment, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             output, _ = suite.communicate()
@@ -68,6 +72,7 @@ def main():
             passed += success
             print("run {}/{}: {} ({:.2f}s)".format(
                 index, args.runs, "PASS" if success else "FAIL", duration), flush=True)
+            print("  load before: {}; after: {}".format(before, load_average()), flush=True)
             if not success:
                 print(output, flush=True)
     except KeyboardInterrupt:

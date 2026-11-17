@@ -1,5 +1,6 @@
 ## 0.1.0 — unreleased
 
+- Add an isolated parallel stdlib test runner with duration-based scheduling, faster Git fixtures, deterministic default fuzz samples, opt-in full timing checks, and parallel stress runs.
 - Observe main HEAD (symbolic and object), refs outside the current task branch, worktree status excluding `.orcexe/`, and T25 Git controls around the executor. Any change fails `main_repository_changed` before the gate.
 - Resolve Git identity after classification and routing, before any worktree or executor (including dry runs), using read-only config queries in the normal user environment with hooks disabled. Git's per-field precedence applies: `GIT_AUTHOR_NAME/EMAIL` and `GIT_COMMITTER_NAME/EMAIL`, then `author.*`/`committer.*`, then `user.*` from repository/global/system config. Missing name/email blocks with `git_identity_missing` and FAIL before dispatch. Pass the captured identity explicitly to hardened `commit-tree`; no identity is invented.
 - Freeze accepted edits in `refs/orcexe/accepted/<task>` using a private index, the base target mode and gate-verified `diff.target_blob`/`diff.target_path`; construct and verify a single-parent commit without reading executor worktree bytes. Landing advice merges or cherry-picks that ref. Target paths in receipts retain existing secret redaction.

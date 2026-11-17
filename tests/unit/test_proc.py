@@ -277,30 +277,30 @@ class ProcTests(unittest.TestCase):
                     process.poll = delayed_reap
                     # Simulate readers scheduled after the old short window,
                     # measured from completed cleanup rather than child startup.
-                    notify_at.append(time.monotonic() + scaled(.6))
+                    notify_at.append(time.monotonic() + scaled(.12))
                     stopped.set()
                     return outcome
 
                 try:
-                    with mock.patch.object(proc, "_reader", side_effect=reader), \
+                    with mock.patch.object(proc, "_DRAIN", scaled(.04)), \
+                            mock.patch.object(proc, "_reader", side_effect=reader), \
                             mock.patch.object(proc, "_stop_posix", side_effect=stop):
                         result = self.run_child("""
                             import os, signal, sys, time
                             from pathlib import Path
                             def close_slowly(signum, frame):
-                                time.sleep(%r)
                                 os.close(1)
                                 os.close(2)
                                 sys.exit(0)
                             signal.signal(signal.SIGTERM, close_slowly)
                             Path('ready').touch()
                             time.sleep(3600)
-                        """ % scaled(.6), ready=True,
+                        """, ready=True,
                             start=cancel.set if reason == "cancelled" else None,
                             cancel_event=cancel,
                             timeout_s=scaled(.2 if reason == "timeout" else 5),
                             stall_s=scaled(.2) if reason == "stalled" else None,
-                            kill_grace_s=scaled(1.5))
+                            kill_grace_s=scaled(.3))
                 finally:
                     release_eof.set()
                 self.assertEqual((result.status, result.returncode), (reason, 0))

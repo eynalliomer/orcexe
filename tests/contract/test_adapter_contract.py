@@ -8,7 +8,7 @@ import threading
 from unittest import mock
 
 from tests.contract._reference_adapter import ADAPTERS, ADAPTER_OPTIONS, ROOT, expected_outcome
-from tests.unit._timing import scaled, wait_for
+from tests.unit._timing import run_when_ready, scaled, wait_for
 from tests.unit.test_gitutil import GitFixture
 from orcexe import proc
 from orcexe.adapters import Adapter, RunRequest, validate_run_result
@@ -87,6 +87,24 @@ class AdapterContract:
                 if req.profile == "review":
                     self.assertEqual(argv[-2:], ["-s", "read-only"])
 
+    def run_scenario(self, scenario, req):
+        adapter = self.make_adapter(scenario)
+        if scenario != 'stall':
+            return adapter.run(req)
+        # Observe the stall after the fake has emitted its events and recorded
+        # its model call; interpreter startup is not the behavior being timed.
+        ready = self.directory / 'ready'
+        ready.unlink(missing_ok=True)
+        runner = proc.run
+
+        def prepared(argv, **options):
+            if len(argv) > 1 and argv[1] == 'exec':
+                return run_when_ready(runner, argv, ready.exists, self.addCleanup, **options)
+            return runner(argv, **options)
+
+        with mock.patch.object(proc, 'run', side_effect=prepared):
+            return adapter.run(req)
+
     def test_all_fake_scenarios(self):
         scenarios = ("success", "write", "invalid-model", "auth-401", "warning-first", "no-final",
                      "quota", "quota-unconfirmed", "stall", "commit", "big-line", "background-child")
@@ -100,7 +118,7 @@ class AdapterContract:
                 req = self.request(scenario, profile, work)
                 if scenario == "stall":
                     req = replace(req, stall_s=scaled(.3))
-                result = self.make_adapter(scenario).run(req)
+                result = self.run_scenario(scenario, req)
                 expected, warnings = expected_outcome(self.adapter_name, scenario, req)
                 self.assertEqual(result["status"], expected)
                 self.assertEqual(result["warnings"], warnings)

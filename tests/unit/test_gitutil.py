@@ -1,6 +1,8 @@
 """Real temporary repositories, including paths unsafe for line-based parsing."""
 
 import os
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +12,7 @@ import unittest
 from unittest import mock
 
 from tests.unit._timing import scaled
+from tests.unit._fixtures import GitTemplates, git_environment, non_repository_root
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "plugins" / "orcexe" / "src"))
@@ -19,12 +22,16 @@ from orcexe import gitutil, proc
 class GitFixture(unittest.TestCase):
     """Reusable hermetic Git setup; never writes the source repository's .git."""
 
+    @classmethod
+    def setUpClass(cls):
+        cls.templates = GitTemplates(cls.addClassCleanup)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="orcexe-t11-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name).resolve()
+        non_repository_root(self.directory)
         self.main = self.directory / "main"
-        self.main.mkdir()
         self.home = self.directory / "home"
         self.home.mkdir()
         self.env = {key: os.environ[key] for key in
@@ -36,13 +43,15 @@ class GitFixture(unittest.TestCase):
                         XDG_CONFIG_HOME=str(self.home / ".config"),
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_CONFIG_SYSTEM=os.devnull, GIT_TERMINAL_PROMPT="0")
-        self.git = shutil.which("git", path=self.env["PATH"])
+        self.git = git_environment(self.env, self.directory)
         if not self.git:
             self.skipTest("git unavailable")
-        self.git_run(self.main, "init", "--quiet", "--template=")
-        self.git_run(self.main, "config", "user.name", "Fixture")
-        self.git_run(self.main, "config", "user.email", "fixture@example.invalid")
-        self.git_run(self.main, "config", "commit.gpgsign", "false")
+        def build(directory):
+            self.git_run(directory, "init", "--quiet", "--template=")
+            self.git_run(directory, "config", "user.name", "Fixture")
+            self.git_run(directory, "config", "user.email", "fixture@example.invalid")
+            self.git_run(directory, "config", "commit.gpgsign", "false")
+        self.templates.copy('empty', self.main, build)
         self.git_run(self.main, "config", "core.hooksPath", str(self.directory / "no-hooks"))
 
     def git_run(self, directory, *args):
@@ -50,11 +59,47 @@ class GitFixture(unittest.TestCase):
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=True, timeout=scaled(5)).stdout.decode("utf-8")
 
+    def copy_fixture(self, source):
+        """Copy a prepared main + linked tree, rebinding Git's absolute paths."""
+        temporary = tempfile.TemporaryDirectory(prefix='orcexe-git-copy-')
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name).resolve()
+        old, new = str(source.directory), str(self.directory)
+        shutil.copytree(source.directory, self.directory, symlinks=True, dirs_exist_ok=True)
+        self.main = self.directory / source.main.relative_to(source.directory)
+        self.home = self.directory / source.home.relative_to(source.directory)
+        self.env = {key: value.replace(old, new) for key, value in source.env.items()}
+        self.git = source.git
+        for entry in self.directory.rglob('.git'):
+            if entry.is_file():
+                entry.write_text(entry.read_text().replace(old, new))
+        common = self.main / '.git'
+        config = common / 'config'
+        config.write_text(config.read_text().replace(old, new))
+        for entry in (common / 'worktrees').glob('*/gitdir'):
+            entry.write_text(entry.read_text().replace(old, new))
+        receipts = common / 'info/orcexe-worktrees'
+        for entry in receipts.glob('*.json'):
+            data = json.loads(entry.read_text())
+            data['path'] = data['path'].replace(old, new)
+            mode = entry.stat().st_mode & 0o777
+            entry.unlink()
+            key = hashlib.sha256(os.fsencode(data['path'])).hexdigest()
+            rebound = receipts / (key + '.json')
+            rebound.write_text(json.dumps(data) + '\n')
+            rebound.chmod(mode)
+
     def seed(self):
-        (self.main / "tracked.txt").write_text("before\n", encoding="utf-8")
-        (self.main / ".gitignore").write_text(".orcexe/\n", encoding="utf-8")
-        self.git_run(self.main, "add", ".")
-        self.git_run(self.main, "commit", "--quiet", "-m", "seed")
+        shutil.rmtree(self.main)
+        # Build from the pristine empty template, never from a previous test.
+        def seeded(directory):
+            shutil.copytree(self.templates.paths['empty'], directory, dirs_exist_ok=True)
+            (directory / "tracked.txt").write_text("before\n", encoding="utf-8")
+            (directory / ".gitignore").write_text(".orcexe/\n", encoding="utf-8")
+            self.git_run(directory, "add", ".")
+            self.git_run(directory, "commit", "--quiet", "-m", "seed")
+        self.templates.copy('seeded', self.main, seeded)
+        self.git_run(self.main, "config", "core.hooksPath", str(self.directory / "no-hooks"))
 
     def linked(self, name="linked"):
         directory = self.directory / name

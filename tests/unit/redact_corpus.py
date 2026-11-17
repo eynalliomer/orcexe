@@ -69,7 +69,7 @@ def provider_samples():
     return pairs
 
 
-def must_redact():
+def must_redact(sampled=False):
     rng = random.Random(SEED)
     case = 0
     # All pairwise intersections of the main structural axes. Value shapes
@@ -125,7 +125,8 @@ def must_redact():
                         obj = {styled: value, 'ordinary': 12}
                     else:
                         obj = {'nested': [{styled: ('before', value, 17)}]}
-                    yield case, obj, canary
+                    if not sampled or case % 19 == 0:
+                        yield case, obj, canary
     # Dedicated argv containers, short secrets, multiword passwords, base64url.
     for name in NAMES:
         if name != 'GH_PAT':
@@ -264,7 +265,8 @@ def must_redact():
                         obj = 'https://user:' + value + '@host.invalid/path'
                     else:
                         obj = 'curl -u user:' + value + ' https://host.invalid'
-                    yield case, obj, value
+                    if not sampled or case % 19 == 0:
+                        yield case, obj, value
 
 
 def must_keep_usage():

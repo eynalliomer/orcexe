@@ -16,48 +16,24 @@ import unittest
 from unittest import mock
 
 from tests.unit._timing import scaled
+from tests.unit._fixtures import git_environment
 from tests.unit.test_gitutil import GitFixture
 from tests.unit.test_run_result import valid_result
 from orcexe import gate_lite as gl, worktree
 from orcexe.classify import Classification
 
 
-_NATIVE_GIT = None
-
-
 def _native_git(fixture):
-    # Apple's /usr/bin/git is an xcrun shim (~30 ms/process here). Exercise the
-    # same installed Git directly, keeping real-process regressions under 10 s.
-    global _NATIVE_GIT
-    if sys.platform == 'darwin':
-        if _NATIVE_GIT is None:
-            found = subprocess.run(['xcrun', '--find', 'git'], env=fixture.env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   timeout=scaled(5), check=True).stdout.decode().strip()
-            _NATIVE_GIT = found
-        fixture.git = _NATIVE_GIT
-        binaries = fixture.directory / 'bin'
-        binaries.mkdir(exist_ok=True)
-        (binaries / 'git').symlink_to(_NATIVE_GIT)
-        fixture.env['PATH'] = str(binaries) + os.pathsep + fixture.env['PATH']
-
-
-def _main_signature(root):
-    files = {}
-    for directory, dirs, names in os.walk(root):
-        dirs[:] = [n for n in dirs if n not in {'.git', '.orcexe'}]
-        for name in names:
-            path = Path(directory) / name
-            files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).digest()
-    return files
+    fixture.git = git_environment(fixture.env, fixture.directory)
 
 
 class GateTests(GitFixture):
     @classmethod
     def setUpClass(cls):
-        # Reuse only repository setup; every scenario resets both Git trees.
-        # This keeps the complete real-process module below its idle-time budget.
+        super().setUpClass()
+        # Build once; each scenario receives an independent copy of both Git trees.
         fixture = cls.shared = GitFixture()
+        fixture.templates = cls.templates
         fixture.setUp()
         _native_git(fixture)
         cls.addClassCleanup(fixture.doCleanups)
@@ -70,25 +46,18 @@ class GateTests(GitFixture):
         cls.write(fixture.main, ".gitignore", "ignored*\n__pycache__/\n")
         fixture.git_run(fixture.main, "add", ".")
         fixture.git_run(fixture.main, "commit", "--quiet", "-m", "seed")
-        cls.main_signature = _main_signature(fixture.main)
         with mock.patch.dict(os.environ, fixture.env, clear=True):
             cls.shared_wt = worktree.create(fixture.main, worktree.Spec("plan", "task", "fake"))
 
     def setUp(self):
-        for name in ("directory", "main", "home", "env", "git"):
-            setattr(self, name, getattr(self.shared, name))
+        self.copy_fixture(self.shared)
         patch = mock.patch.dict(os.environ, self.env, clear=True)
         patch.start()
         self.addCleanup(patch.stop)
+        self.shared_wt = replace(self.shared_wt, path=str(
+            self.directory / Path(self.shared_wt.path).relative_to(self.shared.directory)))
         self.wt = self.shared_wt
         self.path = Path(self.wt.path)
-        # Main only changes in definition scenarios; avoid redundant Git startup
-        # while still restoring every main-tree byte before the next scenario.
-        if _main_signature(self.main) != self.main_signature:
-            self.git_run(self.main, 'reset', '--hard', self.wt.base_commit)
-            self.git_run(self.main, 'clean', '-fdx')
-        self.git_run(self.path, 'reset', '--hard', self.wt.base_commit)
-        self.git_run(self.path, 'clean', '-fdx')
         override = self.main / ".orcexe/commands.yaml"
         if override.exists():
             override.unlink()
@@ -1114,7 +1083,9 @@ class GateTests(GitFixture):
 class DetectionTests(GitFixture):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         fixture = cls.shared = GitFixture()
+        fixture.templates = cls.templates
         fixture.setUp()
         _native_git(fixture)
         cls.addClassCleanup(fixture.doCleanups)
@@ -1122,10 +1093,7 @@ class DetectionTests(GitFixture):
         cls.base = fixture.git_run(fixture.main, 'rev-parse', 'HEAD').strip()
 
     def setUp(self):
-        for name in ('directory', 'main', 'home', 'env', 'git'):
-            setattr(self, name, getattr(self.shared, name))
-        self.git_run(self.main, 'reset', '--hard', self.base)
-        self.git_run(self.main, 'clean', '-fdx')
+        self.copy_fixture(self.shared)
         patch = mock.patch.dict(os.environ, self.env, clear=True)
         patch.start()
         self.addCleanup(patch.stop)

@@ -18,6 +18,7 @@ import tempfile
 import unittest
 
 from tests.unit._timing import run_when_ready, scaled
+from tests.unit._fixtures import GitTemplates, git_environment, non_repository_root
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,10 @@ with subprocess.Popen(argv, stdin=subprocess.PIPE, text=True, encoding='utf-8') 
 
 
 class FakeCodexTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.templates = GitTemplates(cls.addClassCleanup)
+
     def test_optional_append_hook_write_and_success(self):
         self.repository()
         target = self.work / "existing.txt"
@@ -67,6 +72,7 @@ class FakeCodexTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="orcexe-fake-test-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name).resolve()
+        non_repository_root(self.directory)
         self.work = self.directory / "work"
         self.work.mkdir()
         self.home = self.directory / "home"
@@ -100,6 +106,7 @@ class FakeCodexTests(unittest.TestCase):
         for name in ("SYSTEMROOT", "COMSPEC", "WINDIR"):
             if name in os.environ:
                 self.env[name] = os.environ[name]
+        self.git = git_environment(self.env, self.directory)
         self.command = ["codex.cmd" if os.name == "nt" else "codex"]
         self.assertEqual(Path(shutil.which(self.command[0], path=self.env["PATH"])).resolve(),
                          (FAKE / self.command[0]).resolve())
@@ -112,7 +119,15 @@ class FakeCodexTests(unittest.TestCase):
                               stderr=subprocess.PIPE, check=True).stdout.decode().strip()
 
     def repository(self):
-        self.git_run("init", "--quiet")
+        if not self.git:
+            self.skipTest('git is unavailable')
+        if not (self.work / '.git').exists():
+            def build(directory):
+                subprocess.run([self.git, 'init', '--quiet', '--template=', str(directory)],
+                               env=self.env, check=True, capture_output=True, timeout=scaled(5))
+            self.templates.copy('fake', self.work / '.git-template', build)
+            shutil.move(str(self.work / '.git-template/.git'), str(self.work / '.git'))
+            (self.work / '.git-template').rmdir()
 
     def invoke(self, args, scenario="success", env=None, ready=False, **options):
         environment = dict(self.env)

@@ -55,8 +55,20 @@ def record_call(argv, scenario, model_call):
 
 def in_git_repo(directory):
     directory = Path(directory).resolve()
-    return any((parent / ".git").exists()
-               for parent in (directory,) + tuple(directory.parents))
+    for parent in (directory,) + tuple(directory.parents):
+        entry = parent / '.git'
+        if entry.is_dir():
+            return (entry / 'HEAD').is_file()
+        if entry.is_file():
+            text = entry.read_text(encoding='utf-8').strip()
+            return (text.startswith('gitdir: ') and
+                    (parent / text[len('gitdir: '):]).is_dir())
+        # Git stops discovery at a bare repository. Test homes can therefore
+        # stay private even when TMPDIR is inside the source checkout.
+        if ((parent / 'HEAD').is_file() and (parent / 'objects').is_dir()
+                and (parent / 'refs').is_dir()):
+            return False
+    return False
 
 
 def trust_project(directory, sandbox, is_git):

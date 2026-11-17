@@ -563,6 +563,10 @@ for i in range(200):
                 record["prev"] = hashlib.sha256(raw).hexdigest()
         start = time.monotonic()
         self.assertEqual(self.ledger.verify(), {"records": 100000, "last_seq": 100000, "ok": True})
+        # Keep verification of every record in the default run. Only the
+        # megabyte-throughput clock assertion requires an idle slow-suite job.
+        if os.environ.get('ORCEXE_SLOW_TESTS') != '1':
+            self.skipTest('ledger throughput timing requires ORCEXE_SLOW_TESTS=1; 100000 records verified')
         self.assertLess(time.monotonic() - start, scaled(4))
 
     def test_kpi_empty_population_is_not_seen(self):
