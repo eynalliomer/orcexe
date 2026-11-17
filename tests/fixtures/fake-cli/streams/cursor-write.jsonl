@@ -1,0 +1,48 @@
+{"_fake":"measured 2026-11-14 (agent 2026.11.13-eacade1)","note":"Synthetic content; measured event shapes. Scenarios are offline simulations."}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/synthetic/workspace","session_id":"fake-session","model":"Composer 2.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":"Read the brief"}}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"completed"}
+{"type":"tool_call","subtype":"started","editToolCall":{"path":"orcexe-fake-output.txt"}}
+{"type":"tool_call","subtype":"completed","editToolCall":{"path":"orcexe-fake-output.txt"}}
+{"type":"assistant","message":{"content":"OK"}}
+{"type":"result","subtype":"success","is_error":false,"result":"OK\nORCEXE_EXIT: DONE","duration_ms":12,"usage":{"inputTokens":10,"outputTokens":4,"cacheReadTokens":2,"cacheWriteTokens":3}}

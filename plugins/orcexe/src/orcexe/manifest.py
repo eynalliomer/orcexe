@@ -22,7 +22,8 @@ GLOBAL_FORBIDDEN_ARGV = (
 _PLACEHOLDERS = frozenset(("workdir", "run_dir", "model", "effort", "final", "prompt"))
 _REQUIRED_PLACEHOLDERS = ("workdir", "model", "prompt")
 _FAMILIES = {"codex": "openai", "claude-code": "anthropic", "cursor": "cursor"}
-_REVIEW_RULES = {"codex": ("-s", "read-only"), "claude-code": ("--permission-mode", "plan")}
+_REVIEW_RULES = {"codex": ("-s", "read-only"), "claude-code": ("--permission-mode", "plan"),
+                 "cursor": ("--mode", "plan")}
 _TAGS = ("D", "Y", "D+Y", "?")
 _SOURCES = ("app-server", "stream", "cmd", "none")
 # Command/version/install facts and uncertain exit codes also carry evidence;
@@ -241,6 +242,8 @@ def _review(data, tokens):
     if rule is None:
         _fail(path, "no verified read-only rule for this tool")
     for token, location in tokens:
+        if data["tool"] == "cursor" and token.startswith("--mode="):
+            _fail(location, "attached mode would override the review mode")
         # Config overrides and alternate/attached sandbox options must not
         # defeat the verified -s pair. Reject them even if an -s pair follows.
         if (re.search(r"sandbox_mode[\"']?\s*=", token) or
@@ -249,7 +252,7 @@ def _review(data, tokens):
             _fail(location, "unverified sandbox override in review argv")
     positions = [i for i, (token, _) in enumerate(tokens) if token == rule[0]]
     if len(positions) != 1:
-        _fail(tokens[positions[-1]][1] if len(positions) > 1 else path + ".extra",
+        _fail(tokens[positions[-1]][1] if len(positions) > 1 else (path if data["tool"] == "cursor" else path + ".extra"),
               "review requires exactly one {} {}".format(*rule))
     position = positions[0]
     if position + 1 >= len(tokens) or tokens[position + 1][0] != rule[1]:
@@ -455,6 +458,12 @@ def validate(data: dict) -> None:
         _fail("side_effects", "expected a list")
     for index, effect in enumerate(data["side_effects"]):
         path = "side_effects[{}]".format(index)
+        if isinstance(effect, dict) and effect.get("handler") == "restore-after-run":
+            _mapping(effect, path, ("id", "file", "keys", "handler"))
+            for key in ("id", "file", "handler"):
+                _string(effect[key], path + "." + key)
+            _strings(effect["keys"], path + ".keys", nonempty=True)
+            continue
         _mapping(effect, path, ("id", "file", "table", "entry", "profile", "requires_git_repo", "config_override_prevents", "handler"))
         for key in ("id", "file", "table", "entry", "handler"):
             _string(effect[key], path + "." + key)

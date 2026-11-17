@@ -51,14 +51,14 @@ class RolesTests(unittest.TestCase):
         self.assertEqual(roles.evidence,
                          "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek")
         expected = {
-            "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium")],
-                         "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high")]},
+            "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium"), ("composer-2.5", "medium")],
+                         "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high"), ("composer-2.5", "medium")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high"), ("composer-2.5", "medium")]},
             "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}
         self.assertEqual({stage: {lane: [(c.model, c.effort) for c in candidates]
                                  for lane, candidates in lanes.items()}
                           for stage, lanes in roles.stages.items()}, expected)
         self.assertEqual({c.tool for lanes in roles.stages.values() for candidates in lanes.values()
-                          for c in candidates}, {"codex", "claude-code"})
+                          for c in candidates}, {"codex", "claude-code", "cursor"})
         with self.assertRaises(FrozenInstanceError):
             roles.as_of = "2026-01-01"
         with self.assertRaises(TypeError):
@@ -181,7 +181,8 @@ class RouteTests(unittest.TestCase):
                 self.assertEqual(result["reason"], "no_eligible_candidate")
                 self.assertEqual(result["skipped"], [
                     {"candidate": "codex/" + name, "reason": reason} for name in (FIRST, SECOND)] +
-                    [{"candidate": "claude-code/claude-sonnet-5-5", "reason": "tool_absent"}])
+                    [{"candidate": "claude-code/claude-sonnet-5-5", "reason": "tool_absent"},
+                     {"candidate": "cursor/composer-2.5", "reason": "tool_absent"}])
                 for name in (FIRST, SECOND):
                     self.assertIn("skip:codex/" + name + ":" + reason, result["basis"])
 
@@ -266,7 +267,7 @@ class RouteTests(unittest.TestCase):
     def test_nothing_eligible_retains_different_skip_reasons(self):
         result = self.choose(replace(SEEN, models={SECOND: EFFORTS}, quota_allowed=False))
         self.assertIsNone(result["tool"])
-        self.assertEqual([s["reason"] for s in result["skipped"]], ["model_unavailable", "quota_exhausted", "tool_absent"])
+        self.assertEqual([s["reason"] for s in result["skipped"]], ["model_unavailable", "quota_exhausted", "tool_absent", "tool_absent"])
 
     def test_any_fallback_and_exact_lane_precedence(self):
         for stage, effort in (("evaluator", "medium"), ("auditor", "high")):
@@ -278,8 +279,16 @@ class RouteTests(unittest.TestCase):
         candidate = self.roles.stages["executor"]["fast"]
         roles = replace(self.roles, stages={"executor": {"fast": candidate, "any": candidate[1:]}})
         result = route("executor", "fast", [replace(SEEN, models={})], roles)
-        self.assertEqual(len(result["skipped"]), 3)
+        self.assertEqual(len(result["skipped"]), 4)
         self.assertNotIn("prior:roles.yaml#executor.any[0]", result["basis"])
+
+    def test_cursor_executor_fallback_after_existing_candidates(self):
+        cursor = Access("cursor", "cursor", True, "ok", {"composer-2.5": ()}, None, None)
+        selected = route("executor", "fast", [cursor], self.roles)
+        self.assertEqual((selected["tool"], selected["family"], selected["model"], selected["effort"]),
+                         ("cursor", "cursor", "composer-2.5", "medium"))
+        self.assertEqual(len(selected["skipped"]), 3)
+        self.assertEqual(route("executor", "fast", [SEEN, cursor], self.roles)["tool"], "codex")
 
     def test_claude_fallback_and_counter_family_reviewers(self):
         claude = Access("claude-code", "anthropic", True, "ok", None, None, None)

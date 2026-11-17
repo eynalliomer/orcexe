@@ -1,0 +1,44 @@
+{"_fake":"measured 2026-11-14 (agent 2026.11.13-eacade1)","note":"Synthetic content; measured event shapes. Scenarios are offline simulations."}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/synthetic/workspace","session_id":"fake-session","model":"Composer 2.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":"Read the brief"}}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"delta","text":"discard private thinking"}
+{"type":"thinking","subtype":"completed"}

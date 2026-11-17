@@ -1,0 +1,17 @@
+{"_fake": "measured 2026-11-17 (agent 2026.11.13-eacade1)", "note": "Synthetic commands; measured sandboxed shell event shapes. No real shell executes."}
+{"type": "system", "subtype": "init", "model": "Composer 2.5"}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "git diff"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "git diff"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "git log -1"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "git log -1"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "git show HEAD"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "git show HEAD"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "diff before.txt after.txt"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "diff before.txt after.txt"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "python -m unittest tests.unit.test_cursor_adapter"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "python -m unittest tests.unit.test_cursor_adapter"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "git diff --stat"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "git diff --stat"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "tool_call", "subtype": "started", "shellToolCall": {"args": {"command": "git show --stat HEAD"}}}
+{"type": "tool_call", "subtype": "completed", "shellToolCall": {"args": {"command": "git show --stat HEAD"}, "result": {"success": {"exitCode": 0}}}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "OK\nORCEXE_EXIT: DONE", "usage": {"inputTokens": 10, "cacheReadTokens": 2, "cacheWriteTokens": 3, "outputTokens": 4}}

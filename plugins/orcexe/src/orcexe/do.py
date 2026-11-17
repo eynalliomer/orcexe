@@ -26,6 +26,7 @@ from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, ledger, redact
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
+from orcexe.adapters.cursor import CursorAdapter
 
 
 BRIEF = """# Task
@@ -401,7 +402,7 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
             return blocked("Lane: {}; signals: {}\nthis task needs the standard/risky lane "
                 "(v0.2+: `orcexe plan`)".format(classification.lane, ", ".join(summary["signals"])),
                 "lane_" + classification.lane, exitcodes.UNSUPPORTED)
-        registry = {"codex": CodexAdapter, "claude-code": ClaudeCodeAdapter}
+        registry = {"codex": CodexAdapter, "claude-code": ClaudeCodeAdapter, "cursor": CursorAdapter}
         access = route.gather_access([factory() for factory in registry.values()])
         decision = route.route("executor", "fast", access, route.load_roles(), constraints=model_constraint)
         summary["route"] = decision

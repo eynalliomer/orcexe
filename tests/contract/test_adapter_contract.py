@@ -30,10 +30,11 @@ class AdapterContract:
         self.brief = self.directory / "source.md"
         self.brief_text = "UNIQUE_BRIEF_CONTENT_" + "Do the task exactly.\n" * 1000
         self.brief.write_text(self.brief_text, encoding="utf-8")
+        self.cursor = self.adapter_name == "cursor"
         self.claude = self.adapter_name == "claude-code"
-        self.manifest = load_manifest(ROOT / "plugins" / "orcexe" / "adapters" / ("claude.yaml" if self.claude else "codex.yaml"))
+        self.manifest = load_manifest(ROOT / "plugins" / "orcexe" / "adapters" / ("cursor.yaml" if self.cursor else "claude.yaml" if self.claude else "codex.yaml"))
         self.bin_env = self.manifest.data["bin_env"]
-        self.exec_token = "-p" if self.claude else "exec"
+        self.exec_token = "-p" if self.claude or self.cursor else "exec"
         self.env.update(ORCEXE_BIN_CLAUDE_CODE=str(FAKE / ("claude.cmd" if os.name == "nt" else "claude")),
                         CLAUDE_CONFIG_DIR=str(self.home / "claude"), ORCEXE_STATE_DIR=str(self.home / "state"))
         self.env.update(ORCEXE_BIN_CODEX=str(FAKE / ("codex.cmd" if os.name == "nt" else "codex")),
@@ -41,6 +42,8 @@ class AdapterContract:
                         PATH=os.pathsep.join((str(FAKE), self.env["PATH"])),
                         ORCEXE_FAKE_READY_FILE=str(self.directory / "ready"),
                         OPENAI_API_KEY="must-not-inherit", UNRELATED_PARENT="must-not-inherit")
+        self.env.update(ORCEXE_BIN_CURSOR=str(FAKE / ("agent.cmd" if os.name == "nt" else "agent")),
+                        CURSOR_CONFIG_DIR=str(self.home / "cursor"))
         self.adapter = self.make_adapter()
 
     def make_adapter(self, scenario="success", **options):
@@ -56,7 +59,7 @@ class AdapterContract:
 
     def request(self, name="run", profile="review", workdir=None):
         return RunRequest(name, "T11", self.manifest.tool,
-            "claude-sonnet-5-5" if self.claude else "gpt-6-luna", "low", profile,
+            "claude-haiku-5-5" if self.cursor else "claude-sonnet-5-5" if self.claude else "gpt-6-luna", "low", profile,
             str(workdir or self.work), str(self.brief),
             str(self.main / ".orcexe" / "runs" / name), timeout_s=scaled(4), stall_s=scaled(3))
 
@@ -100,7 +103,7 @@ class AdapterContract:
                     self.assertIn(str(directory / "brief.md"), prompt)
                     self.assertLessEqual(len(prompt), 600)
                 if req.profile == "review":
-                    self.assertEqual(argv[-2:], ["--permission-mode", "plan"])
+                    self.assertEqual(argv[-2:], ["--mode" if self.cursor else "--permission-mode", "plan"])
 
     def run_scenario(self, scenario, req):
         adapter = self.make_adapter(scenario)
@@ -125,6 +128,9 @@ class AdapterContract:
                      "quota", "quota-unconfirmed", "stall", "commit", "big-line", "background-child")
         if self.claude:
             scenarios = ("success", "write", "invalid-model", "auth-missing", "quota", "stall", "commit", "model-mismatch", "hooks")
+        if self.cursor:
+            scenarios = ("success", "write", "invalid-model", "auth-missing", "untrusted",
+                         "quota-suspected", "stall", "commit", "model-mismatch", "shell", "shell-blocked", "hooks")
         table = {}
         for scenario in scenarios:
             with self.subTest(scenario=scenario):
@@ -137,6 +143,8 @@ class AdapterContract:
                     req = replace(req, stall_s=scaled(.3))
                 result = self.run_scenario(scenario, req)
                 expected, warnings = expected_outcome(self.adapter_name, scenario, req)
+                if self.cursor and scenario in ('shell', 'shell-blocked'):
+                    warnings = warnings + ['shell_used:{}'.format(7 if scenario == 'shell' else 1)]
                 self.assertEqual(result["status"], expected)
                 self.assertEqual(result["warnings"], warnings)
                 self.assert_result(req, result)
@@ -150,12 +158,13 @@ class AdapterContract:
                     records = Path(result["events_path"]).read_text(encoding="utf-8").splitlines()
                     self.assertIn("_raw", json.loads(records[0]))
                     self.assertLess(len(records[0]), 1100000)
-                self.assertEqual(sum(call["model_call"] for call in self.call_log()), 1)
+                self.assertEqual(sum(call["model_call"] for call in self.call_log()),
+                                 0 if self.cursor and scenario in ("invalid-model", "auth-missing") else 1)
                 table[scenario] = (result["status"], result["warnings"])
         SCENARIO_RESULTS[self.adapter_name] = table
 
     def test_codex_argv_remains_exact_for_both_profiles(self):
-        if self.claude:
+        if self.claude or self.cursor:
             return
         for profile, sandbox in (("write", "workspace-write"), ("review", "read-only")):
             req = self.request("argv-" + profile, profile)
@@ -197,7 +206,7 @@ class AdapterContract:
         self.assert_result(req, result)
         external = replace(self.request("external", "write"), run_dir=str(self.directory / "external"))
         calls = self.call_log()
-        if self.claude:
+        if self.claude or self.cursor:
             self.assertEqual(self.adapter.run(external)["status"], "completed")
         else:
             with self.assertRaisesRegex(ValueError, "read grants"):
@@ -215,7 +224,7 @@ class AdapterContract:
         self.assertEqual(result["warnings"], ["empty_diff"])
 
     def test_detect_hints_environment_and_missing_binary(self):
-        self.assertEqual(self.adapter.detect(), {"present": True, "version": "2.1.310" if self.claude else "0.163.0",
+        self.assertEqual(self.adapter.detect(), {"present": True, "version": "2026.11.13-eacade1" if self.cursor else "2.1.310" if self.claude else "0.163.0",
             "path": self.env[self.bin_env], "min_ok": True})
         calls = self.call_log()
         self.assertEqual(self.adapter.login_hint(), [self.env[self.bin_env], *self.manifest.data["auth"]["login_cmd"][1:]])
@@ -228,7 +237,7 @@ class AdapterContract:
             Adapter(self.manifest)
         with self.assertRaises(TypeError):
             self.adapter_class({})
-        for output, version, min_ok in (("codex 0.100.0", "0.100.0", False),
+        for output, version, min_ok in ((("2026.11.12-abc", "2026.11.12-abc", False) if self.cursor else ("codex 0.100.0", "0.100.0", False)),
                                        ("unparseable", None, False)):
             def version_probe(argv, **options):
                 options["on_line"](output)
@@ -295,11 +304,11 @@ class AdapterContract:
                 return original_run(argv, **options)
             emit = options["on_line"]
             emit(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}
-                            if self.claude else {"type": "turn.failed"}))
+                            if self.claude or self.cursor else {"type": "turn.failed"}))
             for index in range(80):
                 emit(json.dumps({"type": "untrusted-" + str(index)}))
             emit("raw fake-user@example.invalid")
-            if self.claude:
+            if self.claude or self.cursor:
                 emit(json.dumps({"type": "result", "subtype": "success", "is_error": False,
                     "terminal_reason": "completed", "result": "fake-user@example.invalid\nORCEXE_EXIT: DONE"}))
             else:
@@ -321,8 +330,8 @@ class AdapterContract:
         self.assertEqual((result["status"], result["self_report"]["exit"]), ("failed", "DONE"))
         self.assertLessEqual(len(captured["events"]), 32)
         self.assertLessEqual(len(captured["counts"]), len(self.manifest.data["events"]["types"]) + 1)
-        self.assertEqual(captured["counts"]["result" if self.claude else "turn.failed"],
-                         2 if self.claude else 1)
+        self.assertEqual(captured["counts"]["result" if self.claude or self.cursor else "turn.failed"],
+                         2 if self.claude or self.cursor else 1)
         self.assert_result(req, result)
         records = [json.loads(line) for line in Path(result["events_path"]).read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any("_raw" in event for event in records))

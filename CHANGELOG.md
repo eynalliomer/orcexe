@@ -1,5 +1,7 @@
 ## 0.1.0 — unreleased
 
+- Restore Cursor's five default-model config keys after every execution outcome (C1), preserving unrelated config changes, key order and file mode; leave `statsig-cache.json` alone as an analytics cache. Report sandboxed shell usage as `shell_used:N`; reserve `shell_blocked` for an explicit refusal (measured 2026-11-17).
+- Add the measured offline Cursor `agent` fake, subscription-safe Cursor adapter, effort slug selection, and executor routing fallback.
 - Add the measured Claude Code fake and `claude-code` adapter with subscription-safe probes, observed quota caching, Claude routing priors, and routed-tool dispatch.
 - Put Claude's prompt immediately after `-p` so variadic options cannot swallow it; model variadic directory/tool options and missing-input errors in the offline fake. Mark the argv ordering as inferred from `--help`, pending a real-run check.
 - Parse Claude auth status as one bounded JSON document, matching the pretty-printed output measured on 2.1.310; discard raw account data after allow-list extraction. Default the offline fake to that format and cover compact JSON compatibility and oversized/malformed output. Executor stream-json remains one object per line.

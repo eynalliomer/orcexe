@@ -5,8 +5,8 @@ as_of: 2026-11-17
 evidence: "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek"
 stages:
   executor:
-    fast: [{tool: codex, model: gpt-6.1-sol, effort: medium}, {tool: codex, model: gpt-6-sol, effort: medium}, {tool: claude-code, model: claude-sonnet-5-5, effort: medium}]
-    standard: [{tool: codex, model: gpt-6.1-sol, effort: high}, {tool: codex, model: gpt-6-sol, effort: high}, {tool: claude-code, model: claude-sonnet-5-5, effort: high}]
-    risky: [{tool: codex, model: gpt-6.1-sol, effort: high}, {tool: claude-code, model: claude-opus-5-5, effort: high}]
+    fast: [{tool: codex, model: gpt-6.1-sol, effort: medium}, {tool: codex, model: gpt-6-sol, effort: medium}, {tool: claude-code, model: claude-sonnet-5-5, effort: medium}, {tool: cursor, model: composer-2.5, effort: medium}]
+    standard: [{tool: codex, model: gpt-6.1-sol, effort: high}, {tool: codex, model: gpt-6-sol, effort: high}, {tool: claude-code, model: claude-sonnet-5-5, effort: high}, {tool: cursor, model: composer-2.5, effort: medium}]
+    risky: [{tool: codex, model: gpt-6.1-sol, effort: high}, {tool: claude-code, model: claude-opus-5-5, effort: high}, {tool: cursor, model: composer-2.5, effort: medium}]
   evaluator: {any: [{tool: claude-code, model: claude-sonnet-5-5, effort: medium}, {tool: codex, model: gpt-6.1-sol, effort: medium}]}
   auditor: {any: [{tool: claude-code, model: claude-opus-5-5, effort: high}, {tool: codex, model: gpt-6.1-sol, effort: high}]}

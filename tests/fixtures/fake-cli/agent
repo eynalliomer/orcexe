@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Offline agent 2026.11.13-eacade1, measured 2026-11-14/17.
+
+Shell-blocked emits a rejected shell tool call and an error result (exit 1).
+Shell emits successful sandboxed tool calls; neither scenario runs a shell.
+Existing synthetic cli-config.json files get the measured --model side effect.
+Hooks are represented as stream evidence, never executed from project config.
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from _fake_common import edit_file, emit, read_stream, record_call, signal_ready
+
+SCENARIOS = {'success', 'write', 'invalid-model', 'auth-missing', 'untrusted',
+             'quota-suspected', 'stall', 'commit', 'model-mismatch', 'shell', 'shell-blocked', 'hooks'}
+
+
+def fixture(name):
+    return (HERE / 'cursor' / name).read_text(encoding='utf-8')
+
+
+def persist_model(options, models):
+    directory = os.environ.get('CURSOR_CONFIG_DIR') or str(Path.home() / '.cursor')
+    path = Path(directory) / 'cli-config.json'
+    # Offline fixtures only mutate an existing, readable config. In particular,
+    # a missing config is never manufactured by a test run.
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    selected = json.loads(fixture('model-selection.json'))
+    slug = options.get('model', 'auto')
+    selected['model'].update(modelId=slug, displayModelId=slug,
+        displayName=models[slug].removesuffix(' (current)').removesuffix(' (default)'),
+        displayNameShort=models[slug].removesuffix(' (current)').removesuffix(' (default)'))
+    selected['selectedModel']['modelId'] = slug
+    selected['modelSelectionHistory'] = [slug, 'default']
+    selected['modelParameters'] = {'default': [], slug: [{'id': 'fast', 'value': 'false'}]}
+    data.update(selected)
+    data['fakeLastRun'] = 'updated'
+    path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+
+
+def parse_exec(argv):
+    values = {'--output-format': 'format', '--model': 'model', '--workspace': 'workspace',
+              '--add-dir': 'add_dirs', '--mode': 'mode', '--sandbox': 'sandbox',
+              '--api-key': 'api_key', '--resume': 'resume'}
+    switches = {'-p': 'print', '--print': 'print', '--trust': 'trust', '--plan': 'plan',
+                '-f': 'force', '--force': 'force', '--yolo': 'force', '--approve-mcps': 'mcps'}
+    options = {'prompt': None, 'format': 'text'}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in values:
+            if index + 1 == len(argv) or argv[index + 1].startswith('-'):
+                raise ValueError("error: option '{}' argument missing".format(token))
+            if token == '--add-dir':
+                options.setdefault('add_dirs', []).append(argv[index + 1])
+            else:
+                options[values[token]] = argv[index + 1]
+            index += 2
+            continue
+        if token in switches:
+            options[switches[token]] = True
+        elif token.startswith('-'):
+            raise ValueError("error: unknown option '{}'".format(token))
+        elif options['prompt'] is None:
+            options['prompt'] = token
+        else:
+            raise ValueError('error: too many arguments')
+        index += 1
+    for key, choices in (('format', {'text', 'json', 'stream-json'}),
+                         ('mode', {'plan', 'ask'}), ('sandbox', {'enabled', 'disabled'})):
+        if key in options and options[key] not in choices:
+            raise ValueError('error: invalid value for ' + key)
+    if not options.get('print') or not options['prompt']:
+        raise ValueError('error: expected -p PROMPT')
+    for path in options.get('add_dirs', []):
+        if not Path(path).is_dir():
+            raise ValueError('error: --add-dir must be an existing directory')
+    return options
+
+
+def main():
+    argv = sys.argv[1:]
+    scenario = os.environ.get('ORCEXE_FAKE_SCENARIO', 'success')
+    probes = {('--version',): 'version.txt', ('-v',): 'version.txt',
+              ('--help',): 'help.txt', ('-h',): 'help.txt',
+              ('status', '--format', 'json'): 'status.json.txt',
+              ('about', '--format', 'json'): 'about.json.txt',
+              ('models',): 'models.txt', ('--list-models',): 'models.txt'}
+    options, failure = None, None
+    if tuple(argv) not in probes:
+        try:
+            options = parse_exec(argv)
+        except ValueError as error:
+            failure = str(error)
+    if scenario not in SCENARIOS:
+        failure = 'orcexe-fake: unknown scenario ' + scenario
+    models = dict(line.split(' - ', 1) for line in fixture('models.txt').splitlines() if ' - ' in line)
+    invalid = options is not None and (scenario == 'invalid-model' or options.get('model', 'auto') not in models)
+    untrusted = options is not None and scenario == 'untrusted' and not options.get('trust')
+    model_call = options is not None and not failure and not invalid and not untrusted and scenario != 'auth-missing'
+    record_call(argv, scenario, model_call)
+    if failure:
+        print(failure, file=sys.stderr, flush=True)
+        return 1
+    if tuple(argv) in probes:
+        text = fixture(probes[tuple(argv)])
+        if argv[0] == 'status' and scenario == 'auth-missing':
+            data = json.loads(text)
+            data.update(status='unauthenticated', isAuthenticated=False, hasAccessToken=False, hasRefreshToken=False)
+            text = json.dumps(data, indent=2) + '\n'
+        sys.stdout.write(text)
+        return 0
+    if invalid:
+        print('Cannot use this model: {}. Available models: {}'.format(options.get('model', 'auto'), ', '.join(models)), flush=True)
+        return 1
+    if scenario == 'auth-missing':
+        print('Login required. Please run agent login.', flush=True)
+        return 1
+    if untrusted:
+        print('Workspace is untrusted. Use --trust to continue.', file=sys.stderr, flush=True)
+        return 1
+    persist_model(options, models)
+    writable = options.get('mode') not in ('plan', 'ask') and not options.get('plan')
+    if scenario in {'success', 'write', 'commit', 'hooks'} and writable:
+        edited = edit_file(Path.cwd())
+        if scenario in {'write', 'commit'} and not edited:
+            Path('orcexe-fake-output.txt').write_text('OK\n', encoding='utf-8')
+        if scenario == 'commit':
+            for args in (['git', 'add', '--', 'orcexe-fake-output.txt'], ['git', 'commit', '-m', 'fake']):
+                result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True)
+                if result.returncode:
+                    sys.stderr.buffer.write(result.stderr)
+                    return 1
+    slug = 'auto' if scenario == 'model-mismatch' else options.get('model', 'auto')
+    display = models[slug].removesuffix(' (current)').removesuffix(' (default)')
+    stream = scenario if scenario in {'quota-suspected', 'stall', 'shell-blocked', 'write', 'hooks', 'commit'} else 'success'
+    if scenario == 'shell-blocked' and options.get('force'):
+        stream = 'success'  # Simulated permission only; never runs a real shell.
+    stream_path = (HERE / 'cursor' / 'shell.jsonl' if scenario == 'shell' else
+                   HERE / 'streams' / ('cursor-' + stream + '.jsonl'))
+    for event in read_stream(stream_path):
+        if event.get('type') == 'system' and event.get('subtype') == 'init':
+            event.update(model=display, cwd=os.getcwd(), permissionMode=options.get('mode', 'default'))
+        emit(event)
+    if scenario == 'stall':
+        signal_ready()
+        time.sleep(float(os.environ.get('ORCEXE_FAKE_SLEEP', '3600')))
+    return int(scenario == 'quota-suspected' or stream == 'shell-blocked')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

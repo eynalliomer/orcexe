@@ -1,0 +1,80 @@
+# Measured 2026-11-14/17, agent 2026.11.13-eacade1; identities synthetic.
+schema: orcexe.manifest.v1
+tool: cursor
+family: cursor
+binary: [agent, cursor-agent]
+bin_env: ORCEXE_BIN_CURSOR
+min_version: '2026.11.13-eacade1'
+version_cmd: [agent, --version]
+version_regex: '(\d+\.\d+\.\d+-[a-z0-9]+)'
+version_sample: '2026.11.13-eacade1'
+verified_on: {date: '2026-11-17', version: '2026.11.13-eacade1', os: macos-arm64}
+install: {manual: 'Install Cursor Agent using the official Cursor instructions'}
+auth:
+  status_cmd: [agent, status, --format, json]
+  logged_in: {json_field: isAuthenticated, equals: true}
+  logged_out: {json_field: isAuthenticated, equals: false}
+  login_cmd: [agent, login]
+  device_cmd: [agent, login]
+  plan: {source: cmd, cmd: [agent, about, --format, json], field: subscriptionTier}
+  allowed_fields: [isAuthenticated, subscriptionTier, cliVersion]
+  forbidden_fields: [status, hasAccessToken, hasRefreshToken, userInfo, userEmail, lastRequestId, agentHost, terminalProgram, shell, model, latestStatus]
+models: {source: cmd, cmd: [agent, models], parse: slug-display-lines}
+quota:
+  source: none
+  fields: []
+  nullable_fields: []
+  read_only_consumes_quota: false
+  exec_exhaustion: null
+exec:
+  # CursorAdapter resolves {model} to a live effort slug before substitution.
+  # --add-dir is repeatable, not variadic; keep the prompt immediately after -p.
+  argv: [agent, -p, '{prompt}', --output-format, stream-json, --trust, --workspace, '{workdir}', --model, '{model}', --add-dir, '{run_dir}']
+  stdin: devnull
+  requires_git_repo: false
+  effort: {mode: slug, values: [low, medium, high, xhigh, max], model_dependent: true}
+  profiles:
+    # Y, observed 2026-11-17: shell commands run inside Cursor's sandbox.
+    write: {extra: [--sandbox, enabled]}
+    review: {extra: [--mode, plan], read_only: true}
+  forbidden_argv: [-f, --api-key, --approve-mcps, --sandbox=disabled, disabled, --resume, --continue]
+events:
+  format: jsonl
+  stream: stdout
+  types: [system, user, assistant, tool_call, result]
+  success: {last_type: result, absent_types: []}
+  final_text: {type: result, item_type: success, field: result}
+  usage:
+    type: result
+    map: {input: usage.inputTokens, cached_read: usage.cacheReadTokens, output: usage.outputTokens, reasoning: unavailable}
+  model_actual: system.init.model
+  error: {field: result, format: text}
+exit_codes: {usage: 1, runtime: 1}
+# Cursor runs .cursor/hooks.json and the project's .claude/settings.json hooks;
+# stop did not fire in measured print mode. Hooks can run twice per tool call.
+# --model persists the user's default model (C1), observed 2026-11-17.
+# statsig-cache.json is an analytics cache and is left alone.
+side_effects:
+  - id: C1
+    file: '${CURSOR_CONFIG_DIR:-~/.cursor}/cli-config.json'
+    keys: [model, selectedModel, modelSelectionHistory, modelParameters, hasChangedDefaultModel]
+    handler: restore-after-run
+windows: {native: true, sandbox_native: false, wsl2: true, wsl1: false}
+evidence:
+  binary: Y
+  min_version: Y
+  version_cmd: Y
+  version_regex: Y
+  version_sample: Y
+  verified_on: Y
+  install: '?'
+  auth: Y
+  models: Y
+  quota: Y
+  quota.exec_exhaustion: '?'
+  exec: Y
+  exec.profiles.write.extra: Y
+  events: Y
+  exit_codes: Y
+  side_effects: Y
+  windows: '?'

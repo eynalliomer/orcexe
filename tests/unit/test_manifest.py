@@ -314,6 +314,19 @@ class ManifestTests(unittest.TestCase):
             data.update(tool=tool, family=family)
             self.assert_invalid(data, "exec.profiles.review", exact=tool != "claude-code")
 
+    def test_restore_after_run_side_effect(self):
+        data = load_path(CODEX)
+        data["side_effects"] = [dict(id="C1", file="cli-config.json",
+            keys=["model", "selectedModel"], handler="restore-after-run")]
+        validate(data)
+        for keys in ([], "model", [1]):
+            with self.subTest(keys=keys):
+                data["side_effects"][0]["keys"] = keys
+                self.assert_invalid(data, "side_effects[0].keys", exact=False)
+        data["side_effects"][0]["keys"] = ["model"]
+        del data["side_effects"][0]["file"]
+        self.assert_invalid(data, "side_effects[0].file")
+
     def test_source_alternatives(self):
         alternatives = [
             {"source": "none"},

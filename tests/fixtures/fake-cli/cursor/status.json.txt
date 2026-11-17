@@ -1,0 +1,13 @@
+{
+  "status": "authenticated",
+  "isAuthenticated": true,
+  "hasAccessToken": true,
+  "hasRefreshToken": true,
+  "userInfo": {
+    "email": "fake-user@example.invalid",
+    "userId": "fake-cursor-userId",
+    "firstName": "fake-cursor-firstName",
+    "lastName": "fake-cursor-lastName",
+    "createdAt": "fake-cursor-createdAt"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "cliVersion": "2026.11.13-eacade1",
+  "latestStatus": "up_to_date",
+  "latestVersion": "2026.11.13-eacade1",
+  "agentHost": "fake-cursor-agentHost",
+  "model": "Composer 2.5 Fast",
+  "subscriptionTier": "Premium",
+  "osPlatform": "darwin",
+  "osArch": "arm64",
+  "userEmail": "fake-user@example.invalid",
+  "terminalProgram": "fake-cursor-terminalProgram",
+  "shell": "fake-cursor-shell",
+  "lastRequestId": "fake-cursor-lastRequestId"
+}

@@ -1,0 +1,33 @@
+{
+  "model": {
+    "modelId": "composer-2.5",
+    "displayModelId": "composer-2.5",
+    "displayName": "Composer 2.5",
+    "displayNameShort": "Composer 2.5",
+    "aliases": [],
+    "maxMode": false
+  },
+  "selectedModel": {
+    "modelId": "composer-2.5",
+    "parameters": [
+      {
+        "id": "fast",
+        "value": "false"
+      }
+    ]
+  },
+  "modelSelectionHistory": [
+    "composer-2.5",
+    "default"
+  ],
+  "modelParameters": {
+    "default": [],
+    "composer-2.5": [
+      {
+        "id": "fast",
+        "value": "false"
+      }
+    ]
+  },
+  "hasChangedDefaultModel": true
+}
