@@ -15,6 +15,7 @@ _MISSING = object()
 
 
 def _make_parents(directory, dir_mode):
+    """Create missing ancestors of directory, each with dir_mode before umask."""
     # Path.mkdir(parents=True) does not apply mode to intermediate parents.
     missing = []
     while not directory.exists():
