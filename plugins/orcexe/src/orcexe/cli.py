@@ -86,6 +86,15 @@ def main(argv=None):
     do_parser.add_argument("--json", action="store_true")
     do_parser.add_argument("--timeout", type=_timeout, default=1800)
     do_parser.add_argument("--model-constraint", type=json.loads, help="Route constraints as a JSON object")
+    run_parser = subcommands.add_parser("run", help="Run one executor on a brief in a chosen worktree")
+    run_parser.add_argument("--tool", required=True, choices=("codex", "claude-code", "cursor"))
+    for name in ("model", "effort", "brief", "workdir"):
+        run_parser.add_argument("--" + name, required=True)
+    run_parser.add_argument("--profile", choices=("review", "write"), default="review")
+    run_parser.add_argument("--run-id")
+    run_parser.add_argument("--timeout-min", type=_timeout, default=30)
+    run_parser.add_argument("--stall-min", type=_timeout, default=5)
+    run_parser.add_argument("--json", action="store_true")
     trust_parser = subcommands.add_parser("trust", help="List or clean recorded Codex trust entries")
     trust_commands = trust_parser.add_subparsers(dest="trust_command", required=True)
     for name in ("list", "clean"):
@@ -114,6 +123,10 @@ def main(argv=None):
 
     if args.command == "trust":
         return _trust_command(args)
+
+    if args.command == "run":
+        from orcexe.run import run_command
+        return run_command(args)
 
     if args.command == "doctor":
         from orcexe.doctor import doctor_command

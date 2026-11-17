@@ -18,6 +18,38 @@ LAUNCHER = PLUGIN / "bin" / "orcexe"
 
 
 class CliTests(unittest.TestCase):
+    def test_run_parsing_defaults_and_overrides(self):
+        from orcexe import cli
+        required = ["run", "--tool", "codex", "--model", "model", "--effort", "low",
+                    "--brief", "brief.md", "--workdir", "/work"]
+        with mock.patch("orcexe.run.run_command", return_value=2) as command:
+            self.assertEqual(cli.main(required), 2)
+        args = command.call_args.args[0]
+        self.assertEqual((args.tool, args.model, args.effort, args.brief, args.workdir),
+                         ("codex", "model", "low", "brief.md", "/work"))
+        self.assertEqual((args.profile, args.run_id, args.timeout_min, args.stall_min, args.json),
+                         ("review", None, 30, 5, False))
+        with mock.patch("orcexe.run.run_command", return_value=0) as command:
+            self.assertEqual(cli.main(required + ["--profile", "write", "--run-id", "manual",
+                "--timeout-min", "1.5", "--stall-min", "0.5", "--json"]), 0)
+        args = command.call_args.args[0]
+        self.assertEqual((args.profile, args.run_id, args.timeout_min, args.stall_min, args.json),
+                         ("write", "manual", 1.5, .5, True))
+
+    def test_run_rejects_missing_required_and_invalid_options(self):
+        from orcexe import cli
+        required = ["run", "--tool", "codex", "--model", "model", "--effort", "low",
+                    "--brief", "brief.md", "--workdir", "/work"]
+        invalid = [required[:i] + required[i + 2:] for i in range(1, len(required), 2)]
+        invalid += [required + [option, value] for option, value in (
+            ("--tool", "other"), ("--profile", "other"), ("--timeout-min", "0"),
+            ("--timeout-min", "nan"), ("--stall-min", "-1"), ("--stall-min", "inf"))]
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), mock.patch("sys.stderr", new_callable=io.StringIO), \
+                    self.assertRaises(SystemExit) as error:
+                cli.main(arguments)
+            self.assertEqual(error.exception.code, 2)
+
     def test_doctor_arguments(self):
         from orcexe import cli
         with mock.patch("orcexe.doctor.doctor_command", return_value=1) as command:

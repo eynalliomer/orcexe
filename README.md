@@ -73,6 +73,29 @@ absent tool/unrecognised answer. Claude's unavailable model-free list exits 1.
 Claude Code is detected by the presence of `CLAUDECODE`; H1/H2 report measured
 subprocess/skill-file evidence, while other capabilities remain declarations.
 
+## Run one executor by hand
+
+Write a UTF-8 brief (at most 1 MiB), then choose a Git worktree and executor:
+
+```sh
+orcexe run --tool codex --model gpt-6-luna --effort low \
+  --brief brief.md --workdir ../project-worktree --profile write
+```
+
+Tools: `codex`, `claude-code`, `cursor`. The default profile is `review`;
+`write` requires a linked worktree (`git worktree add …`). Every run requires
+Git. Optional flags: `--run-id ID`, `--timeout-min 30`, `--stall-min 5`, `--json`.
+Private artifacts live under the main worktree's Git-excluded
+`.orcexe/runs/<run-id>/`; run ids cannot be reused. Codex write trust additions
+are recorded in the repository trust ledger; Cursor model settings are restored.
+
+The command reports observed `orcexe.run.v1` evidence, with no classification,
+gate or landing. Exit 0 means `completed` (with changes for write); exit 1 means
+`failed`; exit 2 means quota, auth, timeout, stalled, blocked, cancelled, an empty
+write diff, or invalid usage. Pre-existing dirty paths are excluded from the
+run's changes. Agent self-reports are informational. SIGINT/SIGTERM/SIGHUP stop
+the executor and publish a validated, atomic `cancelled` receipt.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only
