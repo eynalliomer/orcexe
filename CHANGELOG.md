@@ -1,5 +1,7 @@
 ## 0.1.0 — unreleased
 
+- Give doctor probes 10-second per-operation/session budgets within a shared 60-second budget, keep tool probes concurrent, and report timeouts with recovery commands. Cover slow Cursor model lists and string/dict model ids; treat host-provided `ANTHROPIC_BASE_URL` as informational inside Claude Code while retaining credential warnings.
+- Add model-free `doctor` and single-operation `probe`, private validated environment reports with a 60-second cache, actionable readiness checks, and presence-only Claude Code host detection with H1–H7 evidence.
 - Record new Codex worktree trust headers in a private ledger; add `trust list` and preview-first `trust clean` with confirmation, private backups, edited/live table protection, and byte-preserving cleanup.
 - Restore Cursor's five default-model config keys after every execution outcome (C1), preserving unrelated config changes, key order and file mode; leave `statsig-cache.json` alone as an analytics cache. Report sandboxed shell usage as `shell_used:N`; reserve `shell_blocked` for an explicit refusal (measured 2026-11-17).
 - Add the measured offline Cursor `agent` fake, subscription-safe Cursor adapter, effort slug selection, and executor routing fallback.

@@ -70,6 +70,15 @@ def main(argv=None):
     subcommands = parser.add_subparsers(dest="command")
     version_parser = subcommands.add_parser("version", help="Show the orcexe version")
     version_parser.add_argument("--json", action="store_true", help="Print version as JSON")
+    doctor_parser = subcommands.add_parser("doctor", help="Check local readiness without model calls")
+    doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.add_argument("--quick", action="store_true", help="Skip quota and app-server probes")
+    doctor_parser.add_argument("--tool", choices=("codex", "claude-code", "cursor"))
+    doctor_parser.add_argument("--no-cache", action="store_true")
+    probe_parser = subcommands.add_parser("probe", help="Run one model-free adapter probe")
+    probe_parser.add_argument("tool", choices=("codex", "claude-code", "cursor"))
+    probe_parser.add_argument("operation", choices=("detect", "auth", "models", "quota"))
+    probe_parser.add_argument("--json", action="store_true")
     do_parser = subcommands.add_parser("do", help="Run one fast-lane task in an isolated worktree")
     do_parser.add_argument("task")
     do_parser.add_argument("--repo", default=None, help="Repository (default: current directory)")
@@ -105,6 +114,14 @@ def main(argv=None):
 
     if args.command == "trust":
         return _trust_command(args)
+
+    if args.command == "doctor":
+        from orcexe.doctor import doctor_command
+        return doctor_command(args)
+
+    if args.command == "probe":
+        from orcexe.doctor import probe_command
+        return probe_command(args)
 
     manifest = Path(__file__).resolve().parents[2] / ".claude-plugin" / "plugin.json"
     with manifest.open(encoding="utf-8") as handle:

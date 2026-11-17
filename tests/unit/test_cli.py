@@ -18,6 +18,31 @@ LAUNCHER = PLUGIN / "bin" / "orcexe"
 
 
 class CliTests(unittest.TestCase):
+    def test_doctor_arguments(self):
+        from orcexe import cli
+        with mock.patch("orcexe.doctor.doctor_command", return_value=1) as command:
+            self.assertEqual(cli.main(["doctor", "--json", "--quick", "--tool", "cursor", "--no-cache"]), 1)
+        args = command.call_args.args[0]
+        self.assertTrue(args.json and args.quick and args.no_cache)
+        self.assertEqual(args.tool, "cursor")
+        with mock.patch("orcexe.doctor.doctor_command", return_value=0) as command:
+            self.assertEqual(cli.main(["doctor"]), 0)
+        args = command.call_args.args[0]
+        self.assertFalse(args.json or args.quick or args.no_cache)
+        self.assertIsNone(args.tool)
+
+    def test_probe_arguments_and_invalid_commands(self):
+        from orcexe import cli
+        with mock.patch("orcexe.doctor.probe_command", return_value=2) as command:
+            self.assertEqual(cli.main(["probe", "codex", "auth", "--json"]), 2)
+        args = command.call_args.args[0]
+        self.assertEqual((args.tool, args.operation, args.json), ("codex", "auth", True))
+        for args in (["probe"], ["probe", "codex", "run"], ["probe", "other", "detect"],
+                     ["doctor", "--tool", "other"], ["doctor", "--fix"]):
+            with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                cli.main(args)
+            self.assertEqual(error.exception.code, 2)
+
     def test_do_argument_parsing(self):
         from orcexe import cli
         summary = {"exit_code": 5, "message": "quota\n"}

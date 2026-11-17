@@ -51,6 +51,28 @@ confirmation on a TTY. Both commands support `--json`, `--codex-home`, and
 1 confirmation declined or unavailable, 2 unreadable/unwritable state or a
 config change during cleanup. Header observations retain no other config lines.
 
+## Local readiness
+
+Run `orcexe doctor` first. It checks OS/architecture, Python, Git, repository disk
+space, optional `gh`, tool manifests/versions, subscription login, model ids,
+quota, billing override names, trust-ledger counts, and host capabilities H1–H7.
+It never installs, logs in, changes tool config, or calls a model. Every warning
+or failure includes a fix to run yourself; `--fix` is not supported in v0.1.
+
+`--json` prints the strict `orcexe.env.v1` report, also written atomically with
+mode 0600 to `${ORCEXE_STATE_DIR:-~/.cache/orcexe}/env.json`. Reports omit account
+details and replace binary paths with `<private>/codex`, `claude`, or `agent`.
+The 60-second cache avoids repeated probes (`--no-cache` refreshes). `--quick`
+skips quota and all Codex app-server calls, using cached Codex model ids or null;
+`--tool codex|claude-code|cursor` limits tool checks. Doctor exits 0 with no
+failures, 1 with failures, or 2 if diagnostics cannot run.
+
+Use `orcexe probe <tool> <detect|auth|models|quota> [--json]` for one model-free
+adapter call. It exits 0 for an answer, 1 for a reported tool error, or 2 for an
+absent tool/unrecognised answer. Claude's unavailable model-free list exits 1.
+Claude Code is detected by the presence of `CLAUDECODE`; H1/H2 report measured
+subprocess/skill-file evidence, while other capabilities remain declarations.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only

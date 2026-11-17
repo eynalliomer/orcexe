@@ -1,0 +1,19 @@
+# Presence detection verified inside Claude Code on 2026-11-17.
+host: claude-code
+detect: {env_any: [CLAUDECODE]}
+capabilities:
+  H1: required
+  H2: required
+  H3: preferred
+  H4: preferred
+  H5: optional
+  H6: preferred
+  H7: optional
+meanings:
+  H1: shell
+  H2: Agent Skill loading
+  H3: ask-user form
+  H4: background process watch
+  H5: project hooks
+  H6: rules reloaded after compaction
+  H7: read-only subagent
