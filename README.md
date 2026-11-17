@@ -137,3 +137,19 @@ redaction module exceeds 300 seconds on a slower machine.
 For five runs under twice the CPU count in busy-loop workers, use
 `python3 tests/tools/stress_suite.py --runs 5 --scale 3`. Its default runner is
 `parallel`; `--runner discover` exercises ordinary serial unittest discovery.
+
+## CI and cost
+
+CI runs the marketplace check and parallel test runner on Ubuntu, macOS and
+Windows with Python 3.9 and 3.13 (six jobs). Native Windows support is unverified
+in v0.1: its two jobs are experimental and continue on error, with failures still
+reported. Markdown-only changes skip CI, except plugin skills and commands.
+The full slow suite runs on Ubuntu/Python 3.9 weekly, manually, and on pull
+requests touching `redact*.py`, `classify.py` or `miniyaml.py`.
+
+Public repositories run standard GitHub-hosted runners for free. For a private
+copy, estimate about 76 billable minutes per full matrix run: Ubuntu 2 jobs ×
+~2 minutes + macOS 2 × ~3 minutes × 10 multiplier + Windows 2 × ~3 minutes × 2.
+This excludes the separate slow suite; actual usage depends on runtime and the
+account's included minutes. Drop macOS/Windows from the matrix in
+`.github/workflows/ci.yml` to reduce cost.
