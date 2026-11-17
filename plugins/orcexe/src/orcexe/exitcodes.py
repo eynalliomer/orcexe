@@ -1,4 +1,8 @@
-"""Shared process exit codes for the orcexe CLI."""
+"""Shared process exit codes for the orcexe CLI.
+
+Use these constants as command return values to distinguish successful execution
+from usage errors and specific operational failures.
+"""
 
 OK = 0
 """The command completed successfully."""
