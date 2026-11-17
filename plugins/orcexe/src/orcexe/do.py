@@ -22,7 +22,7 @@ import tempfile
 import threading
 import traceback
 
-from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, ledger, redact, route, worktree
+from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, ledger, redact, route, trust, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
@@ -264,6 +264,7 @@ def _report(summary, directory=None):
         lines.append(clean["abandoned_warning"])
     if clean.get("failed_check"):
         lines.append("Failed check: {} — {}".format(clean["failed_check"], clean["detail"]))
+    lines.extend("Warning: " + warning for warning in clean.get("warnings", []))
     if "changed_files" in clean:
         lines.append("Changed files: " + (", ".join(clean["changed_files"]) or "none"))
     for key, label in (("worktree", "Worktree"), ("branch", "Branch")):
@@ -433,9 +434,25 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
             effort=decision["effort"], route_basis="; ".join(decision["basis"]), branch=wt.branch, attempt=1))
         state = "running"
         log.append("orchestrator.usage", task_id, dict(input=None, output=None, source="not_seen"))
-        result = adapter.run(RunRequest(run_id=run_id, task=task_id, tool=decision["tool"],
-            model=decision["model"], effort=decision["effort"], profile="write", workdir=wt.path,
-            brief_path=str(directory / "brief-src.md"), run_dir=str(directory), timeout_s=timeout))
+        trust_before = None
+        trust_config = trust.config_path() if decision["tool"] == "codex" else None
+        if trust_config is not None:
+            try:
+                trust_before = trust.headers(trust_config.parent)
+            except Exception as error:
+                summary.setdefault("warnings", []).append("trust_snapshot_failed:" + type(error).__name__)
+        try:
+            result = adapter.run(RunRequest(run_id=run_id, task=task_id, tool=decision["tool"],
+                model=decision["model"], effort=decision["effort"], profile="write", workdir=wt.path,
+                brief_path=str(directory / "brief-src.md"), run_dir=str(directory), timeout_s=timeout))
+        finally:
+            if trust_before is not None:
+                try:
+                    trust_after = trust.headers(trust_config.parent)
+                    trust.record(main / ".orcexe" / "trust-ledger.json", trust_before, trust_after,
+                                 run_id, trust_config)
+                except Exception as error:
+                    summary.setdefault("warnings", []).append("trust_ledger_record_failed:" + type(error).__name__)
         # Compare controls first: never run Git under changed executor controls.
         try:
             unchanged = (gate_lite.snapshot_controls(main, wt) == controls

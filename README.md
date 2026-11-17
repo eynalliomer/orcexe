@@ -31,6 +31,26 @@ is private (0700) and `.orcexe/` is git-excluded. Reports redact task previews;
 `brief-src.md` and the adapter's `brief.md` deliberately contain the verbatim task
 so the executor can read it. Treat these private briefs as sensitive.
 
+## Codex trust entries
+
+Codex can add worktree trust entries to `${CODEX_HOME:-~/.codex}/config.toml`.
+`do` records newly observed project headers in the private, git-excluded
+`.orcexe/trust-ledger.json`; pre-existing user entries are never recorded.
+
+```sh
+orcexe trust list --repo /path/to/repo
+orcexe trust clean --repo /path/to/repo           # preview (default)
+orcexe trust clean --repo /path/to/repo --apply --yes
+```
+
+Cleanup removes only recorded tables whose directories are gone. Live paths and
+tables with user edits are kept. Apply creates a private backup next to the
+config and refuses concurrent config changes. Without `--yes`, apply requires
+confirmation on a TTY. Both commands support `--json`, `--codex-home`, and
+`--repo` (cwd by default, resolved to the main worktree). Exit codes: 0 success,
+1 confirmation declined or unavailable, 2 unreadable/unwritable state or a
+config change during cleanup. Header observations retain no other config lines.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only

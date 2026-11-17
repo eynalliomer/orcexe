@@ -1,6 +1,9 @@
 """Exercise CLI behavior through its public entry points."""
 
 import json
+import io
+import os
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import sys
@@ -98,3 +101,102 @@ class CliTests(unittest.TestCase):
                 [str(link), "version"], cwd=directory, capture_output=True, text=True,
             )
         self.assert_version(result)
+
+
+class TrustCliTests(unittest.TestCase):
+    def setUp(self):
+        from orcexe import trust
+        self.tmp = tempfile.TemporaryDirectory(dir=str(ROOT), prefix="orcexe-trust-cli-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.codex = self.home / "codex"
+        self.codex.mkdir(parents=True)
+        self.config = self.codex / "config.toml"
+        self.ledger = self.root / ".orcexe/trust-ledger.json"
+        self.key = str(self.root / "gone")
+        self.config.write_text('[projects.' + json.dumps(self.key) + ']\ntrust_level = "trusted"\n')
+        patch = mock.patch.dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.codex))
+        patch.start()
+        self.addCleanup(patch.stop)
+        trust.record(self.ledger, frozenset(), frozenset({self.key}), "run", self.config)
+        patch = mock.patch("orcexe.gitutil.main_worktree", return_value=str(self.root))
+        self.main_worktree = patch.start()
+        self.addCleanup(patch.stop)
+
+    def invoke(self, *arguments):
+        from orcexe import cli
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = cli.main(["trust"] + list(arguments))
+        return code, output.getvalue()
+
+    def test_list_and_repo_codex_home_options(self):
+        code, output = self.invoke("list", "--repo", str(self.root), "--codex-home", str(self.codex), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["entries"][0]["key"], self.key)
+        self.main_worktree.assert_called_with(str(self.root))
+        self.assertIn("present " + self.key, self.invoke("list")[1])
+
+    def test_dry_run_refusal_apply_and_noop_exit_codes(self):
+        for arguments in (("clean",), ("clean", "--dry-run", "--yes")):
+            code, output = self.invoke(*arguments, "--json")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output)["candidates"], [self.key])
+            self.assertTrue(self.config.read_bytes())
+        with mock.patch("sys.stdin.isatty", return_value=False), \
+                mock.patch("builtins.input", side_effect=AssertionError("no TTY")):
+            code, output = self.invoke("clean", "--apply", "--json")
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(output)["confirmed"])
+        code, output = self.invoke("clean", "--apply", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn(self.key, output)
+        self.assertIn("Backup: ~/codex/config.toml.orcexe.bak", output)
+        self.assertEqual(self.config.read_bytes(), b'')
+        self.assertEqual(self.invoke("clean", "--apply")[0], 0)
+
+    def test_interactive_confirmation_once_and_json_stdout(self):
+        for answer, expected in (("no", 1), ("y", 0)):
+            with mock.patch("sys.stdin.isatty", return_value=True), \
+                    mock.patch("builtins.input", return_value=answer) as prompt, \
+                    mock.patch("sys.stderr", new_callable=io.StringIO):
+                code, output = self.invoke("clean", "--apply", "--json")
+            self.assertEqual(code, expected)
+            self.assertEqual(json.loads(output)["confirmed"], expected == 0)
+            prompt.assert_called_once_with()
+
+    def test_corrupt_ledger_unreadable_config_and_changed_exit_two(self):
+        original = self.config.read_bytes()
+        def concurrent_change():
+            self.config.write_bytes(original + b'# concurrent change\n')
+            return "y"
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                mock.patch("builtins.input", side_effect=concurrent_change):
+            code, output = self.invoke("clean", "--apply", "--json")
+        self.assertEqual(code, 2)
+        self.assertIn("changed during clean", json.loads(output)["error"])
+        self.assertEqual(self.config.read_bytes(), original + b'# concurrent change\n')
+        self.assertFalse(list(self.codex.glob('*.bak*')))
+        self.config.unlink()
+        self.config.mkdir()
+        self.assertEqual(self.invoke("clean")[0], 2)
+        self.assertEqual(self.invoke("list")[0], 2)
+        self.ledger.write_text('{"malformed":true}')
+        for command in ("list", "clean"):
+            code, output = self.invoke(command, "--json")
+            self.assertEqual(code, 2)
+            self.assertIn("error", json.loads(output))
+
+    def test_config_and_ledger_write_failure_exit_two(self):
+        for target in ("_replace", "fsio.atomic_write_json"):
+            with self.subTest(target=target), mock.patch("orcexe.trust." + target, side_effect=OSError("unwritable")):
+                self.assertEqual(self.invoke("clean", "--apply", "--yes")[0], 2)
+
+    def test_mutually_exclusive_flags_and_missing_subcommand(self):
+        from orcexe import cli
+        for arguments in (["trust"], ["trust", "clean", "--dry-run", "--apply"]):
+            with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                cli.main(arguments)
+            self.assertEqual(error.exception.code, 2)

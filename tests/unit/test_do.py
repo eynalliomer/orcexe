@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import shutil
 import socket
 import time
 import subprocess
@@ -294,6 +295,60 @@ with mock.patch.object(do,'CodexAdapter',side_effect=adapter),mock.patch.object(
 
 
 class DoTests(DoFixture):
+    def test_codex_trust_ledger_list_and_clean_end_to_end(self):
+        from orcexe import trust
+        config = Path(self.env['CODEX_HOME']) / 'config.toml'
+        config.parent.mkdir()
+        user = self.root / 'user-project'
+        original = ('# user config\n[projects.' + json.dumps(str(user))
+                    + ']\ntrust_level = "trusted"\n').encode()
+        config.write_bytes(original)
+        result = self.invoke()
+        self.assertEqual(result['verdict'], 'accepted', result)
+        ledger_path = self.repo / '.orcexe/trust-ledger.json'
+        data = json.loads(ledger_path.read_text())
+        self.assertEqual(len(data['entries']), 1)
+        entry = data['entries'][0]
+        self.assertEqual(entry['key'], result['worktree'])
+        self.assertEqual(entry['run_id'], result['run_id'])
+        run_result = json.loads((self.repo / '.orcexe/runs' / result['run_id'] / 'result.json').read_text())
+        self.assertTrue(any(w.startswith('trust_entry_added:') for w in run_result['warnings']))
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = cli.main(['trust', 'list', '--repo', result['worktree'], '--json'])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue())['entries'][0]['state'], 'present')
+            self.assertEqual(trust.clean(ledger_path)['kept_live'], [result['worktree']])
+            shutil.rmtree(result['worktree'])
+            before = config.read_bytes()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = cli.main(['trust', 'clean', '--repo', str(self.repo), '--apply', '--yes', '--json'])
+            self.assertEqual(code, 0)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report['removed'], [result['worktree']])
+            self.assertEqual(Path(report['backup']).expanduser().read_bytes(), before)
+            self.assertEqual(config.read_bytes(), original + b'\n')
+            self.assertEqual(trust.headers(), frozenset({str(user)}))
+            self.assertEqual(trust.list_entries(ledger_path)[0]['state'], 'removed')
+
+    def test_trust_ledger_write_failure_warns_without_changing_verdict(self):
+        with mock.patch.object(do.trust, 'record', side_effect=OSError('unwritable')):
+            result = self.invoke()
+        self.assertEqual(result['verdict'], 'accepted', result)
+        self.assertEqual(result['exit_code'], 0)
+        self.assertIn('trust_ledger_record_failed:OSError', result['warnings'])
+        self.assertIn('Warning: trust_ledger_record_failed:OSError', result['message'])
+
+    def test_trust_snapshot_failure_never_records_preexisting_keys(self):
+        with mock.patch.object(do.trust, 'headers', side_effect=OSError('unreadable')), \
+                mock.patch.object(do.trust, 'record') as record:
+            result = self.invoke()
+        self.assertEqual(result['verdict'], 'accepted', result)
+        self.assertIn('trust_snapshot_failed:OSError', result['warnings'])
+        record.assert_not_called()
+
     def test_cursor_fallback_when_codex_and_claude_unavailable(self):
         self.env["ORCEXE_BIN_CODEX"] = str(self.root / "missing-codex")
         self.env["ORCEXE_BIN_CLAUDE_CODE"] = str(self.root / "missing-claude")
