@@ -11,13 +11,14 @@ from pathlib import Path
 import tempfile
 
 
-_MISSING = object()
+_MISSING = object()  # Sentinel: distinguish "no default" from an explicit None default.
 
 
 def _make_parents(directory, dir_mode):
     """Create missing ancestors of directory, each with dir_mode before umask."""
     # Path.mkdir(parents=True) does not apply mode to intermediate parents.
     missing = []
+    # Collect missing ancestors from leaf to root; creation runs root to leaf.
     while not directory.exists():
         missing.append(directory)
         directory = directory.parent
@@ -25,6 +26,7 @@ def _make_parents(directory, dir_mode):
         try:
             parent.mkdir(mode=dir_mode)
         except FileExistsError:
+            # Another process may have created this segment after our existence check.
             if not parent.is_dir():
                 raise
 
@@ -33,6 +35,7 @@ def atomic_write_text(path, text, mode=0o644, dir_mode=0o700):
     """Replace path only after a complete, flushed write in its directory."""
     path = Path(path)
     _make_parents(path.parent, dir_mode)
+    # Place the temp next to the destination so os.replace stays on one filesystem.
     fd, temporary = tempfile.mkstemp(prefix=".{}-".format(path.name), dir=str(path.parent))
     try:
         handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
@@ -41,7 +44,9 @@ def atomic_write_text(path, text, mode=0o644, dir_mode=0o700):
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+            # mkstemp leaves a restrictive mode; apply the caller's mode before publish.
             os.chmod(temporary, mode)
+        # Same-directory rename is atomic for readers on POSIX.
         os.replace(temporary, path)
     except BaseException:
         if fd is not None:
@@ -77,9 +82,10 @@ def read_jsonl(path):
     """Read newline-delimited records without splitting Unicode separators."""
     with open(path, encoding="utf-8", newline="\n") as handle:
         text = handle.read()
+    # Avoid splitlines(), which treats Unicode line separators as record breaks.
     lines = text.split("\n")
     if lines[-1] == "":
-        lines.pop()
+        lines.pop()  # Ignore a trailing newline after the final record.
     try:
         return [json.loads(line) for line in lines]
     except ValueError as error:
@@ -96,6 +102,7 @@ def append_jsonl(path, obj, dir_mode=0o700):
         raise ValueError("JSONL serialization contains a raw newline")
     path = Path(path)
     _make_parents(path.parent, dir_mode)
+    # O_APPEND keeps concurrent writers from clobbering each other's tail offsets.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         handle = os.fdopen(fd, "a", encoding="utf-8", newline="\n")
