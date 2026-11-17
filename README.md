@@ -96,6 +96,25 @@ write diff, or invalid usage. Pre-existing dirty paths are excluded from the
 run's changes. Agent self-reports are informational. SIGINT/SIGTERM/SIGHUP stop
 the executor and publish a validated, atomic `cancelled` receipt.
 
+## Using orcexe from Claude Code
+
+Add this repository as a plugin marketplace (a local checkout path or the GitHub
+repository), install the plugin, then check readiness:
+
+```text
+/plugin marketplace add /path/to/orcexe        # or: /plugin marketplace add eynalliomer/orcexe
+/plugin install orcexe@orcexe
+/orcexe doctor
+```
+
+The plugin ships the `orcexe` skill and the `/orcexe` command
+(`/orcexe doctor | do "<task>" | run … | trust list|clean`). Both call
+`python3 "${CLAUDE_PLUGIN_ROOT}/bin/orcexe"`. The skill tells Claude to show doctor
+fixes verbatim, report `do` verdicts from the gate rather than the agent's own
+claim, and never run landing commands or `trust clean --apply` without your
+explicit request. `python3 scripts/check_marketplace.py` validates the
+marketplace, plugin manifest, versions, skill and command files.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only
