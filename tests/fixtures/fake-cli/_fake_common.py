@@ -6,6 +6,23 @@ from pathlib import Path
 import sys
 
 
+def edit_file(directory):
+    """Default-off append hook; an empty text leaves an existing file intact."""
+    name = os.environ.get("ORCEXE_FAKE_EDIT_FILE")
+    text = os.environ.get("ORCEXE_FAKE_EDIT_TEXT")
+    if name is None or text is None:
+        return False
+    relative = Path(name)
+    root = Path(directory).resolve()
+    target = (root / relative).resolve()
+    if (not name or relative.is_absolute() or ".." in relative.parts
+            or root not in target.parents):
+        raise ValueError("fake edit path must be repo-relative")
+    with target.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+    return True
+
+
 def emit(value):
     print(json.dumps(value, separators=(",", ":")), flush=True)
 

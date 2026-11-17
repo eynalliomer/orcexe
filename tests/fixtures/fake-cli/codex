@@ -16,7 +16,7 @@ import time
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from _fake_common import (emit, in_git_repo, read_payload, read_stream,
+from _fake_common import (edit_file, emit, in_git_repo, read_payload, read_stream,
                           record_call, signal_ready, trust_project)
 
 
@@ -79,6 +79,8 @@ def exec_run(options, scenario):
     if scenario in {"write", "commit"} and options["sandbox"] == "read-only":
         stream_name = "write-read-only"
     events = read_stream(HERE / "streams" / ("codex-" + stream_name + ".jsonl"))
+    if scenario == "success" and options["sandbox"] != "read-only":
+        edit_file(directory)
 
     if scenario == "background-child":
         # Only stdout is inherited. The detached child exits naturally in 5s.
@@ -93,7 +95,8 @@ def exec_run(options, scenario):
             # Store the shape, not five megabytes of repeated fixture text.
             item["text"] = "x" * (5 * 1024 * 1024)
         if event["type"] == "item.completed" and item.get("type") == "file_change":
-            (directory / "orcexe-fake-output.txt").write_text("OK\n", encoding="utf-8")
+            if scenario not in {"write", "success"} or not edit_file(directory):
+                (directory / "orcexe-fake-output.txt").write_text("OK\n", encoding="utf-8")
             if scenario == "commit":
                 for args in (["git", "add", "--", "orcexe-fake-output.txt"],
                              ["git", "commit", "-m", "fake"]):

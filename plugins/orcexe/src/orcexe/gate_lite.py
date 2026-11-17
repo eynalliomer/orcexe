@@ -1061,6 +1061,8 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
             record(check, 'skipped', 'previous_check_incomplete', time.monotonic())
         if all(c['status'] == 'pass' for c in result['checks']):
             result['verdict'] = 'accepted'
+            target = classification.targets[0]
+            result['diff'].update(target_blob=raw_oids[target], target_path=redact_text(target))
         try:
             validate_gate_result(result)
         except Exception:
@@ -1112,7 +1114,14 @@ def validate_gate_result(d) -> None:
     _require(isinstance(d["warnings"], list) and all(isinstance(x, str) and
              redact_text(x) == x for x in d["warnings"]), "warnings")
     diff = d["diff"]
-    _require(isinstance(diff, dict) and set(diff) == {"files", "added", "deleted", "base_commit", "head"}, "diff")
+    _require(isinstance(diff, dict) and {"files", "added", "deleted", "base_commit", "head"} <= set(diff)
+             <= {"files", "added", "deleted", "base_commit", "head", "target_blob", "target_path"}, "diff")
+    for key in ("target_blob", "target_path"):
+        if key in diff or verdict == "accepted":
+            value = diff.get(key)
+            _require(isinstance(value, str) and
+                     (_SHA.fullmatch(value) if key == "target_blob" else
+                      _path(value) and redact_text(value) == value), "diff." + key)
     for key in ("base_commit", "head"):
         _require(diff[key] is None or isinstance(diff[key], str) and _SHA.fullmatch(diff[key]), "diff." + key)
     _require(isinstance(diff["files"], list), "diff.files")
@@ -1136,6 +1145,7 @@ def validate_gate_result(d) -> None:
         _require(bool(diff["files"]) and diff["base_commit"] is not None and diff["head"] is not None
                  and diff["added"] + diff["deleted"] > 0,
                  "accepted.diff")
+        _require({f["path"] for f in diff["files"]} == {diff["target_path"]}, "accepted.target_path")
         _require(not {"empty_diff", "secret_suspected"}.intersection(d["warnings"]), "accepted.warnings")
         _require(all(f["status"] == "M" and f["old_mode"] == f["new_mode"]
                      and f["old_mode"] in {"100644", "100755"} and f["old_path"] is None

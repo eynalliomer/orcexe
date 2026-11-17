@@ -38,6 +38,31 @@ with subprocess.Popen(argv, stdin=subprocess.PIPE, text=True, encoding='utf-8') 
 
 
 class FakeCodexTests(unittest.TestCase):
+    def test_optional_append_hook_write_and_success(self):
+        self.repository()
+        target = self.work / "existing.txt"
+        for scenario in ("write", "success"):
+            with self.subTest(scenario=scenario):
+                target.write_text("before\n", encoding="utf-8")
+                result, _, _ = self.execute(scenario, ["-s", "workspace-write"], env={
+                    "ORCEXE_FAKE_EDIT_FILE": "existing.txt", "ORCEXE_FAKE_EDIT_TEXT": "after\n"})
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(target.read_text(), "before\nafter\n")
+                self.assertFalse((self.work / "orcexe-fake-output.txt").exists())
+
+    def test_optional_append_hook_empty_text_and_read_only(self):
+        self.repository()
+        target = self.work / "existing.txt"
+        target.write_text("before\n")
+        for scenario, sandbox, text in (("success", "workspace-write", ""),
+                                         ("success", "read-only", "after\n"),
+                                         ("write", "read-only", "after\n")):
+            with self.subTest(scenario=scenario, sandbox=sandbox):
+                self.execute(scenario, ["-s", sandbox], env={
+                    "ORCEXE_FAKE_EDIT_FILE": "existing.txt", "ORCEXE_FAKE_EDIT_TEXT": text})
+                self.assertEqual(target.read_text(), "before\n")
+                self.assertFalse((self.work / "orcexe-fake-output.txt").exists())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="orcexe-fake-test-")
         self.addCleanup(self.temporary.cleanup)

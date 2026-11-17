@@ -562,6 +562,40 @@ class GateTests(GitFixture):
         self.assertTrue(result["diff"]["files"][0]["submodule"])
         self.assertFalse(self.marker.exists())
 
+    def test_accepted_target_blob_binds_verified_raw_bytes(self):
+        content = "VALUE = 1 # frozen edit\n"
+        self.edit(content)
+        result = self.call(commands=self.marker_command)
+        self.outcome(result, "accepted")
+        diff = result["diff"]
+        self.assertEqual(diff["target_path"], "value.py")
+        self.assertEqual(diff["target_blob"], hashlib.sha1(
+            b"blob " + str(len(content.encode())).encode() + b"\0" + content.encode()).hexdigest())
+        self.edit("VALUE = 99\n")
+        self.assertEqual(self.git_run(self.path, "cat-file", "blob", diff["target_blob"]), content)
+        for key, values in (("target_blob", (None, "x" * 40, "a" * 39, "a" * 41, 1)),
+                            ("target_path", (None, "../bad", "/bad", "other.py", 1))):
+            missing = deepcopy(result)
+            del missing["diff"][key]
+            with self.assertRaises(ValueError):
+                gl.validate_gate_result(missing)
+            for value in values:
+                changed = deepcopy(result)
+                changed["diff"][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    gl.validate_gate_result(changed)
+        for length in (40, 64):
+            changed = deepcopy(result)
+            changed["diff"]["target_blob"] = "a" * length
+            gl.validate_gate_result(changed)
+
+    def test_unaccepted_result_does_not_require_frozen_target(self):
+        result = self.call(commands=self.marker_command)
+        self.assertNotEqual(result["verdict"], "accepted")
+        self.assertNotIn("target_blob", result["diff"])
+        self.assertNotIn("target_path", result["diff"])
+        gl.validate_gate_result(result)
+
     def test_validator_mutations(self):
         self.edit("VALUE = 1 # edit\n")
         valid = self.call(commands=self.marker_command)

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,31 @@ LAUNCHER = PLUGIN / "bin" / "orcexe"
 
 
 class CliTests(unittest.TestCase):
+    def test_do_argument_parsing(self):
+        from orcexe import cli
+        summary = {"exit_code": 5, "message": "quota\n"}
+        with mock.patch("orcexe.do.run_do", return_value=summary) as run, \
+                mock.patch("builtins.print") as output:
+            self.assertEqual(cli.main(["do", "a task", "--repo", "/example", "--dry-run",
+                "--json", "--timeout", "12.5", "--model-constraint", '{"deny_models":["x"]}']), 5)
+        run.assert_called_once_with("a task", "/example", dry_run=True, timeout=12.5,
+                                    model_constraint={"deny_models": ["x"]})
+        self.assertEqual(json.loads(output.call_args.args[0]), summary)
+
+    def test_do_argument_defaults(self):
+        from orcexe import cli
+        with mock.patch("orcexe.do.run_do", return_value={"exit_code": 0, "message": "plan\n"}) as run, \
+                mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["do", "task"]), 0)
+        run.assert_called_once_with("task", None, dry_run=False, timeout=1800, model_constraint=None)
+
+    def test_do_rejects_missing_task_and_bad_timeout(self):
+        for arguments in (["do"], ["do", "task", "--timeout", "0"],
+                          ["do", "task", "--timeout", "nan"], ["do", "task", "--timeout", "-1"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_module(*arguments)
+                self.assertEqual(result.returncode, 2)
+
     def setUp(self):
         with (PLUGIN / ".claude-plugin" / "plugin.json").open(encoding="utf-8") as handle:
             self.version = json.load(handle)["version"]

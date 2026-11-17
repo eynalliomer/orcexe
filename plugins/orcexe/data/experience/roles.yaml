@@ -1,0 +1,12 @@
+# orcexe.roles.v1: order is a prior, not a measurement of model performance.
+# VARSAYIM: these preferences await the v0.6 evaluation program (decision 104).
+version: 1
+as_of: 2026-11-17
+evidence: "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek"
+stages:
+  executor:
+    fast: [{tool: codex, model: gpt-6.1-sol, effort: medium}, {tool: codex, model: gpt-6-sol, effort: medium}]
+    standard: [{tool: codex, model: gpt-6.1-sol, effort: high}, {tool: codex, model: gpt-6-sol, effort: high}]
+    risky: [{tool: codex, model: gpt-6.1-sol, effort: high}]
+  evaluator: {any: [{tool: codex, model: gpt-6.1-sol, effort: medium}]}
+  auditor: {any: [{tool: codex, model: gpt-6.1-sol, effort: high}]}
