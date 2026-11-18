@@ -4,7 +4,7 @@ orcexe is an open-source Python CLI and Claude Code plugin that orchestrates AI 
 It uses only the Python standard library and supports Python 3.9 and later.
 orcexe has no telemetry.
 
-Status: **v0.1 in development**.
+Status: **v0.1.0 walking skeleton** (local tag, not published). See `CHANGELOG.md` for known gaps.
 
 ## orcexe do
 

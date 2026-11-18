@@ -1,4 +1,6 @@
-## Unreleased — T22 closing review
+## 0.1.0 — 2026-11-18 (local tag; not published)
+
+Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), the review profile was not run against the real tools, native Windows is unverified.
 
 - Report doctor's configured per-probe timeout budget even when the shared total deadline leaves less execution time.
 - Give the manual-run integration fake's Cursor model preflight a scaled setup budget; retain early-exit stdout/stderr diagnostics before signal handshakes.
@@ -8,8 +10,6 @@
 - Grant Claude/Cursor only `run_dir/brief/` and write private run evidence without following file or directory symlinks. Their argv pins deliberately change; Codex argv is unchanged.
 - Use unittest `-s tests -t .` when `tests/__init__.py` exists and `-s tests` when absent; reject zero-test evidence, log both Python interpreters, honour `ORCEXE_STATE_DIR` for gate checkouts, and return exit 2 for manual-run `pipes_held` warnings.
 - Document tool selection, project commands/hooks, Cursor trust, write locations, and clearing the quota cache.
-
-## 0.1.0 — unreleased
 
 - Add an offline security test package covering source-wide network imports, child credential isolation, forbidden argv, private reports and HOME writes; preserve prompt operands as free text; fixed: no socket import; identity lookup uses a minimal env.
 - Add SHA-pinned GitHub Actions CI across three operating systems and Python 3.9/3.13, experimental Windows reporting, a targeted weekly/manual slow suite, workflow safety tests, and CI cost guidance.
