@@ -168,7 +168,10 @@ class DoctorTests(unittest.TestCase):
                 return proc.ProcResult("exited", 0, 0, 0, 0, 0, "", False, None)
             return actual(argv, **options)
         with mock.patch("orcexe.adapters.codex_appserver.subprocess.Popen", side_effect=stall_appserver) as calls, \
-                mock.patch.object(doctor.proc, "run", side_effect=login_status):
+                mock.patch.object(doctor.proc, "run", side_effect=login_status), \
+                mock.patch.dict(doctor._BUDGET_S, total=600):
+            # Exercise all three per-probe deadlines even under parallel load.
+            # The overall deadline is covered by test_total_budget_limits_later_probes.
             data, _ = self.run_doctor(tool="codex", no_cache=True, budget_scale=.005)
         self.assertEqual(sum(call.args[0][1:] == ["app-server"] for call in calls.call_args_list), 3)
         for operation in ("auth", "models", "quota"):
@@ -345,14 +348,18 @@ class DoctorTests(unittest.TestCase):
     def test_environment_presence_does_not_read_values(self):
         class NamesOnly(dict):
             def __getitem__(self, key):
-                if key in (*doctor._ENV_WARN, "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+                if key in (*doctor._ENV_WARN, "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "CODEX_SANDBOX"):
                     raise AssertionError("secret read")
                 return super().__getitem__(key)
-        env = NamesOnly(dict(os.environ, **{name: "ignored" for name in (*doctor._ENV_WARN, "CLAUDECODE")}))
+        env = NamesOnly(dict(os.environ, **{name: "ignored" for name in
+                        (*doctor._ENV_WARN, "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX")}))
         with mock.patch.object(doctor.os, "environ", env):
             data, _ = self.run_doctor(tool="claude-code", quick=True, no_cache=True)
         ids = {c["id"] for c in data["checks"]}
         self.assertTrue(all("env." + name.lower() in ids for name in doctor._ENV_WARN))
+        self.assertEqual(data["host"]["tool"], "codex")
+        self.assertTrue(all(c["status"] == "info" for c in data["host"]["capabilities"]))
+        doctor.validate_env(data)
 
     def test_probe_calls_only_requested_method_and_rejects_unknown_quota(self):
         adapter = doctor._adapter("cursor")
@@ -378,10 +385,17 @@ class DoctorTests(unittest.TestCase):
         config.write_text('[projects.' + json.dumps(key) + ']\ntrust_level = "trusted"\n')
         ledger = self.root / ".orcexe/trust-ledger.json"
         trust.record(ledger, frozenset(), frozenset({key}), "fixture", config)
+        projects = trust.projects_path()
+        projects.mkdir(parents=True)
+        slug = trust.project_slug(self.root / "cursor-missing")
+        (projects / slug).mkdir()
+        trust.record(ledger, frozenset(), frozenset({slug}), "cursor-fixture", projects,
+                     tool="cursor", workspaces=[self.root / "cursor-missing"])
         before = (ledger.read_bytes(), config.read_bytes())
         with mock.patch.object(doctor, "_main_worktree", return_value=self.root):
             check = doctor._trust_check(self.root)
         self.assertIn("1 present entries; 1 missing directories", check["message"])
+        self.assertIn("1 recorded Cursor project dirs", check["message"])
         self.assertEqual(check["fix"], "orcexe trust clean")
         self.assertNotIn(key, json.dumps(check))
         self.assertEqual((ledger.read_bytes(), config.read_bytes()), before)

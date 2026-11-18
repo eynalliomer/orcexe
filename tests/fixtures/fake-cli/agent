@@ -9,6 +9,7 @@ Hooks are represented as stream evidence, never executed from project config.
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -90,6 +91,21 @@ def parse_exec(argv):
     return options
 
 
+def create_projects(options):
+    """Measured C2 layout; synthetic empty files only, never a real socket."""
+    if not options.get('trust') or not options.get('workspace'):
+        return
+    directory = os.environ.get('CURSOR_CONFIG_DIR') or str(Path.home() / '.cursor')
+    for workspace in [options['workspace'], *options.get('add_dirs', [])]:
+        # Inferred from 2 real samples (2026-11-18); spaces/unicode unverified.
+        slug = re.sub(r'[^A-Za-z0-9]+', '-', str(Path(workspace).absolute())).strip('-')
+        project = Path(directory) / 'projects' / slug
+        project.mkdir(parents=True, exist_ok=True)
+        (project / 'agent-transcripts').mkdir(exist_ok=True)
+        for name in ('.workspace-trusted', 'mcp-auth.json', 'repo.json', 'worker.log'):
+            (project / name).touch(exist_ok=True)
+
+
 def main():
     argv = sys.argv[1:]
     scenario = os.environ.get('ORCEXE_FAKE_SCENARIO', 'success')
@@ -122,6 +138,7 @@ def main():
             text = json.dumps(data, indent=2) + '\n'
         sys.stdout.write(text)
         return 0
+    create_projects(options)
     if invalid:
         print('Cannot use this model: {}. Available models: {}'.format(options.get('model', 'auto'), ', '.join(models)), flush=True)
         return 1

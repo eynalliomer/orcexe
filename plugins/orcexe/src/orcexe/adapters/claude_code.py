@@ -364,6 +364,7 @@ class ClaudeCodeAdapter(Adapter):
 
         before_head = gitutil.head(req.workdir)
         before_dirty = repository_files(gitutil.dirty(req.workdir))
+        before_fingerprints = gitutil.fingerprints(req.workdir, before_dirty)
         status, warnings = "blocked", []
         observed = None
         extracted = {"final_text": "", "usage": {}, "model_actual": None}
@@ -434,7 +435,7 @@ class ClaudeCodeAdapter(Adapter):
                     status = "failed"
             if observed.pipes_held:
                 warnings.append("pipes_held")
-        after = gitutil.changed_since(req.workdir, before_head, before_dirty)
+        after = gitutil.changed_since(req.workdir, before_head, before_dirty, before_fingerprints)
         after["diff_files"] = repository_files(after["diff_files"])
         after["untracked"] = repository_files(after["untracked"])
         if before_head != after["head"]:

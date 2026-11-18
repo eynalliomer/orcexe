@@ -2,10 +2,12 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE = ROOT / 'tests/fixtures/fake-cli/agent'
@@ -87,6 +89,20 @@ class FakeAgentTests(unittest.TestCase):
         self.assertTrue(json.loads(shell.stdout.splitlines()[-1])['is_error'])
         self.assertEqual(self.invoke(args + ['--force'], 'shell-blocked').returncode, 0)
         self.assertEqual(self.invoke(args, 'quota-suspected').returncode, 1)
+
+    @unittest.skipIf(os.name == 'nt', 'Measured POSIX absolute paths')
+    def test_project_directories_match_two_real_slug_samples(self):
+        # Exercise layout creation without making the measured /Users/u paths.
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(sys, 'path', sys.path[:]):
+            create_projects = runpy.run_path(str(FAKE))['create_projects']
+            create_projects(dict(trust=True,
+                workspace='/Users/u/repos/orcexe-wt/do/do-20261117t200438-809b-cursor',
+                add_dirs=['/Users/u/repos/orcexe/.orcexe/runs/do-20261117T200438-809b-r1']))
+        projects = Path(self.env['CURSOR_CONFIG_DIR']) / 'projects'
+        self.assertEqual({path.name for path in projects.iterdir()}, {
+            'Users-u-repos-orcexe-wt-do-do-20261117t200438-809b-cursor',
+            'Users-u-repos-orcexe-orcexe-runs-do-20261117T200438-809b-r1',
+        })
 
     def test_edit_hook_and_stream_provenance(self):
         target = self.directory / 'edit.txt'

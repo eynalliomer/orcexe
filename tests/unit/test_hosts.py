@@ -1,6 +1,7 @@
 """Host evidence distinguishes file/process observations from declarations."""
 
 from pathlib import Path
+from itertools import product
 import tempfile
 import unittest
 
@@ -10,6 +11,28 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class HostTests(unittest.TestCase):
+    def test_innermost_host_all_marker_combinations_names_only(self):
+        class NamesOnly(dict):
+            def __getitem__(self, key):
+                raise AssertionError("host value read")
+            def get(self, key, default=None):
+                raise AssertionError("host value read")
+        names = ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE")
+        for flags in product((False, True), repeat=3):
+            for value in ("", "private-value"):
+                env = NamesOnly({name: value for name, flag in zip(names, flags) if flag})
+                with self.subTest(flags=flags, empty=not value):
+                    host = hosts.detect_host(env=env, subprocess_ok=True)
+                    marker = next((name for name in names if name in env), None)
+                    self.assertEqual(host["tool"], "codex" if any(flags[:2]) else
+                                     "claude-code" if flags[2] else "none")
+                    self.assertEqual(host["detected_by"], "env:" + marker if marker else "none")
+                    if any(flags[:2]):
+                        self.assertEqual(len(host["capabilities"]), 7)
+                        self.assertTrue(all(c["status"] == "info" and c["evidence"] == "declared"
+                                            for c in host["capabilities"]))
+                    self.assertNotIn("private-value", str(host))
+
     def test_presence_only_and_all_capabilities(self):
         class NamesOnly(dict):
             def __getitem__(self, key):

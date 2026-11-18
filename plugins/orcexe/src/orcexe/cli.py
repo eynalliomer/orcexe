@@ -28,7 +28,7 @@ def _trust_command(args):
         if not sys.stdin.isatty():
             return False
         # Keep --json stdout a single JSON document, including on a TTY.
-        print("Remove Codex trust entries:\n" + "\n".join(keys), file=sys.stderr)
+        print("Clean recorded Codex/Cursor trust entries:\n" + "\n".join(keys), file=sys.stderr)
         print("Continue? [y/N] ", end="", file=sys.stderr, flush=True)
         try:
             return input().strip().lower() == "y"
@@ -48,7 +48,7 @@ def _trust_command(args):
             result = trust.clean(ledger_path, args.codex_home, apply=args.apply, confirm=confirm)
             code = 1 if result["confirmed"] is False else 0
             lines = []
-            for label in ("candidates", "kept_live", "skipped_edited", "removed"):
+            for label in ("candidates", "kept_live", "skipped_edited", "skipped_unknown", "removed"):
                 lines.extend(label + " " + key for key in result[label])
             if result["backup"]:
                 lines.append("Backup: " + result["backup"])
@@ -95,7 +95,7 @@ def main(argv=None):
     run_parser.add_argument("--timeout-min", type=_timeout, default=30)
     run_parser.add_argument("--stall-min", type=_timeout, default=5)
     run_parser.add_argument("--json", action="store_true")
-    trust_parser = subcommands.add_parser("trust", help="List or clean recorded Codex trust entries")
+    trust_parser = subcommands.add_parser("trust", help="List or clean recorded Codex/Cursor trust entries")
     trust_commands = trust_parser.add_subparsers(dest="trust_command", required=True)
     for name in ("list", "clean"):
         command = trust_commands.add_parser(name)

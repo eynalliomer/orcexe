@@ -56,6 +56,9 @@ def run_module(module, top, timeout, directory):
         environment = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
                            TMPDIR=str(tmp), TMP=str(tmp), TEMP=str(tmp),
                            CODEX_HOME=str(home / '.codex'),
+                           CLAUDE_CONFIG_DIR=str(home / '.claude'),
+                           CURSOR_CONFIG_DIR=str(home / '.cursor'),
+                           ORCEXE_STATE_DIR=str(home / '.cache/orcexe'),
                            XDG_CACHE_HOME=str(home / '.cache'),
                            XDG_CONFIG_HOME=str(home / '.config'),
                            PYTHONDONTWRITEBYTECODE='1')

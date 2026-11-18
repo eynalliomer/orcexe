@@ -106,8 +106,9 @@ class CursorAdapterTests(GitFixture):
     def test_missing_and_unreadable_configs_never_written(self):
         path = Path(self.env['CURSOR_CONFIG_DIR']) / 'cli-config.json'
         self.assertEqual(self.adapter().run(self.request('missing'))['status'], 'completed')
-        self.assertFalse(path.parent.exists())
-        path.parent.mkdir()
+        self.assertFalse(path.exists())
+        self.assertTrue((path.parent / 'projects').is_dir())
+        path.parent.mkdir(exist_ok=True)
         for index, payload in enumerate((b'{private broken JSON', b'[]\n', b'\xff',
                 b'{' + b'x' * (256 * 1024))):
             path.write_bytes(payload)

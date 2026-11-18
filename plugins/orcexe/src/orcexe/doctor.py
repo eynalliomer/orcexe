@@ -34,6 +34,7 @@ _ENV_WARN = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
 _EFFECTS = {
     "E1": "codex exec writes trust entries to config.toml; orcexe records them, see `orcexe trust list`",
     "C1": "--model changes your default model; orcexe restores it after each run",
+    "C2": "--trust creates private Cursor project directories; orcexe records new names for `orcexe trust clean`",
 }
 _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?\Z")
 _MODEL = re.compile(r"[a-z0-9][a-z0-9._:-]{0,127}\Z")
@@ -118,7 +119,8 @@ def validate_env(d):
     host = d["host"]
     _keys(host, ("tool", "detected_by", "capabilities"))
     _require(host["tool"] in (*TOOLS, "none"))
-    _require(host["detected_by"] == ("env:CLAUDECODE" if host["tool"] == "claude-code" else "none"))
+    _require(host["detected_by"] in ({"codex": ("env:CODEX_THREAD_ID", "env:CODEX_SANDBOX"),
+             "claude-code": ("env:CLAUDECODE",), "none": ("none",)}.get(host["tool"], ())))
     _require(isinstance(host["capabilities"], list))
     for capability in host["capabilities"]:
         _check(capability, True)
@@ -196,7 +198,7 @@ def _adapter(tool, quick=False, *, budget_scale=1):
     # Do not even fetch billing overrides or host-marker values. Adapters get
     # a detached environment with those names absent, before their own filter.
     env = {name: os.environ[name] for name in os.environ
-           if name not in (*_ENV_WARN, "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+           if name not in (*_ENV_WARN, "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "CODEX_SANDBOX")}
     options = dict(env=env, detect_timeout_s=budgets["detect"],
                    auth_timeout_s=budgets["auth"], kill_grace_s=budgets["kill_grace"])
     if tool == "codex":
@@ -351,7 +353,7 @@ def _tool_report(adapter, quick, previous, deadline=None):
     warnings = [_EFFECTS[key] for key in effects]
     for effect, message in zip(effects, warnings):
         checks.append(_line(tool + "." + effect, "tool", "warn", message,
-                            "review `orcexe trust list`" if effect == "E1" else "let orcexe restore the default model after each run"))
+                            "review `orcexe trust list`" if effect in ("E1", "C2") else "let orcexe restore the default model after each run"))
     return dict(tool=tool, **detected, auth=auth["state"], method=auth["method"], plan=auth["plan"],
                 models=models, quota=quota, warnings=warnings, side_effects=effects), checks
 
@@ -440,12 +442,14 @@ def _trust_check(repo, *, budget_scale=1, deadline=None):
             return _line("trust", "env", "info", "trust ledger: outside a Git repository")
         ledger = Path(main) / ".orcexe" / "trust-ledger.json"
         if not ledger.exists():
-            return _line("trust", "env", "info", "trust ledger: 0 present entries")
+            return _line("trust", "env", "info", "trust ledger: 0 present entries; 0 recorded Cursor project dirs; use `orcexe trust clean`")
         entries = trust.list_entries(ledger)
-        present = [e for e in entries if e["state"] == "present"]
+        present = [e for e in entries if e["state"] == "present" and e["tool"] == "codex"]
+        cursor_count = sum(e["tool"] == "cursor" and e["state"] != "removed" for e in entries)
         gone = sum(not Path(e["key"]).is_dir() for e in present)
-        return _line("trust", "env", "info", "trust ledger: {} present entries; {} missing directories".format(len(present), gone),
-                     "orcexe trust clean" if gone else None)
+        return _line("trust", "env", "info", ("trust ledger: {} present entries; {} missing directories; "
+                     "{} recorded Cursor project dirs; use `orcexe trust clean`").format(len(present), gone, cursor_count),
+                     "orcexe trust clean" if gone or cursor_count else None)
     except TimeoutError:
         check = _timeout_line("git", "trust ledger", {"_timeout_s": budget})
         check.update(id="trust", category="env")

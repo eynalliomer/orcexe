@@ -14,8 +14,13 @@ def snapshot(home):
         info = path.lstat()
         if stat.S_ISDIR(info.st_mode):
             continue
+        relative = path.relative_to(home).as_posix()
+        if relative.startswith(".cursor/projects/"):
+            # C2 directories are private: retain names/metadata, never contents.
+            result[relative] = (info.st_size, None, stat.S_IMODE(info.st_mode), stat.S_IFMT(info.st_mode))
+            continue
         data = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
-        result[path.relative_to(home).as_posix()] = (
+        result[relative] = (
             info.st_size, hashlib.sha256(data).hexdigest(), stat.S_IMODE(info.st_mode),
             stat.S_IFMT(info.st_mode))
     return result
@@ -32,6 +37,13 @@ class HomeWriteTests(SecurityFixture):
         after = snapshot(self.home)
         modified = changes(before, after)
         allowed = {".codex/config.toml", ".cursor/cli-config.json"}
+        from orcexe import trust
+        entries = trust.list_entries(self.repo / ".orcexe/trust-ledger.json")
+        cursor_keys = {e["key"] for e in entries if e["tool"] == "cursor"}
+        self.assertTrue(cursor_keys)
+        allowed.update(".cursor/projects/" + key + "/" + name
+                       for key in cursor_keys for name in
+                       (".workspace-trusted", "mcp-auth.json", "repo.json", "worker.log"))
         # macOS system Python (Xcode/CLT) caches stdlib bytecode under the user's
         # Library when its own tree is read-only; that is the OS, not orcexe.
         os_caches = ("Library/Caches/com.apple.python/",)

@@ -314,6 +314,18 @@ class ManifestTests(unittest.TestCase):
             data.update(tool=tool, family=family)
             self.assert_invalid(data, "exec.profiles.review", exact=tool != "claude-code")
 
+    def test_project_directory_side_effect(self):
+        data = load_path(CODEX)
+        data["side_effects"] = [dict(id="C2", file="${CURSOR_CONFIG_DIR:-~/.cursor}/projects/",
+                                    table="projects-dir", handler="trust-ledger")]
+        validate(data)
+        for field in ("id", "file", "handler"):
+            mutant = copy.deepcopy(data)
+            del mutant["side_effects"][0][field]
+            self.assert_invalid(mutant, "side_effects[0]." + field)
+        data["side_effects"][0]["handler"] = "delete"
+        self.assert_invalid(data, "side_effects[0].handler")
+
     def test_restore_after_run_side_effect(self):
         data = load_path(CODEX)
         data["side_effects"] = [dict(id="C1", file="cli-config.json",

@@ -464,6 +464,12 @@ def validate(data: dict) -> None:
                 _string(effect[key], path + "." + key)
             _strings(effect["keys"], path + ".keys", nonempty=True)
             continue
+        if isinstance(effect, dict) and effect.get("table") == "projects-dir":
+            _mapping(effect, path, ("id", "file", "table", "handler"))
+            for key in ("id", "file", "table", "handler"):
+                _string(effect[key], path + "." + key)
+            _choice(effect["handler"], path + ".handler", ("trust-ledger",))
+            continue
         _mapping(effect, path, ("id", "file", "table", "entry", "profile", "requires_git_repo", "config_override_prevents", "handler"))
         for key in ("id", "file", "table", "entry", "handler"):
             _string(effect[key], path + "." + key)

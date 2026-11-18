@@ -45,11 +45,22 @@ Codex may update its trust config (below); orcexe records additions in
 `.orcexe/trust-ledger.json`. Cursor's model keys in its user config are restored
 after a run.
 
-## Codex trust entries
+## Codex and Cursor trust entries
 
-Codex can add worktree trust entries to `${CODEX_HOME:-~/.codex}/config.toml`.
-`do` records newly observed project headers in the private, git-excluded
+Codex can add worktree trust entries to `${CODEX_HOME:-~/.codex}/config.toml` (E1).
+`do` and write-profile `run` record newly observed project headers in the private, git-excluded
 `.orcexe/trust-ledger.json`; pre-existing user entries are never recorded.
+
+Cursor's `--model` persists default model settings, which orcexe restores after
+each run (C1). Its `--trust` also creates directories under
+`${CURSOR_CONFIG_DIR:-~/.cursor}/projects/` for both the workspace and each
+`--add-dir` path (C2, observed 2026-11-18). The slug rule is inferred from 2 real
+samples (2026-11-18): replace each run outside `[A-Za-z0-9]` in the absolute path
+with `-`, then strip leading/trailing `-`; spaces/unicode are unverified. Every
+Cursor write/review run records only newly observed directory names and their
+workspace paths when uniquely matched; unmatched or colliding slugs stay unknown.
+Contents may include conversation transcripts, authentication files and worker
+logs; orcexe never reads these contents.
 
 ```sh
 orcexe trust list --repo /path/to/repo
@@ -64,6 +75,10 @@ confirmation on a TTY. Both commands support `--json`, `--codex-home`, and
 `--repo` (cwd by default, resolved to the main worktree). Exit codes: 0 success,
 1 confirmation declined or unavailable, 2 unreadable/unwritable state or a
 config change during cleanup. Header observations retain no other config lines.
+Cursor cleanup selects only recorded dirs whose known workspace paths no longer
+exist, refuses symlinks, and moves them into
+`projects/.orcexe-removed/<UTC>/` without deletion or reading contents. Live,
+unknown and pre-existing user dirs are kept; removed entries remain in the ledger.
 
 ## Local readiness
 
@@ -84,8 +99,11 @@ failures, 1 with failures, or 2 if diagnostics cannot run.
 Use `orcexe probe <tool> <detect|auth|models|quota> [--json]` for one model-free
 adapter call. It exits 0 for an answer, 1 for a reported tool error, or 2 for an
 absent tool/unrecognised answer. Claude's unavailable model-free list exits 1.
-Claude Code is detected by the presence of `CLAUDECODE`; H1/H2 report measured
-subprocess/skill-file evidence, while other capabilities remain declarations.
+Host detection uses environment names only: `CODEX_THREAD_ID` or `CODEX_SANDBOX`
+selects Codex ahead of an inherited `CLAUDECODE`; otherwise `CLAUDECODE` selects
+Claude Code, or the host is `none`. Codex capabilities are declared `info`.
+Claude Code H1/H2 report measured subprocess/skill-file evidence, while other
+capabilities remain declarations.
 
 ## Run one executor by hand
 

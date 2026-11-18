@@ -59,6 +59,13 @@ side_effects:
     file: '${CURSOR_CONFIG_DIR:-~/.cursor}/cli-config.json'
     keys: [model, selectedModel, modelSelectionHistory, modelParameters, hasChangedDefaultModel]
     handler: restore-after-run
+  # C2, Y: --trust creates workspace and --add-dir project dirs, observed 2026-11-18.
+  # Slug rule inferred from 2 real samples (2026-11-18): absolute path, each
+  # run outside [A-Za-z0-9] becomes '-', trim '-'; spaces/unicode unverified.
+  - id: C2
+    file: '${CURSOR_CONFIG_DIR:-~/.cursor}/projects/'
+    table: projects-dir
+    handler: trust-ledger
 windows: {native: true, sandbox_native: false, wsl2: true, wsl1: false}
 evidence:
   binary: Y

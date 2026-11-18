@@ -23,7 +23,7 @@ import threading
 
 from orcexe.adapters.base import (safe_write_text, safe_write_json, safe_append_jsonl, reserve_attempt, non_json_text)
 
-from orcexe import envfilter, gitutil, proc, redact
+from orcexe import envfilter, gitutil, proc, redact, trust
 from orcexe.adapters.base import (Adapter, RunRequest, validate_run_result,
                                   _ARTIFACTS, _USAGE, _require)
 from orcexe.manifest import load_manifest
@@ -365,6 +365,7 @@ class CursorAdapter(Adapter):
 
         before_head = gitutil.head(req.workdir)
         before_dirty = repository_files(gitutil.dirty(req.workdir))
+        before_fingerprints = gitutil.fingerprints(req.workdir, before_dirty)
         context = self._context.value
         status, warnings = "blocked", list(context["warnings"])
         observed = None
@@ -427,12 +428,28 @@ class CursorAdapter(Adapter):
             try:
                 config = self._config_path()
                 snapshot = self._snapshot_model(config, warnings)
+                projects = config.parent.expanduser().absolute() / "projects"
+                projects_before = None
+                try:
+                    projects_before = trust.project_names(projects)
+                except (OSError, ValueError) as error:
+                    warnings.append("trust_snapshot_failed:" + type(error).__name__)
                 try:
                     observed = proc.run(argv, cwd=str(req.workdir), env=self._environment(),
                         timeout_s=req.timeout_s, stall_s=req.stall_s, on_line=on_line,
                         cancel_event=cancel_event, kill_grace_s=self._kill_grace_s)
                 finally:
                     self._restore_model(config, snapshot, warnings)
+                    if projects_before is not None:
+                        try:
+                            main = Path(gitutil.main_worktree(req.workdir))
+                            grants = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "--add-dir"]
+                            grants += [token.partition("=")[2] for token in argv if token.startswith("--add-dir=")]
+                            trust.record(main / ".orcexe" / "trust-ledger.json", projects_before,
+                                trust.project_names(projects), req.run_id, projects, tool="cursor",
+                                workspaces=[str(Path(req.workdir).resolve()), *grants])
+                        except (OSError, ValueError, gitutil.GitError) as error:
+                            warnings.append("trust_ledger_record_failed:" + type(error).__name__)
             finally:
                 with self._lock:
                     del self._active[req.run_id]
@@ -454,7 +471,7 @@ class CursorAdapter(Adapter):
                 warnings.append("pipes_held")
             if shell_calls:
                 warnings.append('shell_used:{}'.format(shell_calls))
-        after = gitutil.changed_since(req.workdir, before_head, before_dirty)
+        after = gitutil.changed_since(req.workdir, before_head, before_dirty, before_fingerprints)
         after["diff_files"] = repository_files(after["diff_files"])
         after["untracked"] = repository_files(after["untracked"])
         if before_head != after["head"]:

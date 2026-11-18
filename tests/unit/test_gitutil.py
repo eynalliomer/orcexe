@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,56 @@ class GitFixture(unittest.TestCase):
 
 
 class GitUtilTests(GitFixture):
+    def test_unreadable_fingerprint_is_stable_and_compared_by_marker(self):
+        self.seed()
+        target = self.main / "unreadable.txt"
+        target.write_text("already dirty\n")
+        before = gitutil.head(self.main)
+        dirty = gitutil.dirty(self.main)
+        original_open = Path.open
+
+        def unreadable(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("unreadable fixture")
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", unreadable):
+            fingerprints = gitutil.fingerprints(self.main, dirty)
+            self.assertEqual(fingerprints, {"unreadable.txt": "unreadable"})
+            self.assertEqual(gitutil.changed_since(self.main, before, dirty, fingerprints)["diff_files"], [])
+        self.assertEqual(gitutil.changed_since(self.main, before, dirty, fingerprints)["diff_files"],
+                         ["unreadable.txt"])
+
+    def test_non_regular_fingerprints_never_open_fifo_or_socket(self):
+        for kind in (stat.S_IFIFO, stat.S_IFSOCK):
+            with self.subTest(kind=kind), \
+                    mock.patch.object(Path, "lstat", return_value=os.stat_result((kind,) + (0,) * 9)), \
+                    mock.patch.object(Path, "open", side_effect=AssertionError("non-regular file opened")):
+                self.assertEqual(gitutil.fingerprints(self.main, ["special"]), {"special": "non-regular"})
+
+    def test_fingerprint_lstat_oserror_is_unreadable(self):
+        with mock.patch.object(Path, "lstat", side_effect=OSError("fixture stat failed")), \
+                mock.patch.object(Path, "open", side_effect=AssertionError("unstatable file opened")):
+            self.assertEqual(gitutil.fingerprints(self.main, ["special"]), {"special": "unreadable"})
+
+    def test_dirty_content_edits_deletions_and_untouched_paths(self):
+        self.seed()
+        (self.main / "tracked.txt").write_bytes(b"already dirty\n")
+        (self.main / "untouched.txt").write_bytes(b"untouched\n")
+        (self.main / "deleted.txt").write_bytes(b"to delete\n")
+        before = gitutil.head(self.main)
+        dirty = gitutil.dirty(self.main)
+        fingerprints = gitutil.fingerprints(self.main, dirty)
+        self.assertEqual(gitutil.changed_since(self.main, before, dirty, fingerprints)["diff_files"], [])
+        (self.main / "tracked.txt").write_bytes(b"new content\n")
+        (self.main / "deleted.txt").unlink()
+        changed = gitutil.changed_since(self.main, before, dirty, fingerprints)
+        self.assertEqual(changed["diff_files"], ["deleted.txt", "tracked.txt"])
+        # Reverting a dirty tracked file to HEAD still counts as a run edit.
+        (self.main / "tracked.txt").write_bytes(b"before\n")
+        self.assertEqual(gitutil.changed_since(self.main, before, dirty, fingerprints)["diff_files"],
+                         ["deleted.txt", "tracked.txt"])
+
     def test_ls_files_nul_safe_root_relative_and_tracked_only(self):
         names = ["space name.txt", "line\nbreak.txt", "雪-😀.txt", "subdir/inside.py"]
         (self.main / "subdir").mkdir()

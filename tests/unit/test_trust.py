@@ -29,12 +29,147 @@ class TrustTests(unittest.TestCase):
         self.codex.mkdir()
         self.config = self.codex / "config.toml"
         self.ledger = self.root / ".orcexe/trust-ledger.json"
-        self.env = mock.patch.dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.codex))
+        self.env = mock.patch.dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.codex),
+                                   CURSOR_CONFIG_DIR=str(self.home / "cursor"))
         self.env.start()
         self.addCleanup(self.env.stop)
 
     def record(self, *keys, before=frozenset()):
         return trust.record(self.ledger, before, frozenset(map(str, keys)), "run-1", self.config)
+
+    def cursor_record(self, workspace):
+        projects = trust.projects_path()
+        key = trust.project_slug(workspace)
+        (projects / key).mkdir(parents=True)
+        return trust.record(self.ledger, frozenset(), frozenset({key}), "cursor-run", projects,
+                            tool="cursor", workspaces=[workspace])[0]
+
+    @unittest.skipIf(os.name == "nt", "Measured POSIX absolute paths")
+    def test_cursor_slug_matches_two_real_samples(self):
+        samples = {
+            "/Users/u/repos/orcexe-wt/do/do-20261117t200438-809b-cursor":
+                "Users-u-repos-orcexe-wt-do-do-20261117t200438-809b-cursor",
+            "/Users/u/repos/orcexe/.orcexe/runs/do-20261117T200438-809b-r1":
+                "Users-u-repos-orcexe-orcexe-runs-do-20261117T200438-809b-r1",
+        }
+        for workspace, key in samples.items():
+            with self.subTest(workspace=workspace):
+                self.assertEqual(trust.project_slug(workspace), key)
+
+    def test_cursor_slug_collision_is_unknown_and_never_cleaned(self):
+        workspaces = [self.root / "a.b", self.root / "a-b"]
+        key = trust.project_slug(workspaces[0])
+        self.assertEqual(trust.project_slug(workspaces[1]), key)
+        projects = trust.projects_path()
+        (projects / key).mkdir(parents=True)
+        entry, = trust.record(self.ledger, frozenset(), frozenset({key}), "collision", projects,
+                              tool="cursor", workspaces=workspaces)
+        self.assertIsNone(entry["workspace"])
+        before = self.ledger.read_bytes()
+        confirm = mock.Mock(return_value=True)
+        report = trust.clean(self.ledger, apply=True, confirm=confirm)
+        self.assertEqual(report["skipped_unknown"], [key])
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(report["removed"], [])
+        confirm.assert_not_called()
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.assertTrue((projects / key).is_dir())
+
+    def test_cursor_observation_and_cleanup_never_open_private_contents(self):
+        projects = trust.projects_path()
+        projects.mkdir(parents=True)
+        (projects / "pre-existing").mkdir()
+        before = trust.project_names()
+        gone = self.root / "gone"
+        entry = self.cursor_record(gone)
+        self.assertEqual(trust.record(self.ledger, before, trust.project_names(), "again", projects,
+                                     tool="cursor", workspaces=[gone]), [])
+        key = entry["key"]
+        # Prevent even an attempted content read under projects, including archive.
+        original_open = Path.open
+        def private_open(path, *args, **kwargs):
+            if projects in path.parents:
+                raise AssertionError("Cursor private contents opened")
+            return original_open(path, *args, **kwargs)
+        with mock.patch.object(Path, "open", private_open):
+            self.assertEqual([e["key"] for e in trust.list_entries(self.ledger)], [key])
+            callback = mock.Mock(return_value=True)
+            self.assertEqual(trust.clean(self.ledger, confirm=callback)["candidates"], [key])
+            callback.assert_not_called()
+            before_bytes = self.ledger.read_bytes()
+            self.assertFalse(trust.clean(self.ledger, apply=True)["confirmed"])
+            self.assertEqual(self.ledger.read_bytes(), before_bytes)
+            report = trust.clean(self.ledger, apply=True, confirm=callback)
+            callback.assert_called_once_with([key])
+            self.assertEqual(report["removed"], [key])
+            removed = trust.list_entries(self.ledger)[0]
+            self.assertEqual(removed["state"], "removed")
+            self.assertTrue(Path(removed["backup"]).expanduser().is_dir())
+            self.assertFalse((projects / key).exists())
+            self.assertTrue((projects / "pre-existing").is_dir())
+            self.assertEqual(trust.clean(self.ledger, apply=True)["removed"], [])
+
+    def test_cursor_unknown_missing_live_and_other_config_are_kept(self):
+        live = self.root / "live"
+        live.mkdir()
+        self.cursor_record(live)
+        missing = self.cursor_record(self.root / "missing")
+        (trust.projects_path() / missing["key"]).rmdir()
+        projects = trust.projects_path()
+        (projects / "unknown-slug").mkdir()
+        trust.record(self.ledger, frozenset(), frozenset({"unknown-slug"}), "unknown", projects, tool="cursor")
+        self.assertIsNone(trust.list_entries(self.ledger)[-1]["workspace"])
+        report = trust.clean(self.ledger)
+        self.assertEqual(report["kept_live"], [trust.project_slug(live)])
+        self.assertEqual(report["skipped_unknown"], ["unknown-slug"])
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(trust.list_entries(self.ledger)[1]["state"], "missing")
+        other = self.home / "other-cursor"
+        (other / "projects" / trust.project_slug(live)).mkdir(parents=True)
+        self.assertEqual(trust.clean(self.ledger, cursor_config_dir=other)["candidates"], [])
+
+    def test_cursor_refuses_symlinks_and_workspace_reappearing_at_confirmation(self):
+        gone = self.root / "gone"
+        entry = self.cursor_record(gone)
+        projects = trust.projects_path()
+        source = projects / entry["key"]
+        before = self.ledger.read_bytes()
+        def appeared(keys):
+            gone.mkdir()
+            return True
+        with self.assertRaisesRegex(trust.TrustError, "appeared during clean"):
+            trust.clean(self.ledger, apply=True, confirm=appeared)
+        self.assertTrue(source.is_dir())
+        self.assertEqual(self.ledger.read_bytes(), before)
+        gone.rmdir()
+        if not hasattr(os, "symlink"):
+            return
+        target = self.root / "user-dir"
+        target.mkdir()
+        source.rmdir()
+        source.symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(trust.TrustError, "symlink"):
+            trust.clean(self.ledger, apply=True, confirm=lambda keys: True)
+        source.unlink()
+        source.mkdir()
+        archive = projects / ".orcexe-removed"
+        archive.symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(trust.TrustError, "symlink"):
+            trust.clean(self.ledger, apply=True, confirm=lambda keys: True)
+        self.assertTrue(source.is_dir())
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_cursor_validator_rejects_unsafe_names_and_workspace_mapping(self):
+        if os.name != "nt":
+            self.assertEqual(trust.project_slug("/-workspace/path-"), "workspace-path")
+        self.cursor_record(self.root / "gone")
+        original = json.loads(self.ledger.read_text())
+        for field, value in (("key", "../escape"), ("key", ".orcexe-removed"),
+                             ("workspace", "relative"), ("workspace", str(self.root / "wrong"))):
+            data = json.loads(json.dumps(original))
+            data["entries"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(trust.TrustError):
+                trust.validate(data)
 
     def test_headers_escapes_unicode_spaces_and_exact_anchor(self):
         keys = {'C:\\work\\quote"here', 'a space/日本語', 'plain'}

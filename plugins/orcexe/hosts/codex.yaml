@@ -1,0 +1,19 @@
+# E3, observed 2026-11-18: Codex markers override inherited CLAUDECODE.
+host: codex
+detect: {env_any: [CODEX_THREAD_ID, CODEX_SANDBOX]}
+capabilities:
+  H1: info
+  H2: info
+  H3: info
+  H4: info
+  H5: info
+  H6: info
+  H7: info
+meanings:
+  H1: shell
+  H2: Agent Skill loading
+  H3: ask-user form
+  H4: background process watch
+  H5: project hooks
+  H6: rules reloaded after compaction
+  H7: read-only subagent

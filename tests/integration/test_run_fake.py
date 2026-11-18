@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import threading
+import unittest
 from unittest import mock
 
 from tests.unit._timing import scaled, wait_for
@@ -232,9 +234,10 @@ class RunFakeTests(GitFixture):
 
         ledger = json.loads((self.main / ".orcexe/trust-ledger.json").read_text())
         trust.validate(ledger)
-        self.assertEqual([entry["key"] for entry in ledger["entries"]],
+        codex_entries = [entry for entry in ledger["entries"] if entry["tool"] == "codex"]
+        self.assertEqual([entry["key"] for entry in codex_entries],
                          [codex_edit[0][codex_edit[0].index("--workdir") + 1]])
-        self.assertEqual(ledger["entries"][0]["run_id"], codex_edit[2].name)
+        self.assertEqual(codex_entries[0]["run_id"], codex_edit[2].name)
         self.assertEqual(json.loads(cursor.read_text()), dict(cursor_original, fakeLastRun="updated"))
         exclude = (self.main / ".git/info/exclude").read_text()
         self.assertIn("/.orcexe/", exclude.splitlines())
@@ -244,6 +247,83 @@ class RunFakeTests(GitFixture):
         self.assertEqual(completed.returncode, 2)
         self.assertEqual((codex_review[2] / "result.json").read_bytes(), original)
         self.assertEqual(codex_review[3].read_bytes(), calls)
+
+    def test_edits_to_already_dirty_files_count_for_every_executor(self):
+        for tool in TOOLS:
+            with self.subTest(tool=tool):
+                work = self.linked("dirty-" + tool)
+                (work / "tracked.txt").write_text("already dirty\n")
+                (work / "untouched.txt").write_text("leave alone\n")
+                prepared = self.prepare(tool, profile="write", workdir=work,
+                    ORCEXE_FAKE_EDIT_FILE="tracked.txt", ORCEXE_FAKE_EDIT_TEXT="run edit\n")
+                completed, result = self.invoke(prepared)
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                self.assertEqual(result["dirty_before"], ["tracked.txt", "untouched.txt"])
+                self.assertEqual(result["diff_files"], ["tracked.txt"])
+                self.assertNotIn("empty_diff", result["warnings"])
+
+    def test_cursor_projects_recorded_for_write_and_review_then_cleaned_via_cli(self):
+        for profile in ("write", "review"):
+            with self.subTest(profile=profile):
+                work = self.linked("cursor-projects-" + profile)
+                prepared = self.prepare("cursor", profile=profile, workdir=work,
+                    ORCEXE_FAKE_EDIT_FILE="tracked.txt", ORCEXE_FAKE_EDIT_TEXT="edit\n")
+                args, env, directory, *_ = prepared
+                projects = Path(env["CURSOR_CONFIG_DIR"]) / "projects"
+                user = projects / "pre-existing-user"
+                user.mkdir(parents=True)
+                completed, result = self.invoke(prepared)
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                ledger = self.main / ".orcexe/trust-ledger.json"
+                with mock.patch.dict(os.environ, env, clear=True):
+                    entries = [e for e in trust.list_entries(ledger) if e["run_id"] == directory.name]
+                    self.assertEqual({e["key"] for e in entries},
+                                     {trust.project_slug(work), trust.project_slug(directory / "brief")})
+                    self.assertEqual({e["workspace"] for e in entries}, {str(work), str(directory / "brief")})
+                    self.assertTrue(all(e["tool"] == "cursor" and e["table"] == "projects-dir" for e in entries))
+                    self.assertEqual(trust.clean(ledger)["candidates"], [])
+                    self.git_run(self.main, "worktree", "remove", "--force", str(work))
+                    before = ledger.read_bytes()
+                    self.assertEqual(trust.clean(ledger)["candidates"], [trust.project_slug(work)])
+                    self.assertEqual(ledger.read_bytes(), before)
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        code = cli.main(["trust", "clean", "--repo", str(self.main), "--apply", "--yes", "--json"])
+                    self.assertEqual(code, 0, output.getvalue())
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(report["removed"], [trust.project_slug(work)])
+                    removed = next(e for e in trust.list_entries(ledger) if e["key"] == trust.project_slug(work))
+                    self.assertEqual(removed["state"], "removed")
+                    archived = Path(removed["backup"]).expanduser()
+                    self.assertIn(".orcexe-removed", archived.parts)
+                    self.assertEqual({p.name for p in archived.iterdir()},
+                                     {".workspace-trusted", "agent-transcripts", "mcp-auth.json", "repo.json", "worker.log"})
+                    self.assertTrue(user.is_dir())
+                    # The --add-dir workspace lives under the dotted .orcexe directory.
+                    brief_workspace = directory / "brief"
+                    brief_entry = next(e for e in entries if e["workspace"] == str(brief_workspace))
+                    self.assertNotIn(".", brief_entry["key"])
+                    shutil.rmtree(directory)
+                    self.assertEqual(trust.clean(ledger)["candidates"], [brief_entry["key"]])
+                    self.assertEqual(trust.clean(ledger)["skipped_unknown"], [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX chmod permissions")
+    def test_unreadable_untouched_dirty_file_does_not_crash_run(self):
+        for tool in TOOLS:
+            with self.subTest(tool=tool):
+                work = self.linked("unreadable-" + tool)
+                for name in ("tracked.txt", "unreadable.txt"):
+                    target = work / name
+                    target.write_text("already dirty, leave alone\n")
+                    target.chmod(0o000)
+                    self.addCleanup(target.chmod, 0o600)
+                prepared = self.prepare(tool, profile="write", workdir=work,
+                    ORCEXE_FAKE_EDIT_FILE="changed.txt", ORCEXE_FAKE_EDIT_TEXT="run edit\n")
+                completed, result = self.invoke(prepared)
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["dirty_before"], ["tracked.txt", "unreadable.txt"])
+                self.assertEqual(result["diff_files"], ["changed.txt"])
 
     def test_default_id_agent_claims_and_unreadable_brief(self):
         prepared = self.prepare("codex")

@@ -1,12 +1,13 @@
 """Git observations through the bounded runner, without shell or user config.
 
 Paths in observations are relative to the repository root. Renames include
-both the old and new name. A pre-existing dirty path is excluded as a whole
-from changed_since; this is a path snapshot, not attribution of individual edits.
+both the old and new name. Content snapshots distinguish edits to dirty paths.
 """
 
 import os
+import hashlib
 from pathlib import Path
+import stat
 
 from orcexe import proc
 
@@ -111,7 +112,35 @@ def dirty(path):
     return _status(path)[0]
 
 
-def changed_since(path, head_before, dirty_before):
+def fingerprints(path, files):
+    """Hash regular files/link targets; compare other paths by stable markers."""
+    root = Path(toplevel(path))
+    result = {}
+    for name in files:
+        target = root / name
+        try:
+            mode = target.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                result[name] = hashlib.sha256(os.fsencode(os.readlink(target))).hexdigest()
+            elif stat.S_ISDIR(mode):
+                # Gitlinks are directories; their state is observed by Git.
+                result[name] = "directory"
+            elif not stat.S_ISREG(mode):
+                result[name] = "non-regular"
+            else:
+                digest = hashlib.sha256()
+                with target.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(128 * 1024), b""):
+                        digest.update(chunk)
+                result[name] = digest.hexdigest()
+        except FileNotFoundError:
+            result[name] = None
+        except OSError:
+            result[name] = "unreadable"
+    return result
+
+
+def changed_since(path, head_before, dirty_before, fingerprints_before=None):
     current_head = head(path)
     files, untracked = _status(path)
     args = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"]
@@ -122,6 +151,11 @@ def changed_since(path, head_before, dirty_before):
     elif current_head is not None:
         _, text = _git(path, "ls-tree", "-r", "--name-only", "-z", "HEAD", nul=True)
         files.extend(text.split("\0")[:-1])
+    changed = set(files) - set(dirty_before)
+    if fingerprints_before is not None:
+        current = fingerprints(path, dirty_before)
+        changed.update(name for name in dirty_before
+                       if current[name] != fingerprints_before[name])
     return {"head": current_head,
-            "diff_files": sorted(set(files) - set(dirty_before)),
+            "diff_files": sorted(changed),
             "untracked": untracked}
