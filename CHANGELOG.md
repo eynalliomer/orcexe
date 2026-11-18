@@ -1,5 +1,6 @@
 ## 0.1.0 — unreleased
 
+- Add an offline security test package covering source-wide network imports, child credential isolation, forbidden argv, private reports and HOME writes; preserve prompt operands as free text; fixed: no socket import; identity lookup uses a minimal env.
 - Add SHA-pinned GitHub Actions CI across three operating systems and Python 3.9/3.13, experimental Windows reporting, a targeted weekly/manual slow suite, workflow safety tests, and CI cost guidance.
 - Add the Claude Code plugin surface: the `orcexe` skill (doctor first, verdict-driven `do` reporting, human-only landing, exit codes) and the `/orcexe` command, plus `scripts/check_marketplace.py` validating marketplace/plugin manifests, version agreement, skill front matter and size, and command descriptions.
 - Add `orcexe run` for one manual executor in a chosen Git worktree, with observed-status exits, private atomic receipts, signal cancellation, Codex trust recording, and offline integration coverage for all three tools.

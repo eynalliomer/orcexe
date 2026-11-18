@@ -13,10 +13,10 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import secrets
 import shlex
 import signal
-import socket
 import subprocess
 import tempfile
 import threading
@@ -72,7 +72,7 @@ def _stale(path):
         data = _lock_data(path)
         pid = data.get("pid")
         # Legacy locks lacked host/task. Never reclaim a remote or live PID.
-        if type(pid) is not int or pid <= 0 or data.get("host", socket.gethostname()) != socket.gethostname():
+        if type(pid) is not int or pid <= 0 or data.get("host", platform.node()) != platform.node():
             return None
         try:
             os.kill(pid, 0)
@@ -111,7 +111,7 @@ def _acquire(path, task_id, on_abandoned):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(dict(pid=os.getpid(), created_utc=_utc().isoformat(),
-                               task_id=task_id, host=socket.gethostname()), handle)
+                               task_id=task_id, host=platform.node()), handle)
                 handle.flush()
                 os.fsync(handle.fileno())
             return path.stat()
@@ -179,9 +179,13 @@ def _resolve_identity(main):
 
     Git precedence per field: GIT_AUTHOR_*/GIT_COMMITTER_* environment,
     author.*/committer.* config, then user.* config (local/global/system).
-    Only read-only config queries may use this normal user environment.
+    Only read-only config queries may use this minimal user environment.
     """
-    env = os.environ.copy()
+    allowed = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "XDG_CONFIG_HOME",
+               "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_AUTHOR_NAME",
+               "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
+    env = {key: value for key, value in os.environ.items()
+           if key in allowed or key.startswith("LC_")}
 
     def config(key):
         result = subprocess.run(
