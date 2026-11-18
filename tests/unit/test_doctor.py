@@ -193,6 +193,24 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(len(data["tools"]), 3)
         self.assertTrue(all(c["status"] == "info" for c in data["checks"] if c["id"].endswith(".detect")))
 
+    def test_timeout_message_uses_configured_probe_budget(self):
+        for deadline in (10.01, 10):
+            with self.subTest(deadline=deadline):
+                adapter = doctor._adapter("cursor", budget_scale=.005)
+                deadlines = []
+
+                def timeout():
+                    deadlines.append(adapter._doctor_deadline)
+                    raise TimeoutError()
+
+                with mock.patch.object(adapter, "auth_status", side_effect=timeout), \
+                        mock.patch.object(doctor.time, "monotonic", side_effect=(10, 10.02)):
+                    raw = doctor._call(adapter, "auth_status", deadline)
+                self.assertEqual(deadlines, [deadline] if deadline > 10 else [])
+                self.assertEqual(raw["_timeout_s"], .05)
+                self.assertEqual(doctor._timeout_line("cursor", "auth", raw)["message"],
+                                 "cursor: auth timed out after 0.05 s")
+
     def test_total_budget_limits_later_probes(self):
         adapter = doctor._adapter("cursor")
         adapter._doctor_budgets = dict(doctor._BUDGET_S, detect=.4, auth=.4, models=.4, quota=.4)

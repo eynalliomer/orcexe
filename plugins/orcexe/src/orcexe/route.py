@@ -164,6 +164,8 @@ def _quota(probe):
         return None, None
     allowed = probe.get("allowed")
     allowed = allowed if type(allowed) is bool else None
+    if allowed is None:
+        return None, None
     windows = probe.get("windows", [])
     percentages = []
     for window in windows if isinstance(windows, list) else []:

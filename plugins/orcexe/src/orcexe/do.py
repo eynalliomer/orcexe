@@ -22,7 +22,9 @@ import tempfile
 import threading
 import traceback
 
-from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, ledger, redact, route, trust, worktree
+from orcexe.adapters.base import safe_write_text
+
+from orcexe import classify, exitcodes, gate_lite, gitutil, ledger, redact, route, trust, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
@@ -89,14 +91,14 @@ def _acquire(path, task_id, on_abandoned):
     path.parent.mkdir(mode=0o700, exist_ok=True)
     for _ in range(2):
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         except FileExistsError:
             stale = _stale(path)
             if stale is None:
                 return None
             reclaim = path.with_suffix(".reclaim")
             try:
-                guard = os.open(reclaim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                guard = os.open(reclaim, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             except FileExistsError:
                 return None
             try:
@@ -145,6 +147,23 @@ def _git(main, *args, index=None, identity=None, allow_failure=False):
     return result.returncode, result.stdout
 
 
+def _config_snapshot(main):
+    """Bind all project config bytes, including future config, excluding run state."""
+    root = main / ".orcexe"
+    excluded = {"runs", "do.lock", "do.reclaim", "ledger.jsonl", "trust-ledger.json", "env.json"}
+    result = {}
+    if root.is_symlink():
+        raise _DoFailure("Unsafe main configuration directory")
+    for folder, dirs, files in os.walk(root, followlinks=False):
+        if Path(folder) == root:
+            dirs[:] = [d for d in dirs if d not in excluded]
+            files = [f for f in files if f not in excluded]
+        for name in files + dirs:
+            path = Path(folder) / name
+            result[path.relative_to(root).as_posix()] = gate_lite._control_hash(path)
+    return result
+
+
 def _main_snapshot(main, task_id):
     code, symbolic = _git(main, "symbolic-ref", "-q", "HEAD", allow_failure=True)
     if code not in (0, 1):
@@ -171,7 +190,7 @@ def _main_snapshot(main, task_id):
             group.append(source)
         if any(n != b".orcexe" and not n.startswith(b".orcexe/") for n in names):
             kept.extend(group)
-    return symbolic, oid, refs, tuple(kept)
+    return symbolic, oid, refs, tuple(kept), _config_snapshot(main)
 
 
 def _resolve_identity(main):
@@ -248,7 +267,7 @@ def _exclude(main):
     path = (main / common).resolve() / "info" / "exclude"
     previous = path.read_text(encoding="utf-8") if path.exists() else ""
     if "/.orcexe/" not in previous.splitlines():
-        fsio.atomic_write_text(path, previous + ("\n" if previous and not previous.endswith("\n") else "")
+        safe_write_text(path, previous + ("\n" if previous and not previous.endswith("\n") else "")
                                + "/.orcexe/\n")
 
 
@@ -287,7 +306,7 @@ def _report(summary, directory=None):
         lines.append("Nothing was landed. " + followup)
     clean["message"] = redact.redact_text("\n".join(line for line in lines if line) + "\n")
     if directory:
-        fsio.atomic_write_text(directory / "status.md", clean["message"], mode=0o600)
+        safe_write_text(directory / "status.md", clean["message"], mode=0o600)
         os.chmod(directory.parent, 0o700)
         os.chmod(directory, 0o700)
     return clean
@@ -323,7 +342,7 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
                 pass
         if directory:
             try:
-                fsio.atomic_write_text(directory / "internal-error.txt",
+                safe_write_text(directory / "internal-error.txt",
                                        redact.redact_text(traceback.format_exc()), mode=0o600)
             except Exception:
                 pass
@@ -427,10 +446,13 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
         wt = worktree.create(main, worktree.Spec(plan="do", task=task_id.lower(), tool=decision["tool"]))
         try:
             controls = gate_lite.snapshot_controls(main, wt)
+            # Freeze every classifier/gate input before the executor gets control.
+            classification = classify.classify_repo(str(main), task)
+            commands = gate_lite.detect_commands(main, wt.base_commit)
             main_before = _main_snapshot(main, task_id)
         finally:
             summary.update(worktree=wt.path, branch=wt.branch)
-        fsio.atomic_write_text(directory / "brief-src.md", BRIEF.format(task=task,
+        safe_write_text(directory / "brief-src.md", BRIEF.format(task=task,
                                target=classification.targets[0]), mode=0o600)
         os.chmod(directory.parent, 0o700)
         os.chmod(directory, 0o700)
@@ -485,7 +507,7 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
             state = "unverified"
             return report
         gate = gate_lite.gate(repo_path=main, worktree=wt, classification=classification,
-                             run_result=result, run_dir=directory, controls_before=controls)
+                             run_result=result, run_dir=directory, controls_before=controls, commands=commands)
         failed = next((c for c in gate["checks"] if c["status"] in ("fail", "not_seen")), None)
         verdict = gate["verdict"]
         log.append("gate.result", task_id, dict(run_id=run_id, verdict=verdict,

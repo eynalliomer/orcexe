@@ -49,10 +49,10 @@ class CursorAdapterTests(GitFixture):
                 result = self.adapter().run(req)
                 self.assertEqual(result['status'], 'completed')
                 self.assertIn('effort_not_applicable', result['warnings'])
-                prompt = 'Read the task brief at {} and carry it out. Follow its rules exactly.'.format(Path(req.run_dir) / 'brief.md')
+                prompt = 'Read the task brief at {} and carry it out. Follow its rules exactly.'.format(Path(req.run_dir) / 'brief' / 'brief.md')
                 argv = [c['argv'] for c in self.log() if c['model_call']][-1]
                 self.assertEqual(argv, ['-p', prompt, '--output-format', 'stream-json', '--trust',
-                    '--workspace', req.workdir, '--model', 'composer-2.5', '--add-dir', req.run_dir, *extra])
+                    '--workspace', req.workdir, '--model', 'composer-2.5', '--add-dir', str(Path(req.run_dir) / 'brief'), *extra])
                 self.assertEqual(result['usage'], dict(input=10, cached_read=2, cache_write=3, output=4, reasoning=None))
                 self.assertEqual(result['cost'], dict(list_usd=None, basis='unknown'))
                 self.assertEqual(result['model_actual'], 'composer-2.5')

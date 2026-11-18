@@ -13,12 +13,12 @@ orcexe do "Add a docstring to src/app.py" --repo /path/to/repo
 orcexe do "src/app.py'ye docstring ekle" --dry-run --json
 ```
 
-`do` classifies and routes one fast-lane task, executes one Codex attempt in an
+`do` classifies and routes one fast-lane task, executes one attempt using Codex, Claude Code, or Cursor in an
 isolated worktree, checks it with the gate, and records the result in the project
 ledger. It never asks questions. Only `accepted` prints human landing commands;
 review and commit pending worktree edits before using them. Nothing is merged,
 and the worktree is always kept. Standard/risky tasks require the future `plan`
-command. Codex uses your existing login; `do` does not log in or install tools.
+command. Each tool uses your existing login; `do` does not log in or install tools.
 
 Options: `--repo` defaults to cwd; `--timeout` defaults to 1800 seconds; `--json`
 prints one redacted summary. `--model-constraint` accepts a JSON route constraint
@@ -28,8 +28,22 @@ write: no lock, ledger event, worktree, or brief.
 
 Reports and executor evidence live in `.orcexe/runs/<run-id>/`; the runs directory
 is private (0700) and `.orcexe/` is git-excluded. Reports redact task previews;
-`brief-src.md` and the adapter's `brief.md` deliberately contain the verbatim task
-so the executor can read it. Treat these private briefs as sensitive.
+`brief-src.md` and the adapter's `brief.md` (under `brief/` for Claude/Cursor) deliberately contain the verbatim task
+so the executor can read it. Brief copies use mode 0600. Treat these private briefs as sensitive.
+
+The gate runs the project's own test, lint, and build commands without a network
+sandbox, from definitions frozen before execution. Tool project hooks may also
+run. Cursor starts with `--trust` and uses its sandbox for the write profile.
+Claude/Cursor receive `--add-dir` access only to the run's `brief/` directory.
+
+orcexe writes project state and reports under `.orcexe/`, managed worktrees under
+`<repo>-wt/`, and cached reports, quota observations, and temporary gate checkouts
+under `${ORCEXE_STATE_DIR:-~/.cache/orcexe}`. The Claude quota cache is
+`quota-claude.json` there; observations expire after six hours and reset windows
+stop blocking routing. Delete that file to clear the cache immediately.
+Codex may update its trust config (below); orcexe records additions in
+`.orcexe/trust-ledger.json`. Cursor's model keys in its user config are restored
+after a run.
 
 ## Codex trust entries
 
@@ -92,7 +106,7 @@ are recorded in the repository trust ledger; Cursor model settings are restored.
 The command reports observed `orcexe.run.v1` evidence, with no classification,
 gate or landing. Exit 0 means `completed` (with changes for write); exit 1 means
 `failed`; exit 2 means quota, auth, timeout, stalled, blocked, cancelled, an empty
-write diff, or invalid usage. Pre-existing dirty paths are excluded from the
+write diff, a `pipes_held` warning, or invalid usage. Pre-existing dirty paths are excluded from the
 run's changes. Agent self-reports are informational. SIGINT/SIGTERM/SIGHUP stop
 the executor and publish a validated, atomic `cancelled` receipt.
 

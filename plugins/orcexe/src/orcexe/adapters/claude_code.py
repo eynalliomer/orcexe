@@ -3,8 +3,8 @@
 Never forward ANTHROPIC_* or CLAUDE_CODE_USE_*: these can switch authentication,
 billing or providers, even when explicitly requested through allow_extra.
 -p runs user/project hooks. --bare is unsuitable for OAuth/keychain subscribers.
---add-dir grants access to brief.md, and acceptEdits also permits edits there;
-the gate never trusts executor-written run artifacts. result.json is written
+--add-dir grants access only to run_dir/brief, containing brief.md; acceptEdits
+also permits edits there. Evidence remains outside that grant. result.json is written
 by this adapter afterwards. total_cost_usd is list price, never a billed cost.
 """
 
@@ -17,7 +17,9 @@ import re
 import threading
 import time
 
-from orcexe import fsio, gitutil, proc, redact
+from orcexe.adapters.base import (safe_write_text, safe_write_json, safe_append_jsonl, reserve_attempt, non_json_text)
+
+from orcexe import gitutil, proc, redact
 from orcexe.adapters.base import (Adapter, RunRequest, validate_run_result,
                                   _ARTIFACTS, _USAGE as _RESULT_USAGE, _require)
 from orcexe.manifest import load_manifest
@@ -142,14 +144,24 @@ class ClaudeCodeAdapter(Adapter):
             info = _quota_info(raw.get("rate_limit_info"))
             observed = raw.get("observed_at")
             if info is not None and _number(observed):
-                return dict(windows=_windows(info), allowed=info["status"] == "allowed",
-                            source="stream", age_s=max(0, time.time() - observed))
+                now = time.time()
+                age = max(0, now - observed)
+                if age > 6 * 60 * 60:
+                    return dict(windows=[], allowed=None, source="none", age_s=age)
+                active = [w for w in _windows(info) if w["resets_at"] > now]
+                limiting = info["unifiedWindows"].get(info.get("rateLimitType"), {})
+                reset = (info.get("resetsAt", math.inf) <= now or
+                         limiting.get("resetsAt", math.inf) <= now or
+                         bool(info["unifiedWindows"]) and not active)
+                # A reset is unknown capacity until a fresh stream observation.
+                allowed = None if reset else info["status"] == "allowed"
+                return dict(windows=active, allowed=allowed, source="stream", age_s=age)
         except (OSError, ValueError, TypeError, AttributeError, RecursionError):
             pass
         return dict(windows=[], allowed=None, source="none")
 
     def _ensure_brief_readable(self, req):
-        # run() has validated every --add-dir, including the explicit run_dir
+        # run() has validated every --add-dir, including the explicit brief
         # grant. External briefs therefore need no base default-root restriction.
         pass
 
@@ -176,8 +188,7 @@ class ClaudeCodeAdapter(Adapter):
                     rejected |= info["status"] == "rejected"
             elif kind == "result":
                 result = event
-            # Retain only classification markers, never arbitrary stream text.
-            evidence.update(self._error_markers(json.dumps(event)))
+
         if result is not None:
             text = result.get("result")
             extracted["final_text"] = text if isinstance(text, str) else ""
@@ -215,10 +226,19 @@ class ClaudeCodeAdapter(Adapter):
         rejected = context.get("rejected", False) if context is not None else any(
             event.get("type") == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict) and
             event["rate_limit_info"].get("status") == "rejected" for event in events)
-        markers = set(context.get("markers", ())) if context is not None else set()
-        markers.update(self._error_markers(proc_result.stderr_tail))
-        for event in events:
-            markers.update(self._error_markers(json.dumps(event)))
+        markers = set()
+        # Only an explicitly erroneous final result can carry event diagnostics.
+        if result is not None and result.get("is_error") is True:
+            markers.update(self._error_markers(json.dumps(result)))
+            if any(result.get(key) in {"auth", "auth_error", "authentication_error", "authentication_failed", "error_authentication"}
+                   for key in ("subtype", "terminal_reason")):
+                markers.add("auth")
+        if proc_result.returncode != 0:
+            markers.update(context.get("markers", ()) if context is not None else ())
+            markers.update(self._error_markers(non_json_text(proc_result.stderr_tail)))
+            for event in events if context is None else ():
+                if isinstance(event.get("_raw"), str):
+                    markers.update(self._error_markers(non_json_text(event["_raw"])))
         if rejected:
             return "quota", []
         if "auth" in markers:
@@ -238,13 +258,12 @@ class ClaudeCodeAdapter(Adapter):
         directory = Path(req.run_dir).resolve()
         if (directory / "result.json").exists():
             raise FileExistsError("result.json already exists")
-        with (directory / ".attempt").open("x", encoding="utf-8"):
-            pass
+        reserve_attempt(directory)
         paths = {key: str(directory / name) for key, name in (
             ("final_text_path", "final.md"), ("events_path", "events.jsonl"), ("stderr_tail_path", "stderr.txt"))}
         for path in paths.values():
-            fsio.atomic_write_text(path, "", mode=0o600)
-        fsio.atomic_write_text(directory / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"), mode=0o600)
+            safe_write_text(path, "", mode=0o600)
+        safe_write_text(directory / "brief" / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"), mode=0o600)
         result = dict(schema="orcexe.run.v1", run_id=req.run_id, task=req.task, tool=req.tool,
             tool_version=None, family=self.manifest.family, model_requested=req.model,
             model_actual=None, effort=req.effort, profile=req.profile, context="fresh", status="blocked",
@@ -254,7 +273,7 @@ class ClaudeCodeAdapter(Adapter):
             quota_after=dict(windows=[], source="none"), duration_ms=0,
             warnings=["add_dir_invalid"], **paths)
         validate_run_result(result, run_dir=directory)
-        fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+        safe_write_json(directory / "result.json", result, mode=0o600)
         return result
 
     def run(self, req):
@@ -265,6 +284,7 @@ class ClaudeCodeAdapter(Adapter):
             raise ValueError("request tool differs from manifest")
         directory = Path(req.run_dir).resolve()
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (directory / "brief").mkdir(mode=0o700)
         values = dict(workdir=str(Path(req.workdir).resolve()), run_dir=str(directory),
                       model=req.model, effort=req.effort, final=str(directory / "final.md"), prompt="Preflight")
         argv = self.manifest.build_argv(req.profile, **{
@@ -278,7 +298,7 @@ class ClaudeCodeAdapter(Adapter):
         if not grants or any(not os.path.isabs(path) or not Path(path).is_dir() for path in grants):
             return self._blocked(req)
         # The brief grant must be present even in a caller-supplied manifest.
-        if directory not in [Path(path).resolve() for path in grants]:
+        if directory / "brief" not in [Path(path).resolve() for path in grants]:
             return self._blocked(req)
         context = {"directory": directory}
         self._run_context.value = context
@@ -291,16 +311,16 @@ class ClaudeCodeAdapter(Adapter):
             info = context.get("latest")
             if info is not None:
                 try:
-                    fsio.atomic_write_json(self._cache_path(), dict(observed_at=context.get("quota_observed_at", time.time()), rate_limit_info=info), mode=0o600)
+                    safe_write_json(self._cache_path(), dict(observed_at=context.get("quota_observed_at", time.time()), rate_limit_info=info), mode=0o600)
                 except OSError:
                     result["warnings"].append("quota_cache_write_failed")
             validate_run_result(result, run_dir=directory)
-            fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+            safe_write_json(directory / "result.json", result, mode=0o600)
             return result
         finally:
             del self._run_context.value
 
-    def _observe(self, event):
+    def _observe(self, event, *, diagnostic=False):
         context = self._run_context.value
         facts = context.setdefault("observed", {})
         if not isinstance(event, dict):
@@ -318,14 +338,11 @@ class ClaudeCodeAdapter(Adapter):
                 context["quota_observed_at"] = time.time()
                 if info["status"] == "rejected":
                     context["rejected"] = True
-        context.setdefault("markers", set()).update(self._error_markers(json.dumps(event)))
+        if diagnostic and isinstance(event.get("_raw"), str):
+            context.setdefault("markers", set()).update(self._error_markers(non_json_text(event["_raw"])))
 
     def _run(self, req):
-        """Base lifecycle with Claude facts observed before the 32-event tail.
-
-        Kept here because round 1b permits only placeholder plumbing in base.
-        Contract tests exercise the same lifecycle invariants for both paths.
-        """
+        """Shared lifecycle invariants, with bounded Claude facts captured directly."""
         if not isinstance(req, RunRequest):
             raise ValueError("run requires RunRequest")
         req.__post_init__()  # Filesystem validity can change after construction.
@@ -334,11 +351,9 @@ class ClaudeCodeAdapter(Adapter):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         # An exclusive reservation also prevents concurrent attempts racing on
         # the same directory, including across adapter instances/processes.
-        reservation = directory / ".attempt"
         if (directory / "result.json").exists():
             raise FileExistsError("result.json already exists")
-        with reservation.open("x", encoding="utf-8"):
-            pass
+        reserve_attempt(directory)
         root = Path(gitutil.toplevel(req.workdir))
 
         def repository_files(files):
@@ -355,15 +370,15 @@ class ClaudeCodeAdapter(Adapter):
         detected = {"version": None}
         # Always create the evidence artifacts, even for a refused write.
         paths = {key: str(directory / name) for key, name in _ARTIFACTS.items()}
-        fsio.atomic_write_text(directory / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
-        fsio.atomic_write_text(paths["events_path"], "", mode=0o600)
+        safe_write_text(directory / "brief" / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
+        safe_write_text(paths["events_path"], "", mode=0o600)
         if (req.profile == "write" and root ==
                 Path(gitutil.main_worktree(req.workdir))):
             warnings.append("main_worktree_write_refused")
         else:
             self._ensure_brief_readable(req)
             prompt = "Read the task brief at {} and carry it out. Follow its rules exactly.".format(
-                directory / "brief.md")
+                directory / "brief" / "brief.md")
             _require(len(prompt) <= 600 and not prompt.startswith("-"), "brief pointer too long")
             values = dict(workdir=str(Path(req.workdir).resolve()), run_dir=str(directory),
                 model=req.model, effort=req.effort, final=paths["final_text_path"], prompt=prompt)
@@ -379,13 +394,15 @@ class ClaudeCodeAdapter(Adapter):
             # --output-format stream-json emits one complete JSON object per
             # line, unlike the auth status document; JSONL parsing is intentional.
             def on_line(line):
+                diagnostic = False
                 try:
                     event = json.loads(line, parse_constant=lambda _: None)
                 except (ValueError, RecursionError):
                     event = {"_raw": line}
+                    diagnostic = True
                 event = redact.redact_obj(event)
-                self._observe(event)
-                fsio.append_jsonl(paths["events_path"], event)
+                self._observe(event, diagnostic=diagnostic)
+                safe_append_jsonl(paths["events_path"], event)
                 recent.append(event)
                 kind = event.get("type") if isinstance(event, dict) else None
                 declared = self.manifest.data["events"]["types"]
@@ -429,8 +446,8 @@ class ClaudeCodeAdapter(Adapter):
             warnings.append("model_mismatch")
         final_text = redact.redact_text(extracted.get("final_text") or "")
         # Tool-written final files are not trusted as a second status channel.
-        fsio.atomic_write_text(paths["final_text_path"], final_text, mode=0o600)
-        fsio.atomic_write_text(paths["stderr_tail_path"],
+        safe_write_text(paths["final_text_path"], final_text, mode=0o600)
+        safe_write_text(paths["stderr_tail_path"],
             redact.redact_text(observed.stderr_tail if observed else ""), mode=0o600)
         final_line = final_text.rstrip("\r\n").split("\n")[-1]
         match = re.fullmatch(r"ORCEXE_EXIT: (DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)", final_line)
@@ -449,5 +466,5 @@ class ClaudeCodeAdapter(Adapter):
             duration_ms=int(observed.duration_s * 1000) if observed else 0,
             warnings=list(dict.fromkeys(warnings)), **paths)
         validate_run_result(result, run_dir=directory)
-        fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+        safe_write_json(directory / "result.json", result, mode=0o600)
         return result

@@ -30,7 +30,7 @@ quota:
 exec:
   # exec.positional_first: true — Y: prompt-first argv verified by a real run 2026-11-17 (claude 2.1.310, haiku)
   # --add-dir, --allowedTools and --disallowedTools consume through the next flag.
-  argv: [claude, -p, '{prompt}', --output-format, stream-json, --verbose, --model, '{model}', --effort, '{effort}', --no-session-persistence, --strict-mcp-config, --include-hook-events, --add-dir, '{run_dir}']
+  argv: [claude, -p, '{prompt}', --output-format, stream-json, --verbose, --model, '{model}', --effort, '{effort}', --no-session-persistence, --strict-mcp-config, --include-hook-events, --add-dir, '{run_dir}/brief']
   workdir_via: cwd
   stdin: devnull
   requires_git_repo: false
@@ -53,8 +53,8 @@ events:
 exit_codes: {usage: 1, runtime: 1}
 # -p runs user/project hooks; --bare would disable subscription authentication.
 # acceptEdits also permits edits in --add-dir (the brief directory). This is
-# acceptable: the gate never trusts run_dir content modified during execution;
-# the adapter writes result.json afterwards. Cost is list price, not a bill.
+# limited to run_dir/brief, which contains only brief.md. Evidence files stay
+# outside that grant and are opened without following symlinks. Cost is list price, not a bill.
 side_effects: []
 windows: {native: true, sandbox_native: false, wsl2: true, wsl1: false}
 evidence:

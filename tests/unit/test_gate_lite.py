@@ -816,14 +816,14 @@ class GateTests(GitFixture):
             self.assertNotEqual(result['verdict'], 'accepted')
             gl.validate_gate_result(result)
             self.assertEqual(json.loads((self.run_dir / 'gate.json').read_text()), result)
-        write = gl.fsio.atomic_write_json
+        write = gl.safe_write_json
         count = [0]
         def once(*args, **kwargs):
             count[0] += 1
             if count[0] == 1:
                 raise OSError('do-not-log')
             return write(*args, **kwargs)
-        with mock.patch.object(gl.fsio, 'atomic_write_json', side_effect=once):
+        with mock.patch.object(gl, 'safe_write_json', side_effect=once):
             self.outcome(self.call(), 'unverified', 'project_checks', 'not_seen')
         self.assertEqual(count[0], 2)
 

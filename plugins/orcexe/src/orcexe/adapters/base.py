@@ -23,8 +23,10 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import threading
+import secrets
+import stat
 
-from orcexe import envfilter, fsio, gitutil, proc, redact
+from orcexe import envfilter, gitutil, proc, redact
 from orcexe.manifest import Manifest, meets_min_version
 
 
@@ -42,6 +44,106 @@ _NULLABLE_STRINGS = ("tool_version", "model_actual", "head_before", "head_after"
 _LISTS = ("dirty_before", "diff_files", "untracked", "warnings")
 _KEYS = set(_STRINGS + _NULLABLE_STRINGS + _LISTS) | set(_ARTIFACTS) | {
     "exit_code", "signal", "self_report", "usage", "cost", "quota_after", "duration_ms"}
+
+
+def _write_parent(path):
+    """Open each parent without following executor-planted directory links."""
+    path = Path(path).absolute()
+    # macOS system aliases are outside the executor's writable namespace.
+    if len(path.parts) > 1 and path.parts[1] in ("tmp", "var", "etc"):
+        prefix = Path(path.anchor) / path.parts[1]
+        path = prefix.resolve().joinpath(*path.parts[2:])
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd, path.name
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def safe_write_bytes(path, data, mode=0o600):
+    """Atomic publication; neither existing destinations nor parents may be links."""
+    parent, name = _write_parent(path)
+    temporary = "." + name + "-" + secrets.token_hex(8)
+    try:
+        try:
+            check = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+        else:
+            try:
+                if not stat.S_ISREG(os.fstat(check).st_mode):
+                    raise ValueError("unsafe output file")
+            finally:
+                os.close(check)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     mode, dir_fd=parent)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+        os.close(parent)
+
+
+def safe_write_text(path, text, mode=0o600):
+    safe_write_bytes(path, text.encode("utf-8"), mode)
+
+
+def safe_write_json(path, obj, mode=0o600):
+    safe_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2,
+                                   sort_keys=True, allow_nan=False) + "\n", mode)
+
+
+def safe_append_jsonl(path, obj):
+    parent, name = _write_parent(path)
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=parent)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("unsafe event file")
+            line = json.dumps(obj, ensure_ascii=True, sort_keys=True, allow_nan=False)
+            handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(parent)
+
+
+def reserve_attempt(directory):
+    parent, name = _write_parent(Path(directory) / ".attempt")
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+        os.close(fd)
+    finally:
+        os.close(parent)
+
+
+def non_json_text(text):
+    """Diagnostic lines only: JSON event contents are never error evidence."""
+    lines = []
+    for line in text.splitlines():
+        try:
+            json.loads(line)
+        except (ValueError, RecursionError):
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _require(condition, message):
@@ -268,11 +370,9 @@ class Adapter(ABC):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         # An exclusive reservation also prevents concurrent attempts racing on
         # the same directory, including across adapter instances/processes.
-        reservation = directory / ".attempt"
         if (directory / "result.json").exists():
             raise FileExistsError("result.json already exists")
-        with reservation.open("x", encoding="utf-8"):
-            pass
+        reserve_attempt(directory)
         root = Path(gitutil.toplevel(req.workdir))
 
         def repository_files(files):
@@ -289,8 +389,8 @@ class Adapter(ABC):
         detected = {"version": None}
         # Always create the evidence artifacts, even for a refused write.
         paths = {key: str(directory / name) for key, name in _ARTIFACTS.items()}
-        fsio.atomic_write_text(directory / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
-        fsio.atomic_write_text(paths["events_path"], "", mode=0o600)
+        safe_write_text(directory / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
+        safe_write_text(paths["events_path"], "", mode=0o600)
         if (req.profile == "write" and root ==
                 Path(gitutil.main_worktree(req.workdir))):
             warnings.append("main_worktree_write_refused")
@@ -316,7 +416,7 @@ class Adapter(ABC):
                 except (ValueError, RecursionError):
                     event = {"_raw": line}
                 event = redact.redact_obj(event)
-                fsio.append_jsonl(paths["events_path"], event)
+                safe_append_jsonl(paths["events_path"], event)
                 recent.append(event)
                 kind = event.get("type") if isinstance(event, dict) else None
                 declared = self.manifest.data["events"]["types"]
@@ -360,8 +460,8 @@ class Adapter(ABC):
             warnings.append("model_mismatch")
         final_text = redact.redact_text(extracted.get("final_text") or "")
         # Tool-written final files are not trusted as a second status channel.
-        fsio.atomic_write_text(paths["final_text_path"], final_text, mode=0o600)
-        fsio.atomic_write_text(paths["stderr_tail_path"],
+        safe_write_text(paths["final_text_path"], final_text, mode=0o600)
+        safe_write_text(paths["stderr_tail_path"],
             redact.redact_text(observed.stderr_tail if observed else ""), mode=0o600)
         final_line = final_text.rstrip("\r\n").split("\n")[-1]
         match = re.fullmatch(r"ORCEXE_EXIT: (DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)", final_line)
@@ -380,5 +480,5 @@ class Adapter(ABC):
             duration_ms=int(observed.duration_s * 1000) if observed else 0,
             warnings=list(dict.fromkeys(warnings)), **paths)
         validate_run_result(result, run_dir=directory)
-        fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+        safe_write_json(directory / "result.json", result, mode=0o600)
         return result

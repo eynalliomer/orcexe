@@ -67,7 +67,8 @@ def expected_outcome(adapter, scenario, request):
         warnings += {"invalid-model": ["model_not_found"], "model-mismatch": ["model_mismatch"]}.get(scenario, [])
     if adapter == "cursor":
         status = {"auth-missing": "auth", "quota-suspected": "failed", "shell-blocked": "failed"}.get(scenario, status)
-        warnings += {"invalid-model": ["model_not_found"], "quota-suspected": ["quota_suspected"],
+        warnings += {"invalid-model": ["model_not_found"], "quota-suspected": [],  # only a system event quotes the marker; final result is empty
+
                      "shell-blocked": ["shell_blocked"], "model-mismatch": ["model_mismatch"]}.get(scenario, [])
     if adapter == "codex":
         status = {"auth-401": "auth", "quota": "quota"}.get(scenario, status)

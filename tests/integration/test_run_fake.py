@@ -71,14 +71,27 @@ class RunFakeTests(GitFixture):
                 "--profile", profile, "--run-id", name]
         return args, env, self.main / ".orcexe/runs" / name, calls, ready, pid
 
+    @staticmethod
+    def cli_argv(*arguments):
+        # Cursor's model preflight precedes the executor handshake. Its normal
+        # five-second probe budget can expire during parallel fake startup;
+        # give only that test setup a load-scaled bound. Run/stall limits still
+        # come from the CLI arguments and exercise the production runner.
+        launcher = ("from functools import partial\n"
+                    "import runpy\n"
+                    "from orcexe import run\n"
+                    "run.CursorAdapter = partial(run.CursorAdapter, auth_timeout_s={!r})\n"
+                    "runpy.run_module('orcexe', run_name='__main__')\n").format(scaled(10))
+        return [sys.executable, "-B", "-c", launcher, *arguments]
+
     def invoke(self, prepared, *extra, human=False):
         args, env, directory, calls, ready, pid = prepared
         stop, errors = threading.Event(), []
         watcher = threading.Thread(target=self.observe_receipt, args=(directory, stop, errors))
         watcher.start()
         try:
-            completed = subprocess.run([sys.executable, "-B", "-m", "orcexe", *args,
-                                       *([] if human else ["--json"]), *extra],
+            completed = subprocess.run(self.cli_argv(*args,
+                                       *([] if human else ["--json"]), *extra),
                 cwd=str(self.directory), env=env, stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=scaled(10))
         finally:
@@ -285,15 +298,21 @@ class RunFakeTests(GitFixture):
         replace = os.replace
         publications = []
 
-        def publish(source, target):
+        def publish(source, target, **kwargs):
+            if 'src_dir_fd' in kwargs:
+                # Secure publication uses names relative to pinned directory fds.
+                # The known run directory supplies paths for reader assertions.
+                source_path, target_path = directory / source, directory / target
+            else:
+                source_path, target_path = Path(source), Path(target)
             if Path(target).name == "result.json":
-                result = json.loads(Path(source).read_text())
+                result = json.loads(source_path.read_text())
                 validate_run_result(result, run_dir=directory)
-                self.assertEqual(Path(source).parent, directory)
-                if Path(target).exists():
-                    validate_run_result(json.loads(Path(target).read_text()), run_dir=directory)
+                self.assertEqual(source_path.parent, directory)
+                if target_path.exists():
+                    validate_run_result(json.loads(target_path.read_text()), run_dir=directory)
                 publications.append(result["status"])
-            return replace(source, target)
+            return replace(source, target, **kwargs)
 
         def interrupted(adapter, req):
             os.kill(os.getpid(), signal.SIGINT)
@@ -316,10 +335,10 @@ class RunFakeTests(GitFixture):
             result["exit_code"] = 0
             return result
 
-        def signal_on_publish(source, target):
+        def signal_on_publish(source, target, **kwargs):
             if Path(target).name == "result.json" and not publications:
                 os.kill(os.getpid(), signal.SIGTERM)
-            return publish(source, target)
+            return publish(source, target, **kwargs)
 
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(run.CodexAdapter, "run", completed), \
@@ -333,7 +352,7 @@ class RunFakeTests(GitFixture):
 
     def signal_case(self, prepared, sig):
         args, env, directory, calls, ready, pid = prepared
-        process = subprocess.Popen([sys.executable, "-B", "-m", "orcexe", *args, "--json"],
+        process = subprocess.Popen(self.cli_argv(*args, "--json"),
             cwd=str(self.directory), env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         child = None
@@ -343,7 +362,10 @@ class RunFakeTests(GitFixture):
         watcher.start()
         try:
             wait_for(lambda: ready.exists() or process.poll() is not None)
-            self.assertTrue(ready.exists(), "fake must handshake before signalling")
+            if not ready.exists():
+                stdout, stderr = process.communicate(timeout=scaled(5))
+                self.fail("fake must handshake before signalling; returncode={!r}; "
+                          "stdout={!r}; stderr={!r}".format(process.returncode, stdout, stderr))
             child = int(pid.read_text())
             process.send_signal(sig)
             stdout, stderr = process.communicate(timeout=scaled(10))

@@ -72,7 +72,9 @@ class AdapterContract:
         validate_run_result(result, run_dir=req.run_dir)
         directory = Path(req.run_dir)
         self.assertEqual(json.loads((directory / "result.json").read_text(encoding="utf-8")), result)
-        self.assertEqual((directory / "brief.md").read_text(encoding="utf-8"), self.brief_text)
+        brief = directory / "brief" / "brief.md" if self.claude or self.cursor else directory / "brief.md"
+        self.assertEqual(brief.read_text(encoding="utf-8"), self.brief_text)
+        self.assertEqual(brief.stat().st_mode & 0o777, 0o600)
         for field in ("events_path", "stderr_tail_path", "final_text_path"):
             text = Path(result[field]).read_text(encoding="utf-8")
             self.assertNotIn("fake-user@example.invalid", text)
@@ -98,9 +100,9 @@ class AdapterContract:
             elif argv[0] == "-p":
                 self.assertEqual(call["cwd"], str(req.workdir))
                 self.assertIn("--add-dir", argv)
-                if str(directory) in argv:
+                if str(directory / "brief") in argv:
                     prompt = argv[1]  # Claude's prompt immediately follows -p.
-                    self.assertIn(str(directory / "brief.md"), prompt)
+                    self.assertIn(str(brief), prompt)
                     self.assertLessEqual(len(prompt), 600)
                 if req.profile == "review":
                     self.assertEqual(argv[-2:], ["--mode" if self.cursor else "--permission-mode", "plan"])

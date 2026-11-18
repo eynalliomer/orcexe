@@ -332,7 +332,7 @@ class DoSafetyTests(DoFixture):
         self.assertEqual({sig: signal.getsignal(sig) for sig in signals}, before)
 
 
-    def test_l2_snapshot_excludes_tracked_orcexe_but_keeps_main_renames(self):
+    def test_l2_snapshot_binds_orcexe_config_and_keeps_main_renames(self):
         folder = self.repo / '.orcexe'
         folder.mkdir()
         (folder / 'state.txt').write_text('before\n')
@@ -341,8 +341,9 @@ class DoSafetyTests(DoFixture):
         with mock.patch.dict(os.environ, self.env, clear=True):
             before = do._main_snapshot(self.repo, 'do-task')
             (folder / 'state.txt').write_text('after\n')
-            (folder / 'new.txt').write_text('ignored by observer\n')
-            self.assertEqual(do._main_snapshot(self.repo, 'do-task'), before)
+            (folder / 'new.txt').write_text('new config\n')
+            self.assertNotEqual(do._main_snapshot(self.repo, 'do-task'), before)
+            before = do._main_snapshot(self.repo, 'do-task')
             self.git('mv', 'README.md', 'README-new.md')
             self.assertNotEqual(do._main_snapshot(self.repo, 'do-task'), before)
 

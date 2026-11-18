@@ -49,10 +49,10 @@ class ClaudeAdapterTests(GitFixture):
                 calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
                 argv = [call['argv'] for call in calls if call['model_call']][-1]
                 prompt = 'Read the task brief at {} and carry it out. Follow its rules exactly.'.format(
-                    Path(req.run_dir) / 'brief.md')
+                    Path(req.run_dir) / 'brief' / 'brief.md')
                 self.assertEqual(argv, ['-p', prompt, '--output-format', 'stream-json', '--verbose',
                     '--model', req.model, '--effort', req.effort, '--no-session-persistence',
-                    '--strict-mcp-config', '--include-hook-events', '--add-dir', req.run_dir, *extra])
+                    '--strict-mcp-config', '--include-hook-events', '--add-dir', str(Path(req.run_dir) / 'brief'), *extra])
         self.assertEqual(self.adapter().manifest.evidence('exec.argv'), 'Y')
 
     def test_probe_allowlist_and_honest_models(self):
@@ -193,7 +193,7 @@ class ClaudeAdapterTests(GitFixture):
             self.assertEqual(adapter._classify(dict(events=events, counts={}), ended), expected)
         for text in ('Please run /login', 'Invalid API key', 'authentication_failed', 'HTTP 401'):
             for carrier in ('stdout', 'stderr', 'result'):
-                events = [{'_raw': text}] if carrier == 'stdout' else [dict(success, result=text)] if carrier == 'result' else []
+                events = [{'_raw': text}] if carrier == 'stdout' else [dict(success, is_error=True, result=text)] if carrier == 'result' else []
                 observed = replace(ended, returncode=1, stderr_tail=text if carrier == 'stderr' else '')
                 self.assertEqual(adapter._classify(dict(events=events, counts={}), observed), ('auth', []))
 

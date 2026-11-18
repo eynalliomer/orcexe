@@ -45,8 +45,11 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import sys
 
-from orcexe import fsio, miniyaml, proc
+from orcexe.adapters.base import (safe_write_text, safe_write_json, safe_write_bytes)
+
+from orcexe import miniyaml, proc
 from orcexe.adapters.base import validate_run_result
 from orcexe.envfilter import child_env
 from orcexe.redact import redact_text
@@ -361,6 +364,11 @@ def _detect(repo_path, base_commit, deadline=None):
     if pytest_source:
         commands.append(Command("pytest", ["python3", "-m", "pytest", "-q"], pytest_source))
     elif any(re.fullmatch(r"tests/(?:.*/)?test_[^/]*\.py", path) for path in paths):
+        argv = ["python3", "-m", "unittest", "discover", "-s", "tests"]
+        if "tests/__init__.py" in paths:
+            argv.extend(["-t", "."])
+        commands.append(Command("unittest", argv, None))
+    elif any(re.fullmatch(r"test_[^/]*\.py", path) for path in paths):
         commands.append(Command("unittest", ["python3", "-m", "unittest", "discover"], None))
     if "Makefile" in paths:
         text = read("Makefile")
@@ -466,12 +474,12 @@ def _snapshot(path, directory, deadline):
             continue
         if stat.S_ISLNK(mode):
             target = directory / ("link-" + str(len(inputs)))
-            target.write_bytes(os.fsencode(os.readlink(file)))
+            safe_write_bytes(target, os.fsencode(os.readlink(file)))
             inputs.append(str(target))
             pending.append(("120000", name))
         elif stat.S_ISREG(mode):
             target = directory / ("raw-" + str(len(inputs)))
-            target.write_bytes(file.read_bytes())
+            safe_write_bytes(target, file.read_bytes())
             inputs.append(str(target))
             pending.append(("100755" if mode & stat.S_IXUSR else "100644", name))
         elif name in tracked:
@@ -688,7 +696,7 @@ def _verify_checkout(repo_path, base, path, verified, deadline):
                 if not stat.S_ISLNK(actual) or name in verified:
                     raise _ObservationError('checkout_mode_mismatch')
                 raw_link = Path(scratch) / str(len(inputs))
-                raw_link.write_bytes(os.fsencode(os.readlink(file)))
+                safe_write_bytes(raw_link, os.fsencode(os.readlink(file)))
                 file = raw_link
             elif (not stat.S_ISREG(actual)
                   or bool(actual & stat.S_IXUSR) != (mode == '100755')):
@@ -729,7 +737,7 @@ def _checkout(repo_path, base, root, verified, deadline):
                 target.mkdir(exist_ok=True, mode=0o700)
             elif member.isfile():
                 with archive.extractfile(member) as source:
-                    target.write_bytes(source.read())
+                    safe_write_bytes(target, source.read())
                 target.chmod(0o755 if member.mode & 0o111 else 0o644)
             elif member.issym():
                 destination = (target.parent / member.linkname).resolve()
@@ -743,7 +751,7 @@ def _checkout(repo_path, base, root, verified, deadline):
         target = path / name
         if target.is_symlink() or any((path / p).is_symlink() for p in PurePosixPath(name).parents if str(p) != '.'):
             raise _ObservationError('unsafe_target')
-        target.write_bytes(content)
+        safe_write_bytes(target, content, mode=stat.S_IMODE(target.stat().st_mode))
     _verify_checkout(repo_path, base, path, verified, deadline)
     main, _ = _main_metadata(repo_path)
     dependencies = main / 'node_modules'
@@ -767,6 +775,19 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
         env["TEMP"] = env["TMP"] = env["TMPDIR"]
         env.pop("CLAUDE_CONFIG_DIR", None)
         env.pop("XDG_DATA_HOME", None)
+    interpreter = shutil.which("python3", path=env.get("PATH", os.defpath))
+    path_python = "unavailable"
+    if interpreter:
+        try:
+            probe = subprocess.run([interpreter, "-c", "import sys; print(sys.executable)"],
+                                   env=env, cwd=str(path), capture_output=True, text=True,
+                                   timeout=max(.001, min(timeout, deadline - time.monotonic())))
+            if probe.returncode == 0:
+                path_python = probe.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    identity = "gate sys.executable: {}\nPATH python3 sys.executable: {}\n".format(sys.executable, path_python)
+    safe_write_text(directory / "interpreters.log", redact_text(identity), mode=0o600)
     observations, missing = [], False
     for command in commands:
         remaining = deadline - time.monotonic()
@@ -775,7 +796,7 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
         if not shutil.which(command.argv[0], path=env.get("PATH", os.defpath)):
             missing = True
             observations.append(command.id + ": not_seen (binary_missing)")
-            fsio.atomic_write_text(directory / (command.id + ".log"),
+            safe_write_text(directory / (command.id + ".log"),
                                    "not_seen: binary_missing\n", mode=0o600)
             continue
         output, output_bytes, overflow = [], 0, False
@@ -800,7 +821,15 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
         incomplete = overflow or result.truncated_lines
         log = ("not_seen: log_observation_incomplete\n" if incomplete else
                redact_text("".join(output)).encode("utf-8")[-4096:].decode("utf-8", errors="ignore"))
-        fsio.atomic_write_text(directory / (command.id + ".log"), log, mode=0o600)
+        safe_write_text(directory / (command.id + ".log"), log, mode=0o600)
+        text = "".join(output)
+        zero = (not incomplete and result.status == "exited" and not result.pipes_held and
+                (re.search(r"Ran\s+0\s+tests?\b|NO TESTS RAN", text, re.I) or
+                 (result.returncode == 5 and "no tests ran" in text.lower())))
+        if zero:
+            missing = True
+            observations.append(command.id + ": not_seen (zero_tests)")
+            continue
         if time.monotonic() >= deadline:
             return "fail", command.id + ": total_timeout"
         if result.status != "exited" or result.returncode != 0 or result.pipes_held:
@@ -916,7 +945,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                         index, dirty, untracked, metadata, raw_oids = _snapshot(path, scratch, deadline)
                         # A snapshot-completion receipt also permits deterministic
                         # late-writer regression probes without timing guesses.
-                        (scratch / 'head-index').write_text(head)
+                        safe_write_text(scratch / 'head-index', head)
                         states = [(base, index, None), (base, None, None)]
                         if head != base:
                             states.append((base, None, head))
@@ -1035,7 +1064,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                     if not selected:
                         record(check, 'not_seen', 'no_commands', started)
                         continue
-                    cache = Path.home() / '.cache' / 'orcexe' / 'gate'
+                    cache = Path(os.environ.get('ORCEXE_STATE_DIR') or Path.home() / '.cache' / 'orcexe') / 'gate'
                     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
                     gate_dir = Path(tempfile.mkdtemp(dir=str(cache))).resolve()
                     checkout = _checkout(repo_path, base, gate_dir, verified, deadline)
@@ -1071,11 +1100,11 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
             result['diff']['head'] = None
             unavailable('observation_unavailable')
         try:
-            fsio.atomic_write_json(Path(run_dir) / 'gate.json', result, mode=0o600)
+            safe_write_json(Path(run_dir) / 'gate.json', result, mode=0o600)
         except Exception:
             unavailable('receipt_write_unavailable')
             try:
-                fsio.atomic_write_json(Path(run_dir) / 'gate.json', result, mode=0o600)
+                safe_write_json(Path(run_dir) / 'gate.json', result, mode=0o600)
             except Exception:
                 try:
                     (Path(run_dir) / 'gate.json').unlink()

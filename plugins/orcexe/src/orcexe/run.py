@@ -8,7 +8,9 @@ import secrets
 import signal
 import threading
 
-from orcexe import exitcodes, fsio, gitutil, redact, trust
+from orcexe.adapters.base import (safe_write_text, safe_write_json)
+
+from orcexe import exitcodes, gitutil, redact, trust
 from orcexe.adapters import (ClaudeCodeAdapter, CodexAdapter, CursorAdapter,
                              RunRequest, validate_run_result)
 
@@ -19,6 +21,8 @@ class _Cancelled(BaseException):
 
 def result_exit_code(result):
     """Map observed run.v1 status to the manual-run CLI contract."""
+    if "pipes_held" in result["warnings"]:
+        return exitcodes.USAGE
     if result["status"] == "failed":
         return exitcodes.FAIL
     if result["status"] == "completed" and not (
@@ -35,7 +39,7 @@ def _minimal_result(req, family, status, warnings, signum=None):
         ("stderr_tail_path", "stderr.txt"))}
     for path in paths.values():
         if not Path(path).exists():
-            fsio.atomic_write_text(path, "", mode=0o600)
+            safe_write_text(path, "", mode=0o600)
     return dict(schema="orcexe.run.v1", run_id=req.run_id, task=req.task,
         tool=req.tool, tool_version=None, family=family, model_requested=req.model,
         model_actual=None, effort=req.effort, profile=req.profile, context="fresh",
@@ -100,14 +104,14 @@ def run_command(args):
             raise ValueError("Refusing symlink at git exclude")
         previous = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
         if "/.orcexe/" not in previous.splitlines():
-            fsio.atomic_write_text(exclude, previous + ("\n" if previous and
+            safe_write_text(exclude, previous + ("\n" if previous and
                                    not previous.endswith("\n") else "") + "/.orcexe/\n")
         (main / ".orcexe").mkdir(mode=0o700, exist_ok=True)
         directory.parent.mkdir(mode=0o700, exist_ok=True)
         directory.mkdir(mode=0o700)  # A run id is never reused, even after interruption.
         os.chmod(directory, 0o700)
         snapshot = directory / "brief-source.md"
-        fsio.atomic_write_text(snapshot, contents, mode=0o600)
+        safe_write_text(snapshot, contents, mode=0o600)
         req = RunRequest(run_id, run_id, args.tool, args.model, args.effort, args.profile,
                          str(workdir), str(snapshot), str(directory),
                          timeout_s=args.timeout_min * 60, stall_s=args.stall_min * 60)
@@ -181,7 +185,7 @@ def run_command(args):
                     warnings.append("signal_" + signal.Signals(publishing_signal).name)
                 result["warnings"] = list(dict.fromkeys(result["warnings"] + warnings))
                 validate_run_result(result, run_dir=directory)
-                fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+                safe_write_json(directory / "result.json", result, mode=0o600)
                 if received == publishing_signal:
                     break
         finally:

@@ -213,8 +213,9 @@ def _display_path(tool):
 
 def _call(adapter, method, deadline=None):
     started = time.monotonic()
-    budget = adapter._doctor_budgets[_PROBES[method]]
-    budget = min(budget, max(0, deadline - started)) if deadline is not None else budget
+    configured_budget = adapter._doctor_budgets[_PROBES[method]]
+    budget = (min(configured_budget, max(0, deadline - started))
+              if deadline is not None else configured_budget)
     adapter._doctor_deadline = started + budget
     timed_out = False
     try:
@@ -231,7 +232,9 @@ def _call(adapter, method, deadline=None):
     # Several adapters intentionally discard runner statuses (including the
     # optional Codex plan RPC). The shared deadline survives those projections.
     if timed_out or time.monotonic() - started >= budget:
-        result = dict(result, _timeout_s=budget)
+        # Report the configured per-probe budget even if the shared total
+        # deadline left less execution time (or no time at all).
+        result = dict(result, _timeout_s=configured_budget)
         if method == "detect":
             result["present"] = adapter._binary() is not None
     return result
@@ -339,7 +342,8 @@ def _tool_report(adapter, quick, previous, deadline=None):
             raw = _call(adapter, "quota", deadline)
             quota = _quota(raw)
         checks.append(_timeout_line(tool, "quota", raw) or _line(tool + (".quota.skipped" if quick else ".quota"), "tool", "info",
-                            tool + (": quota skipped (quick)" if quick else ": quota " + quota["source"])))
+                            tool + (": quota skipped (quick)" if quick else ": quota " + quota["source"]
+                                    + (" (cache age {:.0f}s)".format(quota["age_s"]) if "age_s" in quota else ""))))
         if quota["allowed"] is False:
             checks.append(_line(tool + ".quota.exhausted", "tool", "warn", tool + " quota exhausted",
                                 "wait for quota reset or use another logged-in tool"))

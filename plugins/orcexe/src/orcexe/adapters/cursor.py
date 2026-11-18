@@ -21,7 +21,9 @@ import re
 import stat
 import threading
 
-from orcexe import envfilter, fsio, gitutil, proc, redact
+from orcexe.adapters.base import (safe_write_text, safe_write_json, safe_append_jsonl, reserve_attempt, non_json_text)
+
+from orcexe import envfilter, gitutil, proc, redact
 from orcexe.adapters.base import (Adapter, RunRequest, validate_run_result,
                                   _ARTIFACTS, _USAGE, _require)
 from orcexe.manifest import load_manifest
@@ -101,7 +103,7 @@ class CursorAdapter(Adapter):
                 else:
                     data.pop(key, None)
             # atomic_write_json sorts keys; preserve the re-read object's order.
-            fsio.atomic_write_text(path, json.dumps(data, ensure_ascii=False,
+            safe_write_text(path, json.dumps(data, ensure_ascii=False,
                 indent=2, allow_nan=False) + '\n', mode=mode)
         except (OSError, ValueError, RecursionError):
             warnings.append('cursor_config_unreadable')
@@ -257,9 +259,10 @@ class CursorAdapter(Adapter):
                 markers.update(cls._markers(value))
         return markers
 
-    def _observe(self, event):
+    def _observe(self, event, *, diagnostic=False):
         context = self._context.value
-        context.setdefault('markers', set()).update(self._event_markers(event))
+        if diagnostic and isinstance(event, dict) and isinstance(event.get('_raw'), str):
+            context.setdefault('markers', set()).update(self._markers(non_json_text(event['_raw'])))
         facts = context.setdefault('facts', {})
         if not isinstance(event, dict):
             return
@@ -273,10 +276,17 @@ class CursorAdapter(Adapter):
         events = summary['events']
         results = [e for e in events if isinstance(e, dict) and e.get('type') == 'result']
         result = context.get('facts', {}).get('result', results[-1] if results else None)
+        success = (result is not None and result.get('subtype') == 'success' and
+                   result.get('is_error') is False and proc_result.returncode == 0)
+        if success:
+            return 'completed', []
         markers = set(context.get('markers', ()))
-        markers.update(self._markers(proc_result.stderr_tail))
-        for event in events:
-            markers.update(self._event_markers(event))
+        markers.update(self._markers(non_json_text(proc_result.stderr_tail)))
+        if result is not None:
+            markers.update(self._event_markers(result))
+        for event in events if not context else ():
+            if isinstance(event, dict) and isinstance(event.get('_raw'), str):
+                markers.update(self._markers(non_json_text(event['_raw'])))
         if 'model_not_found' in markers:
             return 'failed', ['model_not_found']
         if 'auth' in markers:
@@ -302,6 +312,7 @@ class CursorAdapter(Adapter):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if (directory / 'result.json').exists() or (directory / '.attempt').exists():
             raise FileExistsError('attempt already exists')
+        (directory / "brief").mkdir(mode=0o700)
         context = dict(slug=req.model, warnings=[], preflight=None)
         self._context.value = context
         try:
@@ -312,7 +323,7 @@ class CursorAdapter(Adapter):
             grants = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == '--add-dir']
             grants += [token.partition('=')[2] for token in argv if token.startswith('--add-dir=')]
             if (not grants or any(not os.path.isabs(p) or not Path(p).is_dir() for p in grants) or
-                    directory not in [Path(p).resolve() for p in grants]):
+                    directory / "brief" not in [Path(p).resolve() for p in grants]):
                 context.update(preflight='blocked', warnings=['add_dir_invalid'])
             elif req.profile == 'write' and Path(gitutil.toplevel(req.workdir)) == Path(gitutil.main_worktree(req.workdir)):
                 # The common lifecycle refuses main writes before any probe.
@@ -341,11 +352,9 @@ class CursorAdapter(Adapter):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         # An exclusive reservation also prevents concurrent attempts racing on
         # the same directory, including across adapter instances/processes.
-        reservation = directory / ".attempt"
         if (directory / "result.json").exists():
             raise FileExistsError("result.json already exists")
-        with reservation.open("x", encoding="utf-8"):
-            pass
+        reserve_attempt(directory)
         root = Path(gitutil.toplevel(req.workdir))
 
         def repository_files(files):
@@ -363,8 +372,8 @@ class CursorAdapter(Adapter):
         detected = {"version": None}
         # Always create the evidence artifacts, even for a refused write.
         paths = {key: str(directory / name) for key, name in _ARTIFACTS.items()}
-        fsio.atomic_write_text(directory / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
-        fsio.atomic_write_text(paths["events_path"], "", mode=0o600)
+        safe_write_text(directory / "brief" / "brief.md", Path(req.brief_path).read_text(encoding="utf-8"))
+        safe_write_text(paths["events_path"], "", mode=0o600)
         if context["preflight"]:
             status = context["preflight"]
         elif (req.profile == "write" and root ==
@@ -373,7 +382,7 @@ class CursorAdapter(Adapter):
         else:
             self._ensure_brief_readable(req)
             prompt = "Read the task brief at {} and carry it out. Follow its rules exactly.".format(
-                directory / "brief.md")
+                directory / "brief" / "brief.md")
             _require(len(prompt) <= 600 and not prompt.startswith("-"), "brief pointer too long")
             values = dict(workdir=str(Path(req.workdir).resolve()), run_dir=str(directory),
                 model=context["slug"], effort=req.effort, final=paths["final_text_path"], prompt=prompt)
@@ -388,19 +397,21 @@ class CursorAdapter(Adapter):
             shell_phases = Counter()
 
             def on_line(line):
+                diagnostic = False
                 try:
                     event = json.loads(line, parse_constant=lambda _: None)
                 except (ValueError, RecursionError):
                     event = {"_raw": line}
+                    diagnostic = True
                 if isinstance(event, dict) and event.get("type") == "thinking":
                     return
                 event = redact.redact_obj(event)
-                self._observe(event)
+                self._observe(event, diagnostic=diagnostic)
                 if (isinstance(event, dict) and event.get('type') == 'tool_call' and
                         isinstance(event.get('shellToolCall'), dict)):
                     phase = event.get('subtype')
                     shell_phases[phase if phase in ('started', 'completed') else 'single'] += 1
-                fsio.append_jsonl(paths["events_path"], event)
+                safe_append_jsonl(paths["events_path"], event)
                 recent.append(event)
                 kind = event.get("type") if isinstance(event, dict) else None
                 declared = self.manifest.data["events"]["types"]
@@ -455,8 +466,8 @@ class CursorAdapter(Adapter):
             warnings.append("model_mismatch")
         final_text = redact.redact_text(extracted.get("final_text") or "")
         # Tool-written final files are not trusted as a second status channel.
-        fsio.atomic_write_text(paths["final_text_path"], final_text, mode=0o600)
-        fsio.atomic_write_text(paths["stderr_tail_path"],
+        safe_write_text(paths["final_text_path"], final_text, mode=0o600)
+        safe_write_text(paths["stderr_tail_path"],
             redact.redact_text(observed.stderr_tail if observed else ""), mode=0o600)
         final_line = final_text.rstrip("\r\n").split("\n")[-1]
         match = re.fullmatch(r"ORCEXE_EXIT: (DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)", final_line)
@@ -475,5 +486,5 @@ class CursorAdapter(Adapter):
             duration_ms=int(observed.duration_s * 1000) if observed else 0,
             warnings=list(dict.fromkeys(warnings)), **paths)
         validate_run_result(result, run_dir=directory)
-        fsio.atomic_write_json(directory / "result.json", result, mode=0o600)
+        safe_write_json(directory / "result.json", result, mode=0o600)
         return result

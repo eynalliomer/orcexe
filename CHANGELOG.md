@@ -1,3 +1,14 @@
+## Unreleased — T22 closing review
+
+- Report doctor's configured per-probe timeout budget even when the shared total deadline leaves less execution time.
+- Give the manual-run integration fake's Cursor model preflight a scaled setup budget; retain early-exit stdout/stderr diagnostics before signal handshakes.
+- Freeze gate commands and classifier config before executor dispatch; detect main `.orcexe` config byte changes.
+- Restrict Claude/Cursor error markers to final error results and non-JSON diagnostics; successful quoted markers remain successful.
+- Expire Claude quota observations after six hours and honour reset times; show cache age in doctor.
+- Grant Claude/Cursor only `run_dir/brief/` and write private run evidence without following file or directory symlinks. Their argv pins deliberately change; Codex argv is unchanged.
+- Use unittest `-s tests -t .` when `tests/__init__.py` exists and `-s tests` when absent; reject zero-test evidence, log both Python interpreters, honour `ORCEXE_STATE_DIR` for gate checkouts, and return exit 2 for manual-run `pipes_held` warnings.
+- Document tool selection, project commands/hooks, Cursor trust, write locations, and clearing the quota cache.
+
 ## 0.1.0 — unreleased
 
 - Add an offline security test package covering source-wide network imports, child credential isolation, forbidden argv, private reports and HOME writes; preserve prompt operands as free text; fixed: no socket import; identity lookup uses a minimal env.
