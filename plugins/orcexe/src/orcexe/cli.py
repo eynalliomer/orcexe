@@ -73,6 +73,10 @@ def main(argv=None):
     intake_parser = subcommands.add_parser("intake", help="Inspect committed project metadata offline")
     intake_parser.add_argument("--repo", default=None)
     intake_parser.add_argument("--json", action="store_true")
+    history_parser = subcommands.add_parser("history", help="Inspect committed history and direction sources")
+    history_parser.add_argument("--repo", default=None)
+    history_parser.add_argument("--json", action="store_true")
+    history_parser.add_argument("--issues", action="store_true")
     slop_parser = subcommands.add_parser("slop", help="Scan committed source for quality signals offline")
     slop_parser.add_argument("--repo", default=None)
     slop_parser.add_argument("--json", action="store_true")
@@ -133,6 +137,10 @@ def main(argv=None):
     if args.command == "intake":
         from orcexe.intake import intake_command
         return intake_command(args)
+
+    if args.command == "history":
+        from orcexe.history import history_command
+        return history_command(args)
 
     if args.command == "slop":
         from orcexe.slop import slop_command

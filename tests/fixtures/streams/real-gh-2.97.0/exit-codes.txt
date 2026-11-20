@@ -1,0 +1,4 @@
+noremote 1
+nongh 1
+public 0
+noauth 4

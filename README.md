@@ -164,6 +164,22 @@ unsupported constructs are also unseen. An unborn repository produces empty
 evidence with `no_head`; a non-repository exits 2. This internal command is not
 part of the plugin command menu.
 
+`orcexe history [--repo PATH] [--json] [--issues]` writes private, atomic
+`.orcexe/intake/u2.json` (history) and `u3.json` (direction sources) in the main
+worktree. `--json` prints both documents. History includes weekly phases over
+180 days, hotspots over 90 days, reverts, branch divergence and author counts;
+windows use HEAD's UTC committer date. Direction sources contain committed
+roadmaps, TODOs, ADRs, decisions, only the unreleased CHANGELOG section, and the
+20 newest non-merge commits. Dirty files are ignored. Secret and generated paths
+are excluded, identities and emails are redacted, and doc text is capped at
+4000 characters. Shallow and empty history are explicitly marked unseen.
+
+The command runs no models or project commands. Only `--issues` can access the
+network: with a GitHub remote it runs a bounded `gh issue list`, retaining only
+titles and label names. Set `ORCEXE_BIN_GH` to override the binary. Missing auth,
+binary, remote, errors and timeouts produce explicit `not_seen` reasons.
+Success (including empty history) exits 0; a non-repository exits 2.
+
 ## Offline source signals
 
 `orcexe slop [--repo PATH] [--json]` scans committed HEAD source without models,
