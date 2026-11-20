@@ -27,7 +27,7 @@ import secrets
 import stat
 
 from orcexe import envfilter, gitutil, proc, redact
-from orcexe.manifest import Manifest, meets_min_version
+from orcexe.manifest import Manifest, load_manifest, meets_min_version
 
 
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -155,6 +155,19 @@ def _text(value):
     return isinstance(value, str) and bool(value) and "\0" not in value
 
 
+def _valid_profile(tool, profile):
+    if profile in ("write", "review"):
+        return True
+    if profile != "manager":
+        return False
+    # Availability comes from the shipped manifest, not a global profile grant.
+    for path in (Path(__file__).resolve().parents[3] / "adapters").glob("*.yaml"):
+        manifest = load_manifest(path)
+        if manifest.tool == tool:
+            return profile in manifest.data["exec"]["profiles"]
+    return False
+
+
 @dataclass(frozen=True)
 class RunRequest:
     run_id: str
@@ -174,7 +187,7 @@ class RunRequest:
                  "invalid run_id")
         for key in ("task", "tool", "model", "effort"):
             _require(_text(getattr(self, key)), "invalid " + key)
-        _require(self.profile in ("write", "review"), "invalid profile")
+        _require(_valid_profile(self.tool, self.profile), "invalid profile")
         for key in ("workdir", "brief_path", "run_dir"):
             value = getattr(self, key)
             _require(isinstance(value, (str, os.PathLike)) and
@@ -200,7 +213,7 @@ def validate_run_result(d, *, run_dir=None):
     _require(d["schema"] == "orcexe.run.v1", "invalid schema")
     _require(_RUN_ID.fullmatch(d["run_id"]), "invalid run_id")
     _require(d["context"] == "fresh", "invalid context")
-    _require(d["profile"] in ("review", "write"), "invalid profile")
+    _require(_valid_profile(d["tool"], d["profile"]), "invalid profile")
     _require(d["status"] in _STATUSES, "invalid status")
     for key in ("exit_code", "signal"):
         _require(d[key] is None or type(d[key]) is int and d[key] >= 0,
@@ -366,6 +379,7 @@ class Adapter(ABC):
             raise ValueError("run requires RunRequest")
         req.__post_init__()  # Filesystem validity can change after construction.
         _require(req.tool == self.manifest.tool, "request tool differs from manifest")
+        _require(req.profile in self.manifest.data["exec"]["profiles"], "invalid profile")
         directory = Path(req.run_dir).resolve()
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         # An exclusive reservation also prevents concurrent attempts racing on

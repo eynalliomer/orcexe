@@ -41,7 +41,8 @@ class ClaudeAdapterTests(GitFixture):
     def test_exact_argv_order_for_both_profiles(self):
         for profile, extra in (
                 ('write', ['--permission-mode', 'acceptEdits', '--disallowedTools', 'Bash,WebFetch,WebSearch']),
-                ('review', ['--permission-mode', 'plan'])):
+                ('review', ['--permission-mode', 'plan', '--disallowedTools', 'Bash,WebFetch,WebSearch']),
+                ('manager', ['--permission-mode', 'plan', '--restricted', '--safe-mode', '--tools', 'Read,Glob,Grep'])):
             with self.subTest(profile=profile):
                 req = self.request(profile, profile)
                 result = self.adapter().run(req)

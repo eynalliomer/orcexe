@@ -32,6 +32,50 @@ def parser_flags(path):
 
 
 class ManifestParityTests(GitFixture):
+    def test_manager_profile_contract(self):
+        from orcexe.adapters import RunRequest
+        brief = self.directory / 'brief.md'
+        brief.write_text('Read only')
+        for name in ('claude', 'codex', 'cursor'):
+            manifest = load_manifest(ROOT / 'plugins/orcexe/adapters' / (name + '.yaml'))
+            request = dict(run_id='manager', task='map', tool=manifest.tool, model='fixture',
+                           effort='high', profile='manager', workdir=str(self.main),
+                           brief_path=str(brief), run_dir=str(self.directory))
+            if name != 'claude':
+                self.assertNotIn('manager', manifest.data['exec']['profiles'])
+                with self.assertRaises(ValueError):
+                    RunRequest(**request)
+                with self.assertRaises(ValueError):
+                    manifest.build_argv('manager')
+                continue
+            RunRequest(**request)
+            self.assertTrue(manifest.data['exec']['profiles']['manager']['read_only'])
+            self.assertIn('--bare', manifest.data['exec']['forbidden_argv'])
+            self.assertEqual(manifest.build_argv('manager', prompt='Read only', model='fixture',
+                                                effort='high', run_dir=str(self.directory)),
+                ['claude', '-p', 'Read only', '--output-format', 'stream-json', '--verbose',
+                 '--model', 'fixture', '--effort', 'high', '--no-session-persistence',
+                 '--strict-mcp-config', '--include-hook-events', '--add-dir',
+                 str(self.directory / 'brief'), '--permission-mode', 'plan', '--restricted',
+                 '--safe-mode', '--tools', 'Read,Glob,Grep'])
+
+    def test_review_profile_argv_pins(self):
+        profiles = {
+            'claude': ['--permission-mode', 'plan', '--disallowedTools', 'Bash,WebFetch,WebSearch'],
+            'codex': ['-s', 'read-only'],
+            'cursor': ['--mode', 'plan'],
+        }
+        for name, extra in profiles.items():
+            with self.subTest(tool=name):
+                manifest = load_manifest(ROOT / 'plugins/orcexe/adapters' / (name + '.yaml'))
+                self.assertEqual(list(manifest.data['exec']['profiles']['review']['extra']), extra)
+                values = dict(workdir=str(self.main), model='fixture', effort='high',
+                              final=str(self.directory / 'final.md'),
+                              run_dir=str(self.directory), prompt='Read files only')
+                argv = manifest.build_argv('review', **{
+                    key: value for key, value in values.items() if key in manifest.placeholders('review')})
+                self.assertEqual(argv[-len(extra):], extra)
+
     def test_every_manifest_profile_and_fake_flag_inventory(self):
         self.seed()
         fake_directory = ROOT / "tests" / "fixtures" / "fake-cli"

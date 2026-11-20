@@ -3,14 +3,14 @@
 VARSAYIM: the fast lane permits at most 50 added + deleted lines by default.
 Executors must be stopped and lifecycle operations serialized before gating.
 repo_path must identify the trusted main repository. Project commands are
-trusted base definitions, but are not network sandboxed.
+trusted base definitions; repository execution uses OS write/network isolation.
 Check order: run_status → controls → diff_collect → diff_check → scope →
 size → code_unchanged → secrets → test_floor → project_checks.
 Git controls must be fingerprinted by the caller before the executor starts.
 Project commands run only in a private gate-owned base checkout with the verified
 raw target bytes overlaid. Executor caches and ancestor directories never enter
 that checkout. Main node_modules is a user-owned dependency directory, linked
-with read-only intent (this is not an OS-enforced filesystem/network sandbox).
+read-only by the project command sandbox.
 The snapshot hashes raw files without clean filters, hooks or diff drivers.
 Git replacement objects and graft files are disabled; redirection metadata is
 fingerprinted. Before commands run, every checkout blob must match the base
@@ -32,7 +32,6 @@ import ast
 from dataclasses import dataclass
 import difflib
 import hashlib
-import io
 import json
 import math
 import os
@@ -42,14 +41,13 @@ import shutil
 import selectors
 import stat
 import subprocess
-import tarfile
 import tempfile
 import time
 import sys
 
-from orcexe.adapters.base import (safe_write_text, safe_write_json, safe_write_bytes)
+from orcexe.adapters.base import (_write_parent, safe_write_text, safe_write_json, safe_write_bytes)
 
-from orcexe import miniyaml, proc
+from orcexe import isolation, miniyaml, proc
 from orcexe.adapters.base import validate_run_result
 from orcexe.envfilter import child_env
 from orcexe.redact import redact_text
@@ -721,32 +719,48 @@ def _checkout(repo_path, base, root, verified, deadline):
     """Materialise trusted base objects, never run checkout filters or hooks."""
     path = root / 'checkout'
     path.mkdir(mode=0o700)
-    # Archive is read from the main repository; extraction never follows links.
-    _, data = _git_bytes(repo_path, 'archive', '--format=tar', base, deadline=deadline)
-    with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as archive:
-        members = archive.getmembers()
-        links = {m.name.rstrip('/') for m in members if m.issym()}
-        for member in members:
-            name = member.name.rstrip('/')
-            if (not _path(name) or any(p.casefold() == '.git' for p in PurePosixPath(name).parts)
-                    or any(p.as_posix() in links for p in PurePosixPath(name).parents)):
-                raise _ObservationError('unsafe_base_tree')
-            target = path / name
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if member.isdir():
-                target.mkdir(exist_ok=True, mode=0o700)
-            elif member.isfile():
-                with archive.extractfile(member) as source:
-                    safe_write_bytes(target, source.read())
-                target.chmod(0o755 if member.mode & 0o111 else 0o644)
-            elif member.issym():
-                destination = (target.parent / member.linkname).resolve()
-                if (Path(member.linkname).is_absolute()
-                        or path.resolve() not in destination.parents):
-                    raise _ObservationError('unsafe_base_symlink')
-                target.symlink_to(member.linkname)
-            else:
-                raise _ObservationError('unsupported_base_tree_entry')
+    # Raw tree/blob plumbing never interprets attributes, filters or textconv.
+    _, listing = _git_bytes(repo_path, 'ls-tree', '-r', '-z', base, deadline=deadline)
+    if listing and not listing.endswith(b'\0'):
+        raise _ObservationError('base_tree_incomplete')
+    entries = []
+    for entry in listing.split(b'\0')[:-1]:
+        info, raw_name = entry.split(b'\t', 1)
+        mode, kind, oid = info.decode('ascii').split()
+        name = os.fsdecode(raw_name)
+        if (not _path(name) or any(p.casefold() == '.git' for p in PurePosixPath(name).parts)
+                or kind != 'blob' or mode not in {'100644', '100755', '120000'}
+                or not _SHA.fullmatch(oid)):
+            raise _ObservationError('unsupported_base_tree_entry')
+        entries.append((name, mode, oid))
+    links = {name for name, mode, _ in entries if mode == '120000'}
+    if any(str(parent) in links for name, _, _ in entries for parent in PurePosixPath(name).parents):
+        raise _ObservationError('unsafe_base_tree')
+    _, blobs = _git_bytes(repo_path, 'cat-file', '--batch', deadline=deadline,
+                          input_data=''.join(oid + '\n' for _, _, oid in entries).encode('ascii'))
+    offset = 0
+    for name, mode, oid in entries:
+        end = blobs.find(b'\n', offset)
+        header = blobs[offset:end].split()
+        if end < 0 or len(header) != 3 or header[:2] != [oid.encode('ascii'), b'blob']:
+            raise _ObservationError('blob_incomplete')
+        size = int(header[2])
+        offset = end + 1
+        data = blobs[offset:offset + size]
+        if len(data) != size or blobs[offset + size:offset + size + 1] != b'\n':
+            raise _ObservationError('blob_incomplete')
+        offset += size + 1
+        target = path / name
+        if mode == '120000':
+            parent, leaf = _write_parent(target)
+            try:
+                os.symlink(os.fsdecode(data), leaf, dir_fd=parent)
+            finally:
+                os.close(parent)
+        else:
+            safe_write_bytes(target, data, mode=0o755 if mode == '100755' else 0o644)
+    if offset != len(blobs):
+        raise _ObservationError('blob_incomplete')
     for name, content in verified.items():
         target = path / name
         if target.is_symlink() or any((path / p).is_symlink() for p in PurePosixPath(name).parents if str(p) != '.'):
@@ -756,34 +770,55 @@ def _checkout(repo_path, base, root, verified, deadline):
     main, _ = _main_metadata(repo_path)
     dependencies = main / 'node_modules'
     if dependencies.is_dir() and not os.path.lexists(path / 'node_modules'):
-        # User-owned dependencies, read-only intent; not an OS-enforced mount.
+        # User-owned dependencies; project sandbox denies writes outside checkout.
         (path / 'node_modules').symlink_to(dependencies, target_is_directory=True)
+    # Validate only after the dependency link exists. Resolve each component in
+    # order: normalising "node_modules/.." first hides an escape through a link.
+    blocked = {path / 'node_modules'}
+    for name in links:
+        if not _inside_copy(path, name, blocked):
+            raise _ObservationError('unsafe_base_symlink')
     return path
+
+
+def _inside_copy(root, relative, blocked=()):
+    """Resolve links component by component, refusing any outside traversal."""
+    current, pending, hops = root, list(Path(relative).parts), 0
+    if Path(relative).is_absolute():
+        return False
+    while pending:
+        part = pending.pop(0)
+        if part == '.':
+            continue
+        current = current.parent if part == '..' else current / part
+        if (current != root and root not in current.parents) or current in blocked:
+            return False
+        if current.is_symlink():
+            hops += 1
+            if hops > 40:
+                return False
+            destination = Path(os.readlink(current))
+            if destination.is_absolute():
+                return False
+            pending = list(destination.parts) + pending
+            current = current.parent
+    return True
 
 
 def _project(commands, path, directory, timeout, deadline, gate_dir=None):
     if not commands:
         return "not_seen", "no_commands"
     env, _ = child_env()
-    if gate_dir is not None:
-        for key, name in (("HOME", "home"), ("TMPDIR", "tmp"), ("XDG_CACHE_HOME", "cache"),
-                          ("XDG_CONFIG_HOME", "config"), ("CODEX_HOME", "codex"),
-                          ("USERPROFILE", "home")):
-            folder = gate_dir / name
-            folder.mkdir(mode=0o700, exist_ok=True)
-            env[key] = str(folder)
-        env["TEMP"] = env["TMP"] = env["TMPDIR"]
-        env.pop("CLAUDE_CONFIG_DIR", None)
-        env.pop("XDG_DATA_HOME", None)
     interpreter = shutil.which("python3", path=env.get("PATH", os.defpath))
-    path_python = "unavailable"
+    path_python = 'unavailable'
     if interpreter:
+        lines = []
         try:
-            probe = subprocess.run([interpreter, "-c", "import sys; print(sys.executable)"],
-                                   env=env, cwd=str(path), capture_output=True, text=True,
-                                   timeout=max(.001, min(timeout, deadline - time.monotonic())))
-            if probe.returncode == 0:
-                path_python = probe.stdout.strip()
+            probe = isolation.run([interpreter, '-c', 'import sys; print(sys.executable)'],
+                                  cwd=str(path), env=env, on_line=lines.append,
+                                  timeout_s=max(.001, min(timeout, deadline - time.monotonic())), stall_s=None)
+            if probe.status == 'exited' and probe.returncode == 0 and not probe.pipes_held:
+                path_python = ''.join(lines).strip()
         except (OSError, subprocess.TimeoutExpired):
             pass
     identity = "gate sys.executable: {}\nPATH python3 sys.executable: {}\n".format(sys.executable, path_python)
@@ -812,7 +847,7 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
             else:
                 output.append(line + "\n")
 
-        result = proc.run(list(command.argv), cwd=str(path), env=env,
+        result = isolation.run(list(command.argv), cwd=str(path), env=env,
                           timeout_s=min(timeout, remaining), stall_s=None,
                           on_line=capture, on_stderr_line=capture,
                           kill_grace_s=min(0.1, timeout), max_line_bytes=1048576)
@@ -834,12 +869,14 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
             return "fail", command.id + ": total_timeout"
         if result.status != "exited" or result.returncode != 0 or result.pipes_held:
             return "fail", command.id + ": " + (result.status if result.status != "exited"
-                                                else "exit_nonzero_or_incomplete")
+                                                else "exit_nonzero_or_incomplete") + ("; write outside checkout denied"
+                    if re.search(r"PermissionError|Operation not permitted|Permission denied|Read-only file system", text, re.I) else "")
         missing = missing or bool(incomplete)
         observations.append(command.id + (": not_seen (log_observation_incomplete)" if incomplete else ": pass"))
     return ("not_seen" if missing else "pass"), "; ".join(observations)
 
 
+@isolation.guarded
 def gate(*, repo_path, worktree, classification, run_result, run_dir,
          controls_before=None, commands=None, command_timeout_s=600, total_timeout_s=1800,
          diff_line_limit=50, added_byte_limit=20000) -> dict:
@@ -1092,6 +1129,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
             result['verdict'] = 'accepted'
             target = classification.targets[0]
             result['diff'].update(target_blob=raw_oids[target], target_path=redact_text(target))
+        isolation.annotate(result)
         try:
             validate_gate_result(result)
         except Exception:

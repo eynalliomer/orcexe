@@ -273,6 +273,23 @@ def _review(data, tokens):
             index += 1
 
 
+def _manager(data, tokens):
+    """Only the measured Claude allow-list may run a manager."""
+    path = "exec.profiles.manager"
+    if data["tool"] != "claude-code" or data["exec"]["profiles"]["manager"]["read_only"] is not True:
+        _fail(path, "manager requires verified read-only isolation")
+    extra = data["exec"]["profiles"]["manager"]["extra"]
+    if list(extra) != ["--permission-mode", "plan", "--restricted", "--safe-mode", "--tools", "Read,Glob,Grep"]:
+        _fail(path + ".extra", "manager requires the measured isolation flags")
+    values = [token for token, _ in tokens]
+    for flag in ("--permission-mode", "--restricted", "--safe-mode", "--strict-mcp-config", "--tools"):
+        if values.count(flag) != 1:
+            _fail(path, "manager requires exactly one " + flag)
+    for token, location in tokens:
+        if token.startswith(("--tools=", "--permission-mode=", "--allowedTools", "--allowed-tools")):
+            _fail(location, "unverified manager tool override")
+
+
 def _paths(value, path):
     """Yield existing paths and leaves; list items share their parent's path."""
     yield path, not isinstance(value, (dict, list)) or not value, value
@@ -391,7 +408,8 @@ def validate(data: dict) -> None:
     _boolean(execution["effort"]["model_dependent"], "exec.effort.model_dependent")
     _strings(execution["forbidden_argv"], "exec.forbidden_argv")
     forbidden = GLOBAL_FORBIDDEN_ARGV + tuple(execution["forbidden_argv"])
-    _mapping(execution["profiles"], "exec.profiles", ("write", "review"))
+    _mapping(execution["profiles"], "exec.profiles", ("write", "review"),
+             ("manager",) if data["tool"] == "claude-code" else ())
     base_names = []
     for index, token in enumerate(execution["argv"]):
         path = "exec.argv[{}]".format(index)
@@ -407,8 +425,8 @@ def validate(data: dict) -> None:
             _fail("exec.argv", "expected exactly one {{{}}}".format(name))
     for profile, config in execution["profiles"].items():
         path = "exec.profiles." + profile
-        _mapping(config, path, ("extra", "read_only") if profile == "review" else ("extra",),
-                 () if profile == "review" else ("read_only",))
+        _mapping(config, path, ("extra", "read_only") if profile in ("review", "manager") else ("extra",),
+                 () if profile in ("review", "manager") else ("read_only",))
         if "read_only" in config:
             _boolean(config["read_only"], path + ".read_only")
         _strings(config["extra"], path + ".extra")
@@ -420,6 +438,8 @@ def validate(data: dict) -> None:
             if any(names.count(name) > 1 for name in _REQUIRED_PLACEHOLDERS):
                 _fail(location, "duplicate required placeholder")
     _review(data, _argv_locations(execution, "review"))
+    if "manager" in execution["profiles"]:
+        _manager(data, _argv_locations(execution, "manager"))
 
     events = data["events"]
     _mapping(events, "events", ("format", "stream", "types", "success", "final_text", "usage", "model_actual", "error"))
@@ -597,6 +617,8 @@ class Manifest:
             _check_forbidden(inspected, path, forbidden)
             result.append(rendered)
             checked.append((inspected, path))
+        if profile == "manager":
+            _manager(self.data, checked)
         if profile == "review":
             _review(self.data, checked)
         return result

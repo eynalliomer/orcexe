@@ -21,14 +21,14 @@ SCENARIOS = {"success", "write", "invalid-model", "auth-missing", "quota", "stal
 
 def parse_exec(argv):
     values = {"--output-format": "format", "--model": "model", "--effort": "effort",
-              "--permission-mode": "permission"}
+              "--permission-mode": "permission", "--tools": "tools"}
     # Inferred from 2.1.310 --help (<values...>), not executed against the CLI.
     variadic = {"--add-dir": "add_dirs", "--allowedTools": "allowed",
                 "--allowed-tools": "allowed", "--disallowedTools": "disallowed",
                 "--disallowed-tools": "disallowed"}
     switches = {"-p": "print", "--verbose": "verbose",
                 "--no-session-persistence": "fresh", "--strict-mcp-config": "strict",
-                "--include-hook-events": "hooks"}
+                "--include-hook-events": "hooks", "--restricted": "restricted", "--safe-mode": "safe"}
     options = {"permission": "plan", "prompt": None}
     index = 0
     while index < len(argv):

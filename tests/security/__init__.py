@@ -229,10 +229,12 @@ class SecurityFixture(unittest.TestCase):
             outputs[run_id + "/result.json"] = (directory / "result.json").read_bytes()
             if tool == "codex":
                 self.trusted_workdirs.append(str(work))
+        from orcexe import isolation
+        isolated = isolation.backend() != "none"
         outputs["do"] = self.invoke("do", "Add a docstring to src/app.py", "--repo", str(self.repo),
-            "--model-constraint", '{"tools":["codex"]}', "--timeout", "5", "--json")
+            "--model-constraint", '{"tools":["codex"]}', "--timeout", "5", "--json", codes=(0,) if isolated else (1,))
         summary = json.loads(outputs["do"])
-        self.assertEqual(summary["verdict"], "accepted", summary)
+        self.assertEqual(summary["verdict"], "accepted" if isolated else "unverified", summary)
         self.trusted_workdirs.append(summary["worktree"])
         directory = self.repo / ".orcexe/runs" / summary["run_id"]
         for name in ("status.md", "gate.json", "result.json"):

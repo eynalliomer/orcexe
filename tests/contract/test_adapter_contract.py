@@ -105,7 +105,9 @@ class AdapterContract:
                     self.assertIn(str(brief), prompt)
                     self.assertLessEqual(len(prompt), 600)
                 if req.profile == "review":
-                    self.assertEqual(argv[-2:], ["--mode" if self.cursor else "--permission-mode", "plan"])
+                    extra = (["--mode", "plan"] if self.cursor else
+                             ["--permission-mode", "plan", "--disallowedTools", "Bash,WebFetch,WebSearch"])
+                    self.assertEqual(argv[-len(extra):], extra)
 
     def run_scenario(self, scenario, req):
         adapter = self.make_adapter(scenario)
@@ -125,7 +127,10 @@ class AdapterContract:
         with mock.patch.object(proc, 'run', side_effect=prepared):
             return adapter.run(req)
 
-    def test_all_fake_scenarios(self):
+    def test_fast_fake_scenarios(self):
+        self.check_fake_scenarios()
+
+    def check_fake_scenarios(self, full=False):
         scenarios = ("success", "write", "invalid-model", "auth-401", "warning-first", "no-final",
                      "quota", "quota-unconfirmed", "stall", "commit", "big-line", "background-child")
         if self.claude:
@@ -133,6 +138,10 @@ class AdapterContract:
         if self.cursor:
             scenarios = ("success", "write", "invalid-model", "auth-missing", "untrusted",
                          "quota-suspected", "stall", "commit", "model-mismatch", "shell", "shell-blocked", "hooks")
+        if not full:
+            # All event/status parsers retain fast adapter/unit fixtures. This
+            # default contract proof keeps real spawn, both profiles and failure.
+            scenarios = ('success', 'write', 'auth-missing' if self.claude or self.cursor else 'auth-401')
         table = {}
         for scenario in scenarios:
             with self.subTest(scenario=scenario):

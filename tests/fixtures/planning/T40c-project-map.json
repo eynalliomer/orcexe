@@ -1,0 +1,26 @@
+{
+  "schema": "orcexe.project_map.v1",
+  "intake_sha": "HEAD",
+  "architecture": {
+    "modules": [
+      {"path": "plugins/orcexe/src/orcexe/cli.py", "role": "Version command and CLI entry point"}
+    ]
+  },
+  "risk_map": [
+    {"path_glob": "plugins/orcexe/src/orcexe/ledger.py", "class": "data", "reason": "SHA-256-chained JSON ledger; add integrity tests"},
+    {"path_glob": "plugins/orcexe/src/orcexe/redact*.py", "class": "data", "reason": "Secret redaction for JSON output; add tests"},
+    {"path_glob": "plugins/orcexe/src/orcexe/{worktree,gitutil}.py", "class": "data", "reason": "Git worktree isolation with JSON receipts and tests"},
+    {"path_glob": "plugins/orcexe/src/orcexe/trust.py", "class": "auth", "reason": "Trust boundary for JSON inputs"},
+    {"path_glob": "plugins/orcexe/src/orcexe/{envfilter,adapters/*}.py", "class": "auth", "reason": "Child environment and adapters"}
+  ],
+  "do_not_touch": [
+    {"path_glob": "plugins/orcexe/src/orcexe/{worktree,gitutil}.py", "reason": "Preserve isolation"},
+    {"path_glob": ".orcexe/**", "reason": "Local state"},
+    {"path_glob": "vendor/**", "reason": "Vendored code"},
+    {"path_glob": ".env*", "reason": "Environment files"}
+  ],
+  "conventions": [],
+  "commands": {},
+  "unknowns": [],
+  "direction_sentences": {"conflicts": []}
+}

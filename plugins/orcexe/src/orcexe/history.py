@@ -15,6 +15,17 @@ from orcexe import fsio, intake, proc
 FIX = re.compile(r'\b(?:fix|fixes|fixed|hotfix|revert|reverts|reverted)\b', re.I)
 REVERT = re.compile(r'\b(?:this\s+)?reverts?\s+(?:commit\s+)?([0-9a-f]{40})\b', re.I)
 EMAIL = re.compile(r'[^\s<>"/\\]+@[^\s<>"/\\]+')
+COMMON_WORDS = frozenset('a an the and or but not for from to of in on at by with as is are was were be been '
+                         'will can may must should would could do does did done has have had it its this that '
+                         'these those we you they he she us them our your their my me all any each other '
+                         'new old more less first last next previous one two three four five six seven '
+                         'add added change changes fix fixed build test run map main master release '
+                         'data code project history direction read write use used user users support '
+                         'make made get set value values return true false null none error errors '
+                         'time long short good best better open close small large public private '
+                         'update updated remove removed branch commit path file files plan report '
+                         'mark bill rose joy grace hope faith dawn amber brown gray white green black '
+                         'blue red summer autumn winter april june august march'.split())
 
 
 def _allowed(path):
@@ -38,7 +49,10 @@ def _clean(value, identities, field=None):
         # apostrophe suffix. Keep separator variants used in branch names.
         for identity in identities:
             pattern = r'[\s._/-]+'.join(re.escape(part) for part in identity.split())
-            value = re.sub(r'(?<!\w)' + pattern + r'(?!\w)', '[REDACTED:pii]', value, flags=re.I)
+            sensitive = len(identity.split()) == 1 and (len(identity) < 4
+                                                        or identity.casefold() in COMMON_WORDS)
+            value = re.sub(r'(?<!\w)' + pattern + r'(?!\w)', '[REDACTED:pii]', value,
+                           flags=0 if sensitive else re.I)
         return intake._clean(EMAIL.sub('[REDACTED:pii]', value))
     if isinstance(value, list):
         return [_clean(item, identities) for item in value]
@@ -190,15 +204,11 @@ def scan(repo, issues=False):
     """Return (main worktree, {u2, u3}); never inspect working-tree content."""
     started = time.monotonic()
     deadline = started + 30
-    repo = Path(repo).resolve()
+    repo = intake.repository_root(repo, deadline)
 
     def git(*args, **kwargs):
         return intake._git(repo, *args, deadline=deadline, **kwargs)
 
-    code, root = git('rev-parse', '--show-toplevel', allow_failure=True)
-    if code:
-        raise intake.IntakeError('not_git_repository')
-    repo = Path(os.fsdecode(root.rstrip(b'\n')))
     _, trees = git('worktree', 'list', '--porcelain', '-z')
     main = Path(os.fsdecode(trees.split(b'\0', 1)[0][9:]))
     code, raw = git('rev-parse', '--verify', 'HEAD', allow_failure=True)

@@ -1043,7 +1043,7 @@ def scan(repo):
     started = time.monotonic()
     deadline = started + 9.5
     main, discovery = intake.scan(repo)
-    repo = Path(repo).resolve()
+    repo = intake.repository_root(repo, deadline)
     head = discovery['meta']['head']
     unseen = list(discovery['meta']['unseen'])
     entries = {}
@@ -1160,7 +1160,8 @@ def run_slop(repo):
         raise intake.IntakeError('output_symlink')
     directory.mkdir(mode=0o700, exist_ok=True)
     fsio.atomic_write_json(directory / 'slop.json', report, mode=0o600)
-    fsio.atomic_write_text(directory / 'slop-report.md', _markdown(report), mode=0o600)
+    from orcexe import published
+    published.report(published.write_text(directory, 'slop-report.md', _markdown(report)))
     return report
 
 

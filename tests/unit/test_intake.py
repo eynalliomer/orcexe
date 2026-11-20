@@ -101,6 +101,8 @@ class IntakeTests(GitFixture):
         self.assertEqual({v['kind'] for v in commands}, {'test', 'lint', 'build', 'format', 'other'})
         for command in commands:
             self.assertIs(command['verified'], False)
+            self.assertEqual(set(command), {'id', 'kind', 'source', 'verified',
+                                            'argv' if 'argv' in command else 'script'})
             self.assertRegex(command['source'], r'^file:.+:\d+$')
             source, number = command['source'][5:].rsplit(':', 1)
             self.assertLessEqual(int(number), len((self.main / source).read_text().splitlines()))

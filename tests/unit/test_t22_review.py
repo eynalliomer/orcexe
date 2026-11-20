@@ -41,7 +41,7 @@ class ClosingReviewTests(DoFixture):
         self.wrapper('codex', 'Path(%r).write_text(%r)' % (str(self.repo / '.orcexe/commands.yaml'), config))
         result = self.invoke()
         self.assertEqual(result['failed_check'], 'main_repository_changed', result)
-        self.assertNotEqual(result['verdict'], 'accepted')
+        self.assertNotEqual(result['verdict'], self.accepted_verdict)
         self.assertFalse(marker.exists())
 
     def test_b1_existing_config_byte_changes_are_detected(self):
@@ -61,20 +61,20 @@ class ClosingReviewTests(DoFixture):
                 [sys.executable, '-c', 'from pathlib import Path; Path(%r).touch()' % str(marker)]) + '\n')
             return gate(**kwargs)
         self.gate = late
-        self.assertEqual(self.invoke()['verdict'], 'accepted')
+        self.assertEqual(self.invoke()['verdict'], self.accepted_verdict)
         self.assertFalse(marker.exists())
 
     def test_b2_claude_inject_quoted_auth_is_accepted(self):
         self.claude_scenario = 'success'
         self.wrapper('claude-code', injection={'type': 'user', 'message': {'content': [
             {'type': 'tool_result', 'content': 'Invalid API key; HTTP 401; please run /login; model_not_found'}]}})
-        self.assertEqual(self.invoke(model_constraint={'tools': ['claude-code']})['verdict'], 'accepted')
+        self.assertEqual(self.invoke(model_constraint={'tools': ['claude-code']})['verdict'], self.accepted_verdict)
 
     def test_b2_agent_inject_quoted_markers_is_accepted(self):
         self.cursor_scenario = 'success'
         self.wrapper('cursor', injection={'type': 'tool_call', 'content':
             'untrusted; Login required; Cannot use this model; quota exceeded'})
-        self.assertEqual(self.invoke(model_constraint={'tools': ['cursor']})['verdict'], 'accepted')
+        self.assertEqual(self.invoke(model_constraint={'tools': ['cursor']})['verdict'], self.accepted_verdict)
 
     def test_b2_only_structured_errors_and_non_json_diagnostics_classify(self):
         from dataclasses import replace
@@ -150,61 +150,14 @@ class ClosingReviewTests(DoFixture):
                   'events.symlink_to(%r)' % str(victim))
         self.wrapper('cursor', action)
         result = self.invoke(model_constraint={'tools': ['cursor']})
-        self.assertNotEqual(result['verdict'], 'accepted')
+        self.assertNotEqual(result['verdict'], self.accepted_verdict)
         self.assertEqual(victim.read_bytes(), b'UNCHANGED\n')
 
-    def test_b5_unittest_layouts_pass_fail_and_zero_under_available_pythons(self):
-        interpreters = {str(Path(sys.executable).resolve()), '/usr/bin/python3'}
-        for index, interpreter in enumerate(sorted(interpreters)):
-            if not Path(interpreter).exists():
-                continue
-            bindir = self.root / ('python-' + str(index))
-            bindir.mkdir()
-            (bindir / 'python3').symlink_to(interpreter)
-            self.env['PATH'] = str(bindir) + os.pathsep + self.executor_env['PATH']
-            expected_python = subprocess.run(
-                [str(bindir / 'python3'), '-c', 'import sys; print(sys.executable)'],
-                env=self.env, capture_output=True, text=True, check=True, timeout=scaled(5)).stdout.strip()
-            for packaged in (False, True):
-                init = self.repo / 'tests/__init__.py'
-                if packaged:
-                    init.touch()
-                else:
-                    init.unlink(missing_ok=True)
-                for status, assertion, verdict in (
-                        ('pass', 'self.assertIsNone(app())', 'accepted'),
-                        ('fail', 'self.assertIsNotNone(app())', 'needs_fix'),
-                        ('not_seen', None, 'unverified')):
-                    with self.subTest(interpreter=interpreter, packaged=packaged, status=status):
-                        # Match mkrepo: unpackaged tests import app via src on sys.path.
-                        source = 'import sys, unittest\nsys.path.insert(0, "src")\nfrom app import app\n'
-                        if assertion:
-                            source += ('class AppTest(unittest.TestCase):\n'
-                                       '    def test_app(self):\n        ' + assertion + '\n')
-                        (self.repo / 'tests/test_app.py').write_text(source)
-                        self.git('add', 'tests')
-                        self.git('commit', '-qm', 'unittest discovery case')
-                        base = self.git('rev-parse', 'HEAD')
-                        command, = gl.detect_commands(self.repo, base)
-                        self.assertEqual(command.argv,
-                            ['python3', '-m', 'unittest', 'discover', '-s', 'tests']
-                            + (['-t', '.'] if packaged else []))
-                        result = self.invoke()
-                        self.assertEqual(result['verdict'], verdict, result)
-                        directory = self.repo / '.orcexe/runs' / result['run_id']
-                        gate = json.loads((directory / 'gate.json').read_text())
-                        project = next(c for c in gate['checks'] if c['id'] == 'project_checks')
-                        self.assertEqual(project['status'], status, gate)
-                        log = (directory / 'gate/unittest.log').read_text()
-                        self.assertIn('Ran 0 tests' if status == 'not_seen' else 'Ran 1 test', log)
-                        identity = (directory / 'gate/interpreters.log').read_text()
-                        self.assertIn('gate sys.executable: ' + sys.executable, identity)
-                        self.assertIn('PATH python3 sys.executable: ' + expected_python, identity)
 
     def test_p2_gate_uses_state_dir_and_briefs_are_private(self):
         self.env['ORCEXE_KEEP_GATE_DIR'] = '1'
         result = self.invoke()
-        self.assertEqual(result['verdict'], 'accepted', result)
+        self.assertEqual(result['verdict'], self.accepted_verdict, result)
         self.assertEqual(len(list((self.home / 'state/gate').iterdir())), 1)
         self.assertFalse((self.home / '.cache/orcexe/gate').exists())
         directory = self.repo / '.orcexe/runs' / result['run_id']

@@ -69,7 +69,7 @@ class GateTests(GitFixture):
             self.marker.unlink()
         self.controls_before = gl.snapshot_controls(self.main, self.wt)
         self.marker_command = [gl.Command("marker", [sys.executable, "-c",
-                               "from pathlib import Path; Path(" + repr(str(self.marker)) + ").touch()"])]
+                               "print('command-ran')"])]
 
     @staticmethod
     def write(root, name, text):
@@ -330,7 +330,7 @@ class GateTests(GitFixture):
     def test_p5_no_final_newline(self):
         self.edit("VALUE = 1 # edit")
         self.outcome(self.call(commands=self.marker_command), "accepted")
-        self.assertTrue(self.marker.exists())
+        self.assertIn('command-ran', (self.run_dir / 'gate/marker.log').read_text())
 
     def test_committed_target_reverted_and_reapplied_identically(self):
         self.edit("VALUE = 1 # edit\n")
@@ -341,7 +341,7 @@ class GateTests(GitFixture):
         result = self.call(commands=self.marker_command)
         self.outcome(result, "accepted")
         self.assertEqual((result["diff"]["added"], result["diff"]["deleted"]), (2, 2))
-        self.assertTrue(self.marker.exists())
+        self.assertIn('command-ran', (self.run_dir / 'gate/marker.log').read_text())
 
     def test_tool_cache_allow_list(self):
         self.edit("VALUE = 1 # edit\n")
@@ -350,7 +350,7 @@ class GateTests(GitFixture):
                      ".ruff_cache/0.1/data"):
             self.edit("cache\n", name)
         self.outcome(self.call(commands=self.marker_command), "accepted")
-        self.assertTrue(self.marker.exists())
+        self.assertIn('command-ran', (self.run_dir / 'gate/marker.log').read_text())
 
     def test_cache_exemptions_are_closed_and_do_not_follow_symlinks(self):
         self.edit("VALUE = 1 # edit\n")
@@ -684,7 +684,7 @@ class GateTests(GitFixture):
     def test_y1_no_replace_objects_positive_control(self):
         original = self._plant_blob_replacement()
         # Model a replacement already present before the executor. Even when
-        # controls match, every Git read and archive must ignore its content.
+        # controls match, every Git tree/blob read must ignore its content.
         self.controls_before = gl.snapshot_controls(self.main, self.wt)
         self.assertIn('Path(', self.git_run(self.main, 'show', original))
         self.assertEqual(gl._git_bytes(self.main, 'show', original)[1], b'')
@@ -692,22 +692,22 @@ class GateTests(GitFixture):
             self.outcome(self.call(), 'accepted')
         self.assertFalse(self.marker.exists())
 
-    def test_y1_poisoned_archive_fails_independent_checkout_verification(self):
+    def test_y1_poisoned_blobs_fail_independent_checkout_verification(self):
         self._plant_blob_replacement()
         self.controls_before = gl.snapshot_controls(self.main, self.wt)
         safe_git = gl._git_bytes
 
-        def unsafe_archive(path, *args, **kwargs):
-            if args[0] == 'archive':
-                # Deliberately bypass only archive's Git hardening. The real
+        def unsafe_blobs(path, *args, **kwargs):
+            if args[0] == 'cat-file' and '--batch' in args:
+                # Deliberately bypass only blob-reading Git hardening. The real
                 # replacement-poisoned bytes must still fail before execution.
                 data = subprocess.run([self.git, *args], cwd=str(path), env=self.env,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      input=kwargs.get('input_data'), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       check=True, timeout=scaled(5)).stdout
                 return 0, data
             return safe_git(path, *args, **kwargs)
 
-        with mock.patch.object(gl, '_git_bytes', side_effect=unsafe_archive), \
+        with mock.patch.object(gl, '_git_bytes', side_effect=unsafe_blobs), \
                 mock.patch.object(gl, '_project', wraps=gl._project) as project:
             self.outcome(self.call(), 'unverified', 'project_checks', 'not_seen')
             project.assert_not_called()
@@ -725,8 +725,8 @@ class GateTests(GitFixture):
             git.assert_not_called()
         self.assertFalse(self.marker.exists())
 
-    def test_checkout_verification_rejects_archive_content_and_file_set_changes(self):
-        # Real archive transformations exercise the independent base-tree check.
+    def test_checkout_ignores_archive_attributes_and_preserves_raw_bytes(self):
+        # Attributes must never transform the materialised raw objects.
         for attribute in ('export-subst', 'export-ignore'):
             with self.subTest(attribute=attribute):
                 self.write(self.path, 'tests/__init__.py', '# $Format:%H$\n')
@@ -737,10 +737,9 @@ class GateTests(GitFixture):
                 self.controls_before = gl.snapshot_controls(self.main, self.wt)
                 self.edit("VALUE = 1 # edit\n")
                 with mock.patch.object(gl, '_project', wraps=gl._project) as project:
-                    self.outcome(self.call(commands=self.marker_command), 'unverified',
-                                 'project_checks', 'not_seen')
-                    project.assert_not_called()
-                self.assertFalse(self.marker.exists())
+                    self.outcome(self.call(commands=self.marker_command), 'accepted')
+                    project.assert_called_once()
+                self.assertIn('command-ran', (self.run_dir / 'gate/marker.log').read_text())
 
     def test_checkout_verifies_quoted_paths_and_symlink_blob_bytes_in_one_batch(self):
         names = ['line\nbreak.txt', 'tab\tquote"\\雪.txt', 'safe-link']
@@ -989,7 +988,7 @@ class GateTests(GitFixture):
     def test_positive_docstring_typescript_comment_and_readme_use_private_checkout(self):
         self.write(self.path, 'tests/test_value.py',
                    "import os,unittest\nfrom pathlib import Path\nclass Tests(unittest.TestCase):\n"
-                   "    def test_cwd(self):\n        (Path(os.environ['HOME']).parent / 'observed-cwd').write_text(os.getcwd())\n")
+                   "    def test_cwd(self):\n        Path('observed-cwd').write_text(os.getcwd())\n")
         self.write(self.path, 'notes.ts', 'const value = "/* string */"; // before\n')
         self.write(self.path, 'README.md', 'A tpyo.\n')
         self.git_run(self.path, 'add', 'notes.ts', 'README.md', 'tests/test_value.py')
@@ -1009,7 +1008,7 @@ class GateTests(GitFixture):
             root = roots[0]
             self.assertEqual(root.stat().st_mode & 0o777, 0o700)
             self.assertEqual((root / 'checkout' / name).read_text(), text)
-            self.assertEqual((root / 'observed-cwd').read_text(), str(root / 'checkout'))
+            self.assertEqual((root / 'checkout/observed-cwd').read_text(), str(root / 'checkout'))
             self.assertFalse((self.path / 'tests/__pycache__').exists())
             self.assertIn('Ran 1 test', (self.run_dir / 'gate/unittest.log').read_text())
             shutil.rmtree(root)
@@ -1029,16 +1028,18 @@ class GateTests(GitFixture):
 
     def test_gate_environment_and_cleanup(self):
         self.edit("VALUE = 1 # edit\n")
-        observed = self.directory / 'environment.json'
-        code = ('import os,json,pathlib; pathlib.Path(%r).write_text('
-                'json.dumps(dict(env=dict(os.environ),cwd=os.getcwd())))' % str(observed))
+        code = 'import os,json; print(json.dumps(dict(env=dict(os.environ),cwd=os.getcwd())))'
         self.outcome(self.call(commands=[gl.Command('env', [sys.executable, '-c', code])]), 'accepted')
-        data = json.loads(observed.read_text())
+        data = json.loads((self.run_dir / 'gate/env.log').read_text())
         root = Path(data['cwd']).parent
         self.assertTrue(str(root).startswith(str(self.home / '.cache/orcexe/gate')))
-        for key in ('HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'CODEX_HOME'):
-            self.assertEqual(Path(data['env'][key]).parent, root)
+        temporary = Path(data['env']['TMPDIR'])
+        for key in ('HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'CODEX_HOME'):
+            self.assertEqual(Path(data['env'][key]).parent, temporary)
+        self.assertEqual(data['env']['TEMP'], str(temporary))
+        self.assertEqual(data['env']['TMP'], str(temporary))
         self.assertFalse(root.exists())
+        self.assertFalse(temporary.exists())
 
     def test_f4_pytest_ancestor_code_never_runs(self):
         if importlib.util.find_spec('pytest') is None:

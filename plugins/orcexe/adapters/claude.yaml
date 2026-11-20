@@ -37,7 +37,29 @@ exec:
   effort: {mode: flag, values: [low, medium, high, xhigh, max], model_dependent: true}
   profiles:
     write: {extra: [--permission-mode, acceptEdits, --disallowedTools, 'Bash,WebFetch,WebSearch']}
-    review: {extra: [--permission-mode, plan], read_only: true}
+    # Plan mode alone permits Bash; explicitly deny execution and web tools.
+    review: {extra: [--permission-mode, plan, --disallowedTools, 'Bash,WebFetch,WebSearch'], read_only: true}
+    # T38c provenance: Claude Code 2.1.310, local --version/--help rechecked 2026-11-19.
+    # Help lines (wrapped):
+    # --restricted  Restricted mode: removes the built-in tools that run commands
+    # or code (Bash, PowerShell and the other code-running tools) and WebFetch
+    # unless --tools names them, and ignores user, project and local settings
+    # files (managed settings and --settings still apply; add --strict-mcp-config
+    # to skip MCP servers too). Also confines the file tools to the working
+    # directories (--add-dir included), refuses bypassPermissions, and lets only
+    # a person or the configured permission handler approve writes to settings,
+    # git and tool-configuration files.
+    # --safe-mode  Start with all customizations (CLAUDE.md, skills, installed
+    # plugins, hooks, MCP servers, custom commands and agents, output styles,
+    # workflows, custom themes, keybindings, and more) disabled — useful for
+    # troubleshooting a broken configuration. Admin-managed (policy) settings
+    # still apply. Auth, model selection, built-in tools and plugins, and
+    # permissions work normally. Sets CLAUDE_CODE_SAFE_MODE=1.
+    # Runtime evidence supplied by the task's main session (same CLI version):
+    # A committed .Claude/settings.json SessionStart hook ran with plan alone;
+    # restricted + safe-mode + strict-mcp-config + Read,Glob,Grep suppressed it,
+    # retained subscription authentication, and answered correctly. --bare is forbidden.
+    manager: {extra: [--permission-mode, plan, --restricted, --safe-mode, --tools, 'Read,Glob,Grep'], read_only: true}
   forbidden_argv: [--dangerously-skip-permissions, bypassPermissions, --bare, --plugin-url]
 events:
   format: jsonl
@@ -51,7 +73,8 @@ events:
   model_actual: system.init.model
   error: {field: result, format: text}
 exit_codes: {usage: 1, runtime: 1}
-# -p runs user/project hooks; --bare would disable subscription authentication.
+# Ordinary -p runs user/project hooks; the manager profile suppresses them with
+# --restricted and --safe-mode. --bare would disable subscription authentication.
 # acceptEdits also permits edits in --add-dir (the brief directory). This is
 # limited to run_dir/brief, which contains only brief.md. Evidence files stay
 # outside that grant and are opened without following symlinks. Cost is list price, not a bill.

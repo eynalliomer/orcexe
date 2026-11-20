@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 
 from orcexe import fsio, gitutil, miniyaml, proc
@@ -39,6 +40,7 @@ LOCKS = ('package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.loc
 SECURITY_CONFIG = {'.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json',
                    '.claude/settings.json', '.claude/settings.local.json',
                    '.codex/config.toml', '.cursor/hooks.json'}
+SECURITY_PARTS = tuple(tuple(name.split('/')) for name in SECURITY_CONFIG)
 
 
 class IntakeError(ValueError):
@@ -88,12 +90,60 @@ def _own_state(path):
     return path == '.orcexe' or path.startswith('.orcexe/')
 
 
+def _name_parts(path):
+    return PurePosixPath(unicodedata.normalize('NFC', path).casefold()).parts
+
+
 def _instruction(path):
-    p = PurePosixPath(path)
-    return (p.name in ('CLAUDE.md', 'AGENTS.md', 'GEMINI.md', '.cursorrules')
-            or path == '.github/copilot-instructions.md'
-            or any(part in ('.claude', '.codex') for part in p.parts[:-1])
-            or '.cursor/rules/' in path)
+    parts = _name_parts(path)
+    return (parts[-1] in ('claude.md', 'claude.local.md', 'agents.md', 'gemini.md', '.cursorrules')
+            or any(part in ('.agents', '.claude', '.cursor', '.codex') for part in parts)
+            or any(parts[i:i + 2] == ('.github', 'copilot-instructions.md')
+                   for i in range(len(parts) - 1)))
+
+
+def _security_config(path):
+    parts = _name_parts(path)
+    return any(parts[-len(suffix):] == suffix for suffix in SECURITY_PARTS)
+
+
+def _hook_path(path):
+    parts = _name_parts(path)
+    return (any(part in ('.husky', '.githooks') for part in parts[:-1])
+            or parts[-1] in ('.pre-commit-config.yaml', '.pre-commit-config.yml'))
+
+
+def repository_root(repo, deadline=None):
+    """The shared entry point for root-relative onboarding observations."""
+    repo = Path(repo).resolve()
+    if not repo.is_dir():
+        raise IntakeError('not_a_repository')
+    code, root = _git(repo, 'rev-parse', '--show-toplevel',
+                      deadline=deadline or time.monotonic() + 5, allow_failure=True)
+    if code:
+        raise IntakeError('not_a_repository')
+    return Path(os.fsdecode(root.rstrip(b'\n')))
+
+
+def prose(text):
+    """Remove terminal escapes and invisible/control text before rendering."""
+    text = re.sub(r'(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c|$)', '', text, flags=re.S)
+    text = re.sub(r'(?:\x1b[P^_X]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c|$)', '', text, flags=re.S)
+    text = re.sub(r'(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]', '', text)
+    text = re.sub(r'\x1b[ -/]*[0-~]', '', text)
+    return ''.join(c for c in text if not _invisible(c))
+
+
+def _invisible(c):
+    # Unicode Default_Ignorable_Code_Point includes letters and marks, not just Cf.
+    n = ord(c)
+    if n < 128:
+        return n < 32 or n == 127
+    return (unicodedata.category(c) in ('Cc', 'Cf', 'Zl', 'Zp')
+            or n in (0x034f, 0x3164, 0xffa0)
+            or any(lo <= n <= hi for lo, hi in ((0x115f, 0x1160), (0x17b4, 0x17b5),
+                   (0x180b, 0x180f), (0x2060, 0x206f), (0xfe00, 0xfe0f),
+                   (0xfff0, 0xfff8), (0xe0000, 0xe0fff))))
 
 
 def _doc(path):
@@ -120,7 +170,7 @@ def _file_kind(path):
     """Closed fetch allow-list. Presence-only files never request blob content."""
     if _instruction(path):
         return 'instruction'
-    if path in SECURITY_CONFIG:
+    if _security_config(path):
         return 'security'
     if _excluded(path):
         return None
@@ -488,7 +538,8 @@ def _ci(path, text):
 
 
 def _security(path, text):
-    data = _toml(text) if path.endswith('.toml') else _json(text)
+    name = _name_parts(path)[-1]
+    data = _toml(text) if name.endswith('.toml') else _json(text)
     hooks, mcp = [], []
     for key in ('hooks', 'notify'):
         if key in data and data[key]:
@@ -496,7 +547,7 @@ def _security(path, text):
             if key == 'hooks' and not isinstance(value, dict):
                 raise ValueError('hooks')
             hooks.append({'path': path, 'declarations': sorted(value) if isinstance(value, dict) else ['notify']})
-    if path.endswith('mcp.json') or path == '.mcp.json':
+    if name.endswith('mcp.json'):
         servers = data.get('mcpServers', data.get('servers', {}))
         if not isinstance(servers, dict):
             raise ValueError('mcp_servers')
@@ -534,11 +585,7 @@ def scan(repo):
     """Observe HEAD and status; return (main worktree, sanitized U1 document)."""
     started = time.monotonic()
     deadline = started + 9
-    repo = Path(repo).resolve()
-    code, root = _git(repo, 'rev-parse', '--show-toplevel', deadline=deadline, allow_failure=True)
-    if code:
-        raise IntakeError('not_git_repository')
-    repo = Path(os.fsdecode(root.rstrip(b'\n')))
+    repo = repository_root(repo, deadline)
     _, trees = _git(repo, 'worktree', 'list', '--porcelain', '-z', deadline=deadline)
     first = trees.split(b'\0', 1)[0]
     if not first.startswith(b'worktree '):
@@ -594,14 +641,14 @@ def scan(repo):
         unseen.append({'path': 'HEAD', 'reason': str(error) if isinstance(error, IntakeError) else 'blob_incomplete'})
         contents = {}
     roots, providers = set(), set()
-    security_unknown = not head or any(p in SECURITY_CONFIG for p in entries if p not in contents)
+    security_unknown = not head or any(_security_config(p) for p in entries if p not in contents)
     for path in sorted(paths):
         _, _, size = entries[path]
         if _doc(path):
             report['docs'].append({'path': path, 'size': size})
         if _instruction(path) and path in contents:
             report['instructions'].append({'path': path, 'size': size, 'sha256': hashlib.sha256(contents[path]).hexdigest()})
-        if any(part in ('.husky', '.githooks') for part in PurePosixPath(path).parts[:-1]) or PurePosixPath(path).name in ('.pre-commit-config.yaml', '.pre-commit-config.yml'):
+        if _hook_path(path):
             report['security']['hooks'].append({'path': path})
         ecosystem = _ecosystem(path)
         if ecosystem:
@@ -614,11 +661,11 @@ def scan(repo):
         if provider:
             providers.add(provider)
             report['ci']['workflow_files'].append(path)
-        if path not in contents or (_instruction(path) and path not in SECURITY_CONFIG):
+        if path not in contents or (_instruction(path) and not _security_config(path)):
             continue
         try:
             text = contents[path].decode('utf-8')
-            if path in SECURITY_CONFIG:
+            if _security_config(path):
                 hooks, mcp = _security(path, text)
                 report['security']['hooks'].extend(hooks)
                 report['security']['mcp'].extend(mcp)
@@ -637,7 +684,7 @@ def scan(repo):
                 report['commands'].extend(_targets(path, text))
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError, configparser.Error, ET.ParseError):
             unseen.append({'path': path, 'reason': 'malformed_or_unsupported'})
-            if path in SECURITY_CONFIG:
+            if _security_config(path):
                 security_unknown = True
     xcode = {str(PurePosixPath(*PurePosixPath(p).parts[:i + 1]))
              for p in paths for i, part in enumerate(PurePosixPath(p).parts) if part.endswith('.xcodeproj')}

@@ -105,11 +105,17 @@ def main(argv=None):
     parser.add_argument('-s', '--start-directory', default='.')
     parser.add_argument('-p', '--pattern', default='test*.py')
     parser.add_argument('-t', '--top-level-directory', default='.')
-    parser.add_argument('--timeout', type=float, default=300,
-                        help='per-module seconds, multiplied by ORCEXE_TEST_TIME_SCALE')
+    parser.add_argument('--timeout', type=float,
+                        help='per-module seconds (default 300; slow mode 1800), multiplied by ORCEXE_TEST_TIME_SCALE')
+    parser.add_argument('--slow', action='store_true',
+                        help='include extended end-to-end/stress tests (ORCEXE_SLOW_TESTS=1)')
     parser.add_argument('--worker', help=argparse.SUPPRESS)
     parser.add_argument('--result', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.slow:
+        os.environ['ORCEXE_SLOW_TESTS'] = '1'
+    if args.timeout is None:
+        args.timeout = 1800 if os.environ.get('ORCEXE_SLOW_TESTS') == '1' else 300
     top = str(Path(args.top_level_directory).resolve())
     if args.worker:
         return worker(args.worker, args.result, top)
@@ -125,7 +131,8 @@ def main(argv=None):
     sys.dont_write_bytecode = True
     started = time.monotonic()
     loader = Discovery()
-    loader.discover(args.start_directory, pattern=args.pattern, top_level_dir=top)
+    loader.discover(str(Path(args.start_directory).resolve()),
+                    pattern=args.pattern, top_level_dir=top)
     if loader.errors:
         print('\n'.join(loader.errors), file=sys.stderr)
         return 1

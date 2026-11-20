@@ -45,7 +45,7 @@ class FakeClaudeTests(unittest.TestCase):
 
     def test_manifest_flag_inventory_and_profiles(self):
         produced = set()
-        for profile in ('write', 'review'):
+        for profile in self.manifest.data['exec']['profiles']:
             argv = self.argv(profile)
             produced.update(token for token in argv if token.startswith('-'))
             result = self.invoke(argv)
@@ -54,7 +54,7 @@ class FakeClaudeTests(unittest.TestCase):
             self.assertEqual([event['type'] for event in events],
                 ['system', 'system', 'assistant', 'rate_limit_event', 'system', 'result'])
             self.assertEqual(events[-1]['terminal_reason'], 'completed')
-            self.assertEqual(events[0]['permissionMode'], 'plan' if profile == 'review' else 'acceptEdits')
+            self.assertEqual(events[0]['permissionMode'], 'acceptEdits' if profile == 'write' else 'plan')
         self.assertEqual(produced | {'--allowedTools', '--allowed-tools', '--disallowed-tools'},
                          parser_flags(FAKE))
         bad = self.invoke([*self.argv(), '--bogus-flag'])
@@ -69,7 +69,7 @@ class FakeClaudeTests(unittest.TestCase):
         self.assertFalse(json.loads(self.calls.read_text().splitlines()[-1])['model_call'])
 
     def test_old_prompt_order_fails_and_positional_first_works(self):
-        for profile in ('write', 'review'):
+        for profile in self.manifest.data['exec']['profiles']:
             with self.subTest(profile=profile):
                 argv = self.argv(profile)
                 self.assertEqual(argv[:2], ['-p', 'Do the fixture task'])

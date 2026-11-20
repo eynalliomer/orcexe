@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import unicodedata
 
-from orcexe import gitutil, miniyaml
+from orcexe import globs, gitutil, miniyaml
 
 
 @dataclass(frozen=True)
@@ -85,9 +85,10 @@ _BACKTICK = re.compile(r"`([^`]+)`")
 _DOC_EXTENSIONS = frozenset(".md .markdown .rst .txt .adoc".split())
 _SOURCE_EXTENSIONS = frozenset(""".py .js .mjs .cjs .ts .tsx .jsx .go .rs .java
 .kt .swift .rb .php .c .h .cc .cpp .hpp .cs""".split())
-_DENIED_DIRECTORIES = frozenset("""scripts bin tools hooks .husky .git ci deploy
+_DENIED_DIRECTORIES = frozenset("""scripts bin tools hooks .husky .git .github .gitlab .circleci ci deploy
 infra ops vendor third_party third-party node_modules .venv venv env site-packages
-dist build out target .next coverage __generated__ generated gen""".split())
+dist build out target .next coverage __generated__ generated gen
+i18n l10n locale locales translations""".split())
 _DENIED_SOURCE_NAMES = frozenset("setup.py conftest.py manage.py noxfile.py fabfile.py".split())
 # Turkish inflection is bounded: zero to three members of this exact set.
 # nı/ni/nu/nü cover possessive accusatives, e.g. hata + sı + nı.
@@ -102,16 +103,18 @@ ad tarih liste tablo metin başlık imla noktalama kelime cümle"""
 # word never grants fast by itself. örneğ is the softened stem in örneği.
 _FAST_LEXEME = re.compile(r"[^\W_]+|[^\s]", re.UNICODE)
 _TARGET_SUFFIX = re.compile(r"['’]([^\W\d_]+)", re.UNICODE)
-_FAST_ACTIONS = frozenset("add fix ekle düzelt güncelle netleştir".split())
+_FAST_ACTIONS = frozenset("add fix update clarify ekle düzelt güncelle netleştir".split())
 # Full-task productions: (intent, target class, pattern). @target is inserted
 # only for a resolved mention; user punctuation cannot create this sentinel.
 _FAST_PATTERNS = (
     ("add_docstring", "source", r"(?:add (?:a )?docstring to @target|@target docstring ekle)"),
     ("add_comment", "source", r"(?:add (?:a )?comment to @target|@target yorum ekle)"),
-    ("add_section", "doc", r"(?:add (?:a )?(?:usage|installation) (?:section|example) to @target|@target (?:kurulum|kullanim) (?:bölüm|örnek) ekle)"),
+    ("add_section", "doc", r"(?:add (?:(?:a )?(?:usage|installation) (?:section|example)|an (?:usage|installation) example) to @target|@target (?:kurulum|kullanim) (?:bölüm|örnek) ekle)"),
+    ("add_example", "doc", r"(?:add an example to @target|@target örnek ekle)"),
+    ("fix_docstring", "source", r"(?:fix (?:the )?docstring (?:in|of) @target|@target docstring düzelt)"),
     ("fix_typo", "doc source", r"(?:fix (?:the )?typo in @target|@target (?:yorum )?yazim hata düzelt)"),
-    ("clarify_paragraph", "doc", r"(?:@target paragraf netleştir)"),
-    ("update_doc", "doc", r"@target güncelle"),
+    ("clarify_paragraph", "doc", r"(?:clarify @target|@target (?:paragraf )?netleştir)"),
+    ("update_doc", "doc", r"(?:update @target|@target güncelle)"),
     ("fix_doc", "doc", r"(?:fix @target|@target düzelt|düzelt @target)"),
 )
 
@@ -135,7 +138,7 @@ _FAST_SUFFIXES = frozenset(_fold(s) for s in _FAST_SUFFIX_TEXT.split())
 _FAST_NOUNS = {_fold(s): _fold(s) for s in _FAST_NOUN_TEXT.split()}
 _FAST_NOUNS["örneğ"] = "örnek"
 _FAST_ACTIONS = frozenset(_fold(s) for s in _FAST_ACTIONS)
-_FAST_VOCABULARY = frozenset(_FAST_NOUNS) | _FAST_ACTIONS | {"a", "the", "to", "in"}
+_FAST_VOCABULARY = frozenset(_FAST_NOUNS) | _FAST_ACTIONS | {"a", "an", "the", "to", "in", "of"}
 
 
 def _fast_suffix(text):
@@ -158,12 +161,18 @@ def _fast_noun(token):
 
 
 def _target_class(path):
+    # Resolved mentions must not hide shell syntax or non-Latin lookalikes.
+    if any(c not in " _-./" and not (c.isascii() and c.isalnum())
+           and not (c.isalpha() and unicodedata.name(c, "").startswith("LATIN "))
+           for c in path):
+        return None
     segments = _fold(path).split("/")
     name = segments[-1]
     if any(s in _DENIED_DIRECTORIES for s in segments[:-1]):
         return None
     ancestors = ["/".join(segments[:i]) for i in range(1, len(segments) + 1)]
-    if (".lock" in name or name.startswith(("license", "copying", "notice"))
+    if (".lock" in name or name.startswith(("license", "licence", "copying", "notice", "manifest"))
+            or any(_contains(_words(path), stem) for stem in _RISK_WORDS)
             or any(_glob(p, ancestor) for p in _RISK_PATHS for ancestor in ancestors)):
         return None
     extension = "." + name.rsplit(".", 1)[-1] if "." in name else ""
@@ -198,6 +207,16 @@ def _fast_task(task, resolved_mentions):
         suffix = _TARGET_SUFFIX.match(task, end)
         if suffix and _fast_suffix(_fold(suffix.group(1))):
             end = suffix.end()
+        # Quoting a target must not manufacture word boundaries, e.g.
+        # update`README.md` or `README.md`güncelle. Keep existing double quotes.
+        left, right = start, end
+        while left and task[left - 1] in ('"', '“', '”'):
+            left -= 1
+        while right < len(task) and task[right] in ('"', '“', '”'):
+            right += 1
+        if ((left and not task[left - 1].isspace())
+                or (right < len(task) and not task[right].isspace())):
+            continue
         spans.append((start, end, "." in normalized.rsplit("/", 1)[-1]))
     tokens = []
     explicit = True
@@ -245,8 +264,8 @@ def _glob(pattern, path):
     whole-path fnmatch's slash crossing and recursive/exponential backtracking.
     Patterns are anchored at the repo root; use **/ for any directory depth.
     """
-    patterns = _fold(pattern).split("/")
-    segments = _fold(path).split("/")
+    patterns = globs.path_key(_fold(pattern)).rstrip("/").split("/")
+    segments = globs.path_key(_fold(path)).split("/")
     states = {0}
 
     def closure(current):
@@ -340,6 +359,15 @@ def classify(task: str, files: Sequence[str] | None,
         signal("task_too_long", len(task))
     if "\0" in task:
         signal("input_nul", "task")
+    # Risk matching deliberately folds compatibility/invisible characters;
+    # that same folding must never turn disguised text into a fast production.
+    nfc_task = unicodedata.normalize("NFC", task)
+    if (any(not c.isprintable() or (c.isspace() and c != " ") for c in task)
+            or any(c.isalpha() and not unicodedata.name(c, "").startswith("LATIN ")
+                   for c in task)
+            or any(unicodedata.category(c).startswith("M") for c in task)
+            or unicodedata.normalize("NFKC", nfc_task) != nfc_task):
+        signal("task_unsafe_character", "nonliteral text")
     tokens = _words(task)
     if any(_mixed_script(token) for token in tokens):
         signal("mixed_script", "Latin with Cyrillic/Greek")
@@ -386,8 +414,8 @@ def classify(task: str, files: Sequence[str] | None,
     paths = normalized
 
     tracked = set()
-    basename_matches = {p.rsplit("/", 1)[-1]: set() for p in paths}
-    stem_matches = {p: set() for p in symbols}
+    basename_matches = {globs.path_key(p.rsplit("/", 1)[-1]): set() for p in paths}
+    stem_matches = {globs.path_key(p): set() for p in symbols}
     for path in files if files is not None else ():
         if not isinstance(path, str):
             raise TypeError("files must contain strings")
@@ -398,7 +426,7 @@ def classify(task: str, files: Sequence[str] | None,
             signal("path_invalid", "non-relative tracked path")
             continue
         tracked.add(path)
-        basename = path.rsplit("/", 1)[-1]
+        basename = globs.path_key(path.rsplit("/", 1)[-1])
         if basename in basename_matches:
             basename_matches[basename].add(path)
         stem = basename.rsplit(".", 1)[0] if "." in basename else basename
@@ -410,10 +438,16 @@ def classify(task: str, files: Sequence[str] | None,
     ambiguous = False
     for mention in sorted(paths | symbols):
         if mention in paths:
-            matches = {mention} if mention in tracked else basename_matches[mention.rsplit("/", 1)[-1]]
+            matches = {p for p in tracked if globs.path_key(p) == globs.path_key(mention)}
+            if not matches:
+                matches = basename_matches[globs.path_key(mention.rsplit("/", 1)[-1])]
         else:
-            matches = stem_matches[mention]
-        if not matches:
+            matches = stem_matches[globs.path_key(mention)]
+        # Folded matches contribute risk but cannot newly grant the fast lane.
+        exact = (any(p == mention or ("/" not in mention and p.rsplit("/", 1)[-1] == mention)
+                     for p in matches) if mention in paths else
+                 any(p.rsplit("/", 1)[-1].rsplit(".", 1)[0] == mention for p in matches))
+        if not matches or not exact:
             signal("target_unresolved", "path" if mention in paths else "symbol")
         if len(matches) > 1:
             ambiguous = True
@@ -465,22 +499,27 @@ def _blocked(result, name):
                           result.targets, signals)
 
 
+def repository_risk_map(root):
+    """Load the same main-worktree additions for do and plan."""
+    path = Path(root) / '.orcexe' / 'risk-map.yaml'
+    try:
+        return load_risk_map(path)
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise ValueError('risk_map_invalid')
+        return RiskMap()
+
+
 def classify_repo(workdir: str, task: str) -> Classification:
     try:
         if not gitutil.is_repo(workdir):
             return classify(task, None)
-        root = gitutil.toplevel(workdir)
+        root = gitutil.main_worktree(workdir)
         files = gitutil.ls_files(root)
     except gitutil.GitError:
         return _blocked(classify(task, None), "git_unavailable")
-    path = Path(root) / ".orcexe" / "risk-map.yaml"
     try:
-        risk_map = load_risk_map(path)
-    except FileNotFoundError:
-        # A dangling map symlink is a broken map, not an absent configuration.
-        if path.is_symlink():
-            return _blocked(classify(task, files), "risk_map_invalid")
-        risk_map = None
+        risk_map = repository_risk_map(root)
     except (ValueError, OSError):
         return _blocked(classify(task, files), "risk_map_invalid")
     return classify(task, files, risk_map)

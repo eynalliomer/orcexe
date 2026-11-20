@@ -51,6 +51,7 @@ class RolesTests(unittest.TestCase):
         self.assertEqual(roles.evidence,
                          "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek")
         expected = {
+            "manager": {"any": [("claude-opus-5-5", "high")]},
             "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium"), ("composer-2.5", "medium")],
                          "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high"), ("composer-2.5", "medium")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high"), ("composer-2.5", "medium")]},
             "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}

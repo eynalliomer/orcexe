@@ -95,7 +95,18 @@ def read_stream(path):
         header = json.loads(next(stream))
         if "_fake" not in header:
             raise ValueError("fake stream is missing its evidence header")
-        return [json.loads(line) for line in stream]
+        events = [json.loads(line) for line in stream]
+    replacement = os.environ.get("ORCEXE_FAKE_FINAL_TEXT_FILE")
+    if replacement and path.name in ("claude-success.jsonl", "codex-success.jsonl"):
+        text = Path(replacement).read_text(encoding="utf-8")
+        for event in events:
+            if event.get("type") == "assistant":
+                event["message"]["content"] = [{"type": "text", "text": text}]
+            elif event.get("type") == "result" and event.get("subtype") == "success":
+                event["result"] = text
+            elif event.get("item", {}).get("type") == "agent_message":
+                event["item"]["text"] = text
+    return events
 
 
 def read_payload(directory, name):

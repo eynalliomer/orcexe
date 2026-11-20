@@ -26,7 +26,7 @@ from orcexe.manifest import Manifest
 
 
 _EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-_STAGES = ("executor", "evaluator", "auditor")
+_STAGES = ("executor", "evaluator", "auditor", "manager")
 _LANES = ("fast", "standard", "risky", "any")
 _SKIPS = ("tool_absent", "auth_missing", "auth_unknown", "family_excluded",
           "model_denied", "model_unavailable", "quota_exhausted", "tool_not_allowed")

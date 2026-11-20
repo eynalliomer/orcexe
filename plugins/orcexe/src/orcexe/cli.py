@@ -70,6 +70,39 @@ def main(argv=None):
     subcommands = parser.add_subparsers(dest="command")
     version_parser = subcommands.add_parser("version", help="Show the orcexe version")
     version_parser.add_argument("--json", action="store_true", help="Print version as JSON")
+    map_parser = subcommands.add_parser("map", help="Build an evidence-checked project model")
+    map_parser.add_argument("--repo", default=None)
+    map_parser.add_argument("--json", action="store_true")
+    map_parser.add_argument("--tool", choices=("claude-code", "codex", "cursor"))
+    map_parser.add_argument("--model")
+    map_parser.add_argument("--full", action="store_true", help="Rebuild the complete map")
+    plan_parser = subcommands.add_parser("plan", help="Propose or approve a checked task plan")
+    plan_parser.add_argument("--repo", default=None)
+    plan_parser.add_argument("--json", action="store_true")
+    plan_action = plan_parser.add_mutually_exclusive_group(required=True)
+    plan_action.add_argument("--goal")
+    plan_action.add_argument("--approve", metavar="PLAN_ID")
+    plan_action.add_argument("--run", metavar="PLAN_ID")
+    plan_parser.add_argument("--resume", action="store_true")
+    status_parser = subcommands.add_parser("status", help="Read the latest plan and ledger status")
+    status_parser.add_argument("--repo", default=None)
+    status_parser.add_argument("--json", action="store_true")
+    task_parser = subcommands.add_parser("task", help="Dispatch one task from an approved plan")
+    task_parser.add_argument("--plan", required=True, metavar="PLAN_ID")
+    task_parser.add_argument("--task", required=True, metavar="TASK_ID")
+    task_parser.add_argument("--repo", default=None)
+    task_parser.add_argument("--json", action="store_true")
+    task_parser.add_argument("--timeout-min", type=_timeout, default=30)
+    questions_parser = subcommands.add_parser("questions", help="Select up to four project decisions offline")
+    questions_parser.add_argument("--repo", default=None)
+    questions_parser.add_argument("--goal")
+    questions_parser.add_argument("--json", action="store_true")
+    answer_parser = subcommands.add_parser("answer", help="Record answers to the current form")
+    answer_parser.add_argument("--repo", default=None)
+    answer_parser.add_argument("--form", required=True)
+    answer_parser.add_argument("--choice", action="append", default=[])
+    answer_parser.add_argument("--text", action="append", default=[])
+    answer_parser.add_argument("--json", action="store_true")
     intake_parser = subcommands.add_parser("intake", help="Inspect committed project metadata offline")
     intake_parser.add_argument("--repo", default=None)
     intake_parser.add_argument("--json", action="store_true")
@@ -137,6 +170,31 @@ def main(argv=None):
     if args.command == "intake":
         from orcexe.intake import intake_command
         return intake_command(args)
+
+    if args.command == "map":
+        from orcexe.mapping import map_command
+        return map_command(args)
+
+    if args.command == "status":
+        from orcexe.planrun import status_command
+        return status_command(args)
+
+    if args.command == "plan":
+        if args.resume and args.run is None:
+            parser.error("--resume requires --run")
+        if args.run is not None:
+            from orcexe.planrun import run_command
+            return run_command(args)
+        from orcexe.planning import plan_command
+        return plan_command(args)
+
+    if args.command == "task":
+        from orcexe.task import task_command
+        return task_command(args)
+
+    if args.command in ("questions", "answer"):
+        from orcexe.questions import questions_command, answer_command
+        return questions_command(args) if args.command == "questions" else answer_command(args)
 
     if args.command == "history":
         from orcexe.history import history_command

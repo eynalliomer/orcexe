@@ -1,7 +1,108 @@
+## T46 — v0.2 security, documentation and suite speed (C23, C25)
+
+- Inventory every subprocess-layer caller, including shared manager, evaluator,
+  task/plan execution and project gate/L0/red-first paths. Observe real fake-child
+  argv/environments with the v0.1 secret detector; check exact Codex trust writes,
+  HOME files/directories, fresh project HOME cleanup and OS sandbox policies.
+  Live sandbox probes deny outside/symlink writes and loopback connections when
+  the host permits sandbox creation; unavailable hosts explicitly skip that probe.
+- Derive command reason/code tables from executable constants and diagnostic
+  branches. Check README and SKILL for every mapping, meaningful third columns,
+  duplicate/stale rows and command-specific differences.
+- Document the v0.2 approval/execution/manual-landing flow, standard checks and
+  attempts, OS isolation limits, all write locations and manual cleanup, plus
+  executor hooks/plugins and tool-owned user configuration. Consolidate SKILL
+  reason rows to retain the existing 160-line limit.
+- Move extended end-to-end/publication/race/retry/interpreter matrices under
+  tests/slow; retain fast examples, validator matrices, atomic-publication checks
+  and representative cross-adapter process contracts. Add --slow as an alias for
+  ORCEXE_SLOW_TESTS=1; both modes print measured wall totals without a timing assert.
+  Slow mode defaults to a 1800-second module budget for the existing full
+  redaction stress pack; explicit --timeout continues to override it.
+- Validation: default runner passed 882 tests in 59 modules in 59.70 seconds
+  (0 failures/errors; 22 explicit skips), down from the 910-test baseline at
+  115.58 seconds. Python 3.9.6 passed the full slow suite: 926 tests in 66
+  modules in 613.90 seconds (0 failures/errors; 15 explicit skips), plus the
+  focused security/runner/L0 checks. Live OS confinement is unavailable on this
+  host; policy construction and unavailable-backend behavior remain tested.
+- A focused runner test exposed macOS /var versus /private/var temp-path aliases:
+  normalize the discovery start path along with its top-level path. Add a real
+  worker proof that --slow propagates. No product-source change was needed.
+
+## T45 — bounded fast-lane vocabulary (K6)
+
+- Add four bilingual documentation intents: update a document, add an example,
+  fix a source docstring and clarify a document; accept bare or backtick targets.
+- Keep full-task matching, target classes, risk precedence and length limits;
+  reject Unicode disguises, shell-bearing targets and unresolved directory paths.
+  Deny licence/manifests, nested CI and i18n targets, including resolved basenames.
+- Document every fast form in README/SKILL and add bilingual positive and
+  adversarial regressions without changing existing classifier tests.
+
+## T44b — regenerate current-state with all human blocks
+
+- Always refresh current-state.md, preserving every human block in order after
+  the generated summary, including user-added blocks and malformed tails.
+- Save outside-block edits once in private current-state.previous.md and report
+  the backup; avoid proposals and duplicated generated summaries.
+
+## T44 — incremental maps and preserved human context
+
+- Update maps incrementally from ancestor intake_sha using changed-file-only
+  manager copies; retain omitted entries and recheck evidence at HEAD. Add
+  --full, a 40% changed-path fallback, update metadata and model-free no-change runs.
+- Record private publication hashes/baselines. Preserve human JSON entries with
+  source: human and persistent deletions; expose evidence-backed restorations as
+  proposals. Keep edited text with adjacent proposals and human_edit_kept paths.
+- Maintain current-state.md from CLI map/plan/ledger/ref data across map, plan,
+  task and plan runs, preserving its delimited human block verbatim.
+
+## T43 — stacked, resumable plan execution
+
+- Add `orcexe plan --run PLAN_ID [--resume]`: sequential deterministic dependency
+  ordering through the existing task gates, transitive failure blocking, risky
+  lane refusal and final-plan no-op re-runs.
+- Stack accepted frozen commits under one private plan ref. Single tasks and
+  plan runs start at its tip; main HEAD, index and working files stay unchanged.
+- Close interrupted attempts, remove their worktrees and resume within the same
+  contract/hash and remaining attempt budget; refuse implicit interrupted re-runs.
+- Add read-only, ledger-derived `orcexe status --json` and private atomic
+  `.orcexe/status.md`, with task outcomes and a manual integration land command.
+
+## T42d — gate isolation and stronger L0
+
+- Run all task/do project checks and L0 base/red-first steps with Seatbelt on
+  macOS or bwrap on Linux; writable checkout/temp only, outbound network denied.
+  Record per-attempt isolation; unavailable backends cap tasks at gate_passed and
+  keep do unverified with isolation_unavailable.
+- Snapshot CLI control state around each code step; terminal state_tampered and
+  persistent dependency refusal prevent ledger/control tampering from approving work.
+- Compare static test definitions and final runtime counts; reject runtime skips,
+  hollow tests and changed tests without assertions. Match red-first checkout path
+  shape to gate paths and apply risk-path checks to fast tasks too.
+- Document known-weak red evidence from imports of new symbols; add regressions
+  for isolation policy, tamper, no-sandbox execution, count spoofing and L0 forms.
+
 ## 0.1.0 — 2026-11-18 (local tag; not published)
 
-Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), the review profile was not run against the real tools, native Windows is unverified.
+- Share repository risk areas across planning, gate checks and escalation; judge any-depth plan risks by concrete paths, reject standard risk touches immediately with `risk_path_touched`, and reject non-documentation standard/risky plans without an L0 test path (`no_test_path`).
+- Complete standard `task` acceptance with L0 test-count, added skip, test-change and red-first checks; independent read-only L1 evaluation with strict ordered rubric IDs, fail feedback, shared retry budget and content-free ledger verdicts.
+- Harden plan safety with cleaned-text validation, NFC/casefold path comparisons,
+  directory glob coverage, shared local risk-map signals, global question decisions,
+  content-bound approval with repeated safety checks, and main-worktree state.
+  Reject tampered forms and corrupt approval state; show full task scope in Markdown.
+- Defer goal-scoped risk and do-not-touch confirmations to the plan approval, show lane-raising areas in Markdown, and require path/module relevance for unknown questions. Accept protective globs naming state and excluded paths without raising unrelated tasks.
+- Share bounded glob validation across maps, questions and plans, conservatively raise lanes for unusable risk globs, distinguish computation failures from invalid manager output and writes, and exclude common tracked-path terms from relevance. Replay the unmodified second real plan in offline regression coverage.
+- Filter questions by goal relevance and share a four-answer budget across forms using goal hashes. Declare map/plan caps, retain optional task notes in JSON/Markdown, and report content-free validation locations and rules.
+- Add `orcexe map`: one read-only manager call over HEAD evidence, strict manager JSON validation, evidence-checked project maps, hotspot coverage, private capped history/direction reports, and offline fake-CLI proofs. Project commands remain unverified.
+- Restrict map managers to Claude with command/web tools denied; isolate briefs in external state, omit nested agent instructions, normalize repository roots, publish all four outputs through one generation swap, and harden rendering, hotspot globs, cancellation and HEAD checks.
+- Give map and plan a dedicated Claude manager profile with measured restricted/safe-mode isolation and a Read/Glob/Grep allow-list; normalize customization names with NFC/casefold, restore identity redaction, bound protective glob processing, and retain snapshots across rollback failures. Clean stale publication artifacts, suppress invisible prose/autolinks, handle SIGHUP/SIGQUIT, and classify discovery write failures correctly.
 
+Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), updated review restrictions await a real-tool recheck, native Windows is unverified.
+
+- Deny Claude review Bash/WebFetch/WebSearch explicitly (plan mode alone permits Bash); pin all three tools' review argv and document their differing limits.
+- Give map managers named 900-second timeout/300-second stall budgets, distinguish unavailable reasons without changing exit 2, require file-reading tools in the brief, and compact evidence into counts plus at most three deduplicated examples per section.
+- Harden gate checkouts using raw committed blobs; refuse committed symlinks escaping the copy, including through the linked `node_modules`.
 - Add model-free `history` with private U2/U3 evidence, HEAD-relative history windows, committed direction documents, identity redaction and opt-in bounded GitHub issue discovery.
 - Resolve asserting test helpers to depth three and mark conditional skips advisory in `slop`, retaining product-only fake tests and unconditional skip signals.
 - Add model-free `slop` scanning of committed Python/JS/TS and selected Swift signals, private atomic JSON/Markdown reports, advisory unused exports, dependency checks and prioritized fix lanes; reuse intake's bounded reader and safety controls.

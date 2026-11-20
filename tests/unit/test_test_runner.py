@@ -46,6 +46,22 @@ class Tests(unittest.TestCase):
                 self.assertTrue(record['successful'], record)
                 self.assertEqual(record['tests'], 1)
 
+    def test_slow_flag_reaches_discovery_and_worker(self):
+        self.module('test_slow_flag', 'import os, unittest\nclass Tests(unittest.TestCase):\n'
+                    '    def test_flag(self): self.assertEqual(os.environ["ORCEXE_SLOW_TESTS"], "1")\n')
+        cache = self.directory / 'durations.json'
+        args = ['--slow', '-j', '1', '-s', str(self.directory), '-t', str(self.directory)]
+        with mock.patch.dict(os.environ), mock.patch.object(runner, 'CACHE', cache), \
+                mock.patch.object(runner, 'run_module', wraps=runner.run_module) as run, \
+                redirect_stdout(io.StringIO()) as output:
+            os.environ.pop('ORCEXE_SLOW_TESTS', None)
+            self.assertEqual(runner.main(args), 0)
+            self.assertEqual(os.environ['ORCEXE_SLOW_TESTS'], '1')
+            self.assertEqual(run.call_args.args[2], 1800)
+            self.assertEqual(runner.main(args + ['--timeout', '10']), 0)
+            self.assertEqual(run.call_args.args[2], 10)
+        self.assertIn('Ran 1 tests in 1 modules', output.getvalue())
+
     def test_failure_error_and_skip_are_collected_with_tracebacks(self):
         name = self.module('outcomes', '''import unittest
 class Tests(unittest.TestCase):

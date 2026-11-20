@@ -22,7 +22,7 @@ from tests.unit._fixtures import GitTemplates, git_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'plugins/orcexe/src'))
-from orcexe import classify, cli, do, exitcodes, gate_lite, ledger, proc, route, worktree
+from orcexe import classify, cli, do, exitcodes, gate_lite, isolation, ledger, proc, route, worktree
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
 from orcexe.adapters.cursor import CursorAdapter
@@ -50,6 +50,8 @@ class DoFixture(unittest.TestCase):
 
 
     def setUp(self):
+        self.accepted_verdict = 'accepted' if isolation.backend() != 'none' else 'unverified'
+        self.accepted_code = exitcodes.OK if self.accepted_verdict == 'accepted' else exitcodes.FAIL
         self.tmp = tempfile.TemporaryDirectory(prefix='orcexe-do-', dir=str(ROOT))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
@@ -145,6 +147,8 @@ class DoFixture(unittest.TestCase):
 
 
     def check(self, result, verdict, code, failed=None):
+        if verdict == 'accepted' and self.accepted_verdict == 'unverified':
+            verdict, code, failed = 'unverified', exitcodes.FAIL, 'isolation_unavailable'
         self.assertEqual((result['verdict'], result['exit_code']), (verdict, code), result)
         records = list(self.log().records())
         expected = EVENTS + (['lane.escalated'] if verdict == 'escalated' else [])
@@ -265,7 +269,7 @@ with mock.patch.object(do,'CodexAdapter',side_effect=adapter),mock.patch.object(
                 self.assertEqual(parent.returncode, -sig)
                 os.kill(child_pid, 0)  # Documented residual process survives kill -9.
                 result = self.invoke()
-                self.assertEqual(result['exit_code'], exitcodes.OK, result)
+                self.assertEqual(result['exit_code'], self.accepted_code, result)
                 self.assertIn('Abandoned task ' + stored['task_id'], result['message'])
                 states = list(self.log().records(task=stored['task_id'], event='task.state'))
                 self.assertEqual(states[-1]['data']['reason'], 'abandoned')
@@ -304,7 +308,7 @@ class DoTests(DoFixture):
                     + ']\ntrust_level = "trusted"\n').encode()
         config.write_bytes(original)
         result = self.invoke()
-        self.assertEqual(result['verdict'], 'accepted', result)
+        self.assertEqual(result['verdict'], self.accepted_verdict, result)
         ledger_path = self.repo / '.orcexe/trust-ledger.json'
         data = json.loads(ledger_path.read_text())
         self.assertEqual(len(data['entries']), 1)
@@ -336,8 +340,8 @@ class DoTests(DoFixture):
     def test_trust_ledger_write_failure_warns_without_changing_verdict(self):
         with mock.patch.object(do.trust, 'record', side_effect=OSError('unwritable')):
             result = self.invoke()
-        self.assertEqual(result['verdict'], 'accepted', result)
-        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(result['verdict'], self.accepted_verdict, result)
+        self.assertEqual(result['exit_code'], self.accepted_code)
         self.assertIn('trust_ledger_record_failed:OSError', result['warnings'])
         self.assertIn('Warning: trust_ledger_record_failed:OSError', result['message'])
 
@@ -345,7 +349,7 @@ class DoTests(DoFixture):
         with mock.patch.object(do.trust, 'headers', side_effect=OSError('unreadable')), \
                 mock.patch.object(do.trust, 'record') as record:
             result = self.invoke()
-        self.assertEqual(result['verdict'], 'accepted', result)
+        self.assertEqual(result['verdict'], self.accepted_verdict, result)
         self.assertIn('trust_snapshot_failed:OSError', result['warnings'])
         record.assert_not_called()
 
@@ -354,7 +358,7 @@ class DoTests(DoFixture):
         self.env["ORCEXE_BIN_CLAUDE_CODE"] = str(self.root / "missing-claude")
         self.cursor_scenario = "success"
         result = self.invoke()
-        self.assertEqual((result["verdict"], result["exit_code"]), ("accepted", 0), result)
+        self.assertEqual((result["verdict"], result["exit_code"]), (self.accepted_verdict, self.accepted_code), result)
         executions = [c for c in self.call_log() if c["model_call"]]
         self.assertEqual(len(executions), 1)
         self.assertIn("composer-2.5", executions[0]["argv"])
@@ -371,7 +375,7 @@ class DoTests(DoFixture):
         self.env['ORCEXE_FAKE_SCENARIO'] = 'auth-missing'
         self.claude_scenario = 'success'
         result = self.invoke()
-        self.assertEqual((result['verdict'], result['exit_code']), ('accepted', exitcodes.OK), result)
+        self.assertEqual((result['verdict'], result['exit_code']), (self.accepted_verdict, self.accepted_code), result)
         self.assertEqual(result['route']['tool'], 'claude-code')
         self.assertEqual(result['route']['confidence'], 'low')
         self.assertIn('access:not_seen', result['route']['basis'])
@@ -552,7 +556,7 @@ class DoTests(DoFixture):
         with mock.patch('orcexe.do.run_do', return_value=result), redirect_stdout(output):
             code = cli.main(['do', FAST, '--repo', str(self.repo), '--json'])
         result = json.loads(output.getvalue())
-        self.assertEqual(code, exitcodes.OK)
+        self.assertEqual(code, self.accepted_code)
         self.assertEqual(result['task_preview'], FAST)
         self.assertEqual(output.getvalue().count(FAST), 1)
         self.check(result, 'accepted', exitcodes.OK)
@@ -623,6 +627,9 @@ class DoTests(DoFixture):
         self.gate = moving_gate
         result = self.invoke()
         self.check(result, 'accepted', exitcodes.OK)
+        if self.accepted_verdict == 'unverified':
+            self.assertNotIn('land_commands', result)
+            return
         self.assertIn('cherry-pick', result['land_commands'][0])
         self.assertNotIn('merge --ff-only', result['message'])
 

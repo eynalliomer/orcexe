@@ -24,7 +24,7 @@ import traceback
 
 from orcexe.adapters.base import safe_write_text
 
-from orcexe import classify, exitcodes, gate_lite, gitutil, ledger, redact, route, trust, worktree
+from orcexe import classify, exitcodes, gate_lite, gitutil, isolation, ledger, redact, route, trust, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
@@ -510,9 +510,20 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
                              run_result=result, run_dir=directory, controls_before=controls, commands=commands)
         failed = next((c for c in gate["checks"] if c["status"] in ("fail", "not_seen")), None)
         verdict = gate["verdict"]
-        log.append("gate.result", task_id, dict(run_id=run_id, verdict=verdict,
-            failed_check=failed["id"] if failed else None,
-            duration_ms=sum(c["duration_ms"] for c in gate["checks"])))
+        isolated = isolation.evidence(gate)
+        reason = 'state_tampered' if isolation.tampered(gate) else (
+            'isolation_unavailable' if verdict == 'accepted' and isolated == 'none' else None)
+        if reason:
+            verdict = 'failed' if reason == 'state_tampered' else 'unverified'
+            failed = dict(id=reason, detail=reason)
+            summary['reason'] = reason
+        try:
+            log.append("gate.result", task_id, dict(run_id=run_id, verdict=verdict,
+                failed_check=failed["id"] if failed else None,
+                duration_ms=sum(c["duration_ms"] for c in gate["checks"]), isolation=isolated))
+        except (OSError, ValueError, ledger.LedgerError):
+            if reason != 'state_tampered':
+                raise
         code = exitcodes.OK if verdict == "accepted" else {
             "quota": exitcodes.QUOTA, "auth": exitcodes.AUTH, "timeout": exitcodes.TIMEOUT,
             "stalled": exitcodes.TIMEOUT}.get(result["status"], exitcodes.FAIL)
@@ -530,12 +541,24 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
             log.append("task.state", task_id, {"from": state, "to": "failed", "reason": "report_failed"})
             state = "failed"
             raise
-        log.append("task.state", task_id, {"from": "running", "to": verdict,
-                                          "reason": failed["id"] if failed else "gate_accepted"})
+        try:
+            log.append("task.state", task_id, {"from": "running", "to": verdict,
+                                              "reason": failed["id"] if failed else "gate_accepted"})
+        except (OSError, ValueError, ledger.LedgerError):
+            if reason != 'state_tampered':
+                raise
         state = verdict
         if verdict == "escalated":
             log.append("lane.escalated", task_id, dict(from_lane="fast", to_lane="standard", reason=failed["id"]))
         return report
+    except isolation.StateTampered:
+        summary.pop('land_commands', None)
+        summary.update(verdict='failed', exit_code=exitcodes.FAIL, reason='state_tampered',
+                       failed_check='state_tampered', detail='state_tampered')
+        try:
+            return _report(summary, directory)
+        except (OSError, ValueError):
+            return _report(summary)
     except (KeyboardInterrupt, _Cancelled):
         received = received or signal.SIGINT
         reason = "signal_" + signal.Signals(received).name
