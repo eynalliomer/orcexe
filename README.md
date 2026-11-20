@@ -164,6 +164,30 @@ unsupported constructs are also unseen. An unborn repository produces empty
 evidence with `no_head`; a non-repository exits 2. This internal command is not
 part of the plugin command menu.
 
+## Offline source signals
+
+`orcexe slop [--repo PATH] [--json]` scans committed HEAD source without models,
+network access, or executing project code. It writes atomic, private (0600)
+`.orcexe/slop.json` and `.orcexe/slop-report.md` in the main worktree; `--json`
+prints the saved JSON. Findings do not fail the command (exit 0); a non-repository
+exits 2. Dirty and untracked source is ignored. Intake's secret-path/blob guards,
+vendored-tree and state exclusions, 256 KiB file cap, 4 MiB fetch budget, redaction,
+command candidates and CI evidence also apply here.
+
+The seven classes are fake tests, skipped/focused tests, checker suppressions,
+unimplemented bodies, advisory unused public exports, dependency mismatches and
+missing test/lint/CI checks. Python and JS/TS support all classes; Swift supports
+only skips, suppressions and stubs. Asserting test helpers are followed up to three
+calls through local definitions and imported test-support source; product-only
+calls still need assertions. Conditional platform/environment/dependency skips
+remain visible with `advisory: true` and `signal: "conditional_skip"`; unconditional
+skips, constant conditions, xfail and focus markers stay scored. Counts include
+advisory findings. Other extensions, capped files and unsupported
+syntax are explicit in `unseen`. Detection is syntactic: the unused-export name
+search is advisory, dynamic imports and computed exports are not resolved, and
+template literals are opaque. The Markdown report groups findings and suggests
+`fast` or `standard` fix lanes; it makes no pass/fail decision.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only
