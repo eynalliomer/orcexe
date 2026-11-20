@@ -63,6 +63,22 @@ class ProcTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             result.status = "timeout"
 
+    def test_binary_stdin_and_stdout_preserve_exact_bytes(self):
+        data = bytes(range(256)) * 1024 + b'\x00\xff\r\n\n'
+        chunks = []
+        result = self.run_child('import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())',
+                                input_data=data, on_stdout_bytes=chunks.append)
+        self.assertEqual((result.status, result.returncode), ('exited', 0))
+        self.assertEqual(b''.join(chunks), data)
+        self.assertEqual(result.stdout_bytes, len(data))
+
+    def test_binary_callback_failure_cleans_up_child(self):
+        def fail(chunk):
+            raise ValueError('binary output cap')
+        with self.assertRaisesRegex(ValueError, 'binary output cap'):
+            self.run_child('import sys, time; print("ready", flush=True); time.sleep(60)',
+                           on_stdout_bytes=fail)
+
     def test_env_required_and_never_inherited(self):
         with self.assertRaises(ValueError):
             self.run_child("pass", env=None)

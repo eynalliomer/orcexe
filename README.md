@@ -147,6 +147,23 @@ claim, and never run landing commands or `trust clean --apply` without your
 explicit request. `python3 scripts/check_marketplace.py` validates the
 marketplace, plugin manifest, versions, skill and command files.
 
+## Internal project discovery
+
+The internal `orcexe intake [--repo PATH] [--json]` command discovers an existing
+project without models, network access, or executing project commands. It reads
+only allow-listed committed HEAD blobs (256 KiB per file, 4 MiB total); dirty and
+untracked files only affect status counts. The root `.orcexe/` state directory
+is excluded from status counts, size and discovery. It records stack, candidate
+commands, CI, opaque instruction fingerprints, hook/MCP declarations, docs and size in the
+main worktree's `.orcexe/intake/u1.json` (0600, directory 0700). `--json` prints
+the same document. Candidates have `verified: false`; secrets are never fetched,
+MCP arguments/environment and instruction prose are omitted, and unsupported or
+malformed syntax is recorded in `meta.unseen`. Structured tool settings expose
+only hook declaration names. Python 3.9/3.10 use a conservative TOML subset;
+unsupported constructs are also unseen. An unborn repository produces empty
+evidence with `no_head`; a non-repository exits 2. This internal command is not
+part of the plugin command menu.
+
 ## Running the tests
 
 From the repository root, run `python3 tests/tools/run_tests.py`. The stdlib-only

@@ -9,6 +9,8 @@ from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[2] / "plugins" / "orcexe" / "src"
 LAUNCHER = SOURCE.parent / "bin" / "orcexe"
+OPTIONAL_TOMLLIB_GUARD = ast.dump(ast.parse(
+    "try:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n").body[0])
 # Python 3.9 has no sys.stdlib_module_names. Include public stdlib roots across
 # supported platforms, including modules planned for subsequent tasks.
 PY39_STDLIB = frozenset("""
@@ -43,7 +45,27 @@ def python_sources():
     return sorted(SOURCE.rglob("*.py")) + [LAUNCHER]
 
 
+def optional_tomllib_imports(tree):
+    """Accept only the exact ImportError guard whose fallback intake tests force."""
+    return {node.body[0] for node in ast.walk(tree)
+            if isinstance(node, ast.Try) and ast.dump(node) == OPTIONAL_TOMLLIB_GUARD}
+
+
 class StdlibOnlyTests(unittest.TestCase):
+    def test_optional_tomllib_rule_is_narrow(self):
+        guarded = "try:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n"
+        self.assertEqual(len(optional_tomllib_imports(ast.parse(guarded))), 1)
+        for source in ("import tomllib", "from tomllib import loads",
+                       guarded.replace("tomllib", "third_party"),
+                       guarded.replace("except ImportError:", "except Exception:"),
+                       guarded.replace("except ImportError:", "except:"),
+                       guarded.replace("tomllib = None", "pass"),
+                       guarded.replace("import tomllib", "import tomllib as parser"),
+                       guarded.replace("import tomllib", "import tomllib, third_party"),
+                       guarded + "else:\n    import third_party\n"):
+            with self.subTest(source=source):
+                self.assertEqual(optional_tomllib_imports(ast.parse(source)), set())
+
     def test_launcher_is_included(self):
         files = python_sources()
         self.assertIn(LAUNCHER, files)
@@ -61,7 +83,10 @@ class StdlibOnlyTests(unittest.TestCase):
         self.assertTrue(files, "No package Python files found")
         for path in files:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            optional = optional_tomllib_imports(tree)
             for node in ast.walk(tree):
+                if node in optional:
+                    continue
                 modules = []
                 if isinstance(node, ast.Import):
                     modules = [alias.name for alias in node.names]

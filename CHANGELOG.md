@@ -2,6 +2,7 @@
 
 Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), the review profile was not run against the real tools, native Windows is unverified.
 
+- Add internal model-free `intake` discovery from bounded committed Git blobs, private U1 JSON, opaque instruction fingerprints, candidate commands and declaration-only security evidence; never fetch secret paths or execute project code.
 - Report doctor's configured per-probe timeout budget even when the shared total deadline leaves less execution time.
 - Give the manual-run integration fake's Cursor model preflight a scaled setup budget; retain early-exit stdout/stderr diagnostics before signal handshakes.
 - Freeze gate commands and classifier config before executor dispatch; detect main `.orcexe` config byte changes.

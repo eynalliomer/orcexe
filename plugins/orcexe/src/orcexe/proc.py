@@ -7,6 +7,7 @@ import queue
 import select
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -301,9 +302,11 @@ def _reader(pipe, stream, chunks, stop, activity, failures, eof):
 
 def run(argv, *, cwd, env, timeout_s, stall_s, on_line=None, on_stderr_line=None,
         cancel_event=None, max_line_bytes=1048576, stderr_tail_bytes=65536,
-        kill_grace_s=5.0) -> ProcResult:
+        kill_grace_s=5.0, input_data=None, on_stdout_bytes=None) -> ProcResult:
     """Stream a child with bounded buffers; callbacks execute on this thread.
 
+    input_data supplies bytes via a temporary stdin file (no pipe writer can
+    deadlock). on_stdout_bytes receives exact chunks before line decoding.
     Byte counts include delimiters and discarded stdout. Truncated line counts
     cover both streams. A truncated line is delivered once at newline or EOF.
     Timeout/stall limits may be None to disable them; cancellation is checked
@@ -332,13 +335,18 @@ def run(argv, *, cwd, env, timeout_s, stall_s, on_line=None, on_stderr_line=None
     started = time.monotonic()
     process = None
     job = None
+    incoming = None
     try:
+        if input_data is not None:
+            incoming = tempfile.TemporaryFile()
+            incoming.write(input_data)
+            incoming.seek(0)
         options = {"start_new_session": True}
         if os.name == "nt":
             job = _WindowsJob()
             options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 4}
         process = subprocess.Popen(
-            argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            argv, cwd=cwd, env=env, stdin=incoming if incoming is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, **options
         )
         if job is not None:
@@ -353,6 +361,9 @@ def run(argv, *, cwd, env, timeout_s, stall_s, on_line=None, on_stderr_line=None
             _cleanup_preserving(error, job.close)
         return ProcResult("spawn_error", None, time.monotonic() - started,
                           0, 0, 0, "", False, str(error))
+    finally:
+        if incoming is not None:
+            incoming.close()
 
     chunks = queue.Queue(maxsize=16)
     stop = threading.Event()
@@ -391,6 +402,8 @@ def run(argv, *, cwd, env, timeout_s, stall_s, on_line=None, on_stderr_line=None
         else:
             if stream == 0:
                 stdout_bytes += len(data)
+                if on_stdout_bytes is not None:
+                    on_stdout_bytes(data)
             elif stderr_tail_bytes:
                 tail.extend(data)
                 if len(tail) > stderr_tail_bytes:
