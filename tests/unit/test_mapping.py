@@ -165,6 +165,58 @@ class MappingTests(MappingFixture):
             with self.subTest(candidate=candidate[:80]), self.assertRaises(ValueError):
                 mapping.parse_manager(candidate)
 
+    def test_json_output_tolerates_prose_around_one_json_fence(self):
+        value = manager()
+        value['conventions'] = [dict(rule='Wrap output in ```json fences.', evidence=['file:src/app.py'])]
+        text = json.dumps(value, indent=2)
+        before = "I've read the brief and the changed files; here is the incremental map update.\n\n"
+        after = '\n\nLet me know if anything should change.'
+        fenced = '```json\n' + text + '\n```'
+        accepted = [text, ' \n' + text + '\n', fenced, '  ' + fenced + '  \n', '```json  \n' + text + '\n  ```',
+                    before + fenced, fenced + after, before + fenced + after,
+                    'Note: ` inline` and ``x`` spans.\n' + fenced + '\nDone ```json``` mid-line.']
+        for candidate in accepted:
+            with self.subTest(candidate=candidate[:90]):
+                self.assertEqual(mapping.parse_json_output(candidate), value)
+                self.assertEqual(mapping.parse_manager(candidate), value)
+        small = '{"a": 1}'
+        rejected = [
+            before + fenced + '\n\n```json\n' + small + '\n```',            # two json fences
+            fenced + '\n```json\n' + small + '\n```' + after,
+            before + fenced + '\nExample:\n```\nprose block\n```',          # second fence of any language
+            before + '```\nnote\n```\n' + fenced,
+            before + '```JSON\n' + text + '\n```',                        # language is not json
+            before + '```python\n' + text + '\n```', before + '```jsonc\n' + text + '\n```',
+            '```\n' + text + '\n```', before + '``` json\n' + text + '\n```',
+            before + '````json\n' + text + '\n````', '```json ' + small + '\n```',
+            before + text, before + text + after, 'Here: ' + small, text + after,  # JSON in prose, no fence
+            before + '```json\n' + text + '\n```trailing', before + '```json\n' + text,  # unclosed
+            before + '```json\n' + text + '\ntrailing\n```',               # after the object, inside the fence
+            '```json\n' + text + ' {}\n```', '```json\n' + small + small + '\n```',
+            '```json\nintro\n' + text + '\n```', before + '```json\n\n```', before + '```json\n[]\n```',
+            before + '```json\n{"a": 1, "a": 2}\n```', before + '```json\n{"a": NaN}\n```',
+            before + '```json\n' + small + '\n```' + 'x' * mapping.OUTPUT_CAP]   # size cap counts the prose
+        for candidate in rejected:
+            with self.subTest(candidate=candidate[:90]), self.assertRaises(mapping.ManagerOutputInvalid) as caught:
+                mapping.parse_json_output(candidate)
+            self.assertNotIn('read the brief', caught.exception.detail + str(caught.exception))
+            self.assertIn(caught.exception.detail, ('output invalid_json', 'output too_long ({} > {})'.format(
+                len(candidate.encode('utf-8')), mapping.OUTPUT_CAP)))
+
+    def test_map_cli_accepts_prose_preamble_and_brief_forbids_prose(self):
+        preamble = "I've read the brief and the changed files; here is the map.\n\n"
+        code, output, error = self.invoke(preamble + '```json\n' + json.dumps(manager()) + '\n```\n')
+        self.assertEqual((code, error), (0, ''), output)
+        result = json.loads(output)
+        self.assertEqual(result['intake_sha'], self.head)
+        state = self.main / '.orcexe'
+        self.assertIn('Committed behavior.', (state / 'history.md').read_text())
+        reports = output + ''.join((state / name).read_text() for name in ('project-map.json', 'project-map.md'))
+        self.assertNotIn('read the brief', reports)
+        briefs = list((self.state / 'runs').glob('*/brief-source.md'))
+        self.assertEqual(len(briefs), 1)
+        self.assertIn('no text before or after it', briefs[0].read_text())
+
     def test_map_cap_diagnostics_name_first_location_without_content(self):
         value = manager()
         value['history'] = [dict(text='PRIVATE_CONTENT' + 'x' * 3986, evidence=['file:src/app.py'])]

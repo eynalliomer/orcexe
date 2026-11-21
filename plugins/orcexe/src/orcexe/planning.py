@@ -236,7 +236,8 @@ def build_brief(goal, project, form, decisions):
     return ('Plan this goal using the project facts and recorded decisions. '
             'Use only file-reading tools (Read/Grep/Glob or equivalent). '
             'Do not execute project code, shell commands, or web tools.\n'
-            'Return exactly one JSON object with this closed shape (no extra keys or fences):\n' +
+            'Reply with exactly one JSON object and nothing else: no text before or after it, no fences. '
+            'Closed shape (no extra keys):\n' +
             json.dumps(CONTRACT) + '\nOutput <=262144 UTF-8 bytes. Strings <=4000 characters; lists <=100 items. '
             'Task goal: one sentence <=300 characters; each done item <=300 characters; done <=8 items. '
             'Each files.allow glob <=200 characters. Optional task notes <=2000 characters for implementation guidance. '

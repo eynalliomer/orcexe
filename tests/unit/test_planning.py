@@ -256,6 +256,19 @@ class PlanCLI(GitFixture):
         return {name: (self.state / name).read_bytes() if (self.state / name).exists() else None
                 for name in ('plan.json', 'plan.md', 'decisions.jsonl', 'project-map.json', 'form.json')}
 
+    def test_prose_preamble_around_one_json_fence_plans_and_brief_forbids_prose(self):
+        self.final.write_text("I've read the brief; here is the plan.\n\n```json\n" +
+                              json.dumps(manager(), indent=2) + '\n```\nThat is all.\n')
+        result = self.proposed()
+        self.assertEqual(result['status'], 'proposed')
+        self.assertEqual([t['id'] for t in result['tasks']], ['T1'])
+        self.assertEqual(len(self.model_calls()), 1)
+        published = ''.join((self.state / name).read_text() for name in ('plan.json', 'plan.md'))
+        self.assertNotIn('read the brief', published)
+        self.assertNotIn('That is all', published)
+        brief = next((self.home / 'state/runs').glob('*/brief-source.md')).read_text()
+        self.assertIn('no text before or after it', brief)
+
     def test_fake_manager_single_call_and_access_snapshot_routes_and_determinism(self):
         (self.main / 'README.md').write_text('DIRTY')
         gather = route.gather_access

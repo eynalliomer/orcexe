@@ -52,6 +52,7 @@ class IncrementalTests(MappingFixture):
             self.assertIn('changed_files', brief)
             self.assertIn(previous['intake_sha'], brief)
             self.assertIn('UNTRUSTED DATA', brief)
+            self.assertEqual(brief.count('no text before or after it'), 2)
 
         value = manager()
         value['stack'] = []

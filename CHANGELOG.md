@@ -1,3 +1,20 @@
+## T47g — manager output tolerates prose around one JSON fence
+
+- A real incremental `orcexe map` reply put one sentence and a blank line before a
+  single ```` ```json ```` block holding a valid map; the strict parser rejected it as
+  `manager_output_invalid` and the paid call was wasted.
+- `mapping.parse_json_output` (shared by `map`, `plan` and the task L1 review) now
+  accepts a bare JSON object, exactly one ```` ```json ```` fence alone, or exactly one
+  such fence with prose before and/or after it. The prose is ignored: never parsed,
+  never logged, never published.
+- Still rejected (`detail: output invalid_json`): two or more fence lines of any
+  language, a fence whose language is not exactly `json` (including a bare or
+  longer fence), JSON in prose without a fence, an unclosed fence, anything after
+  the object inside the fence, duplicate keys and JSON constants. The 256 KiB
+  output cap counts the whole reply, prose included.
+- The map brief (full and incremental) and the plan brief now say the reply must be
+  the JSON object only, with no text before or after it.
+
 ## T47f — the default suite passes in a checkout without `.git`
 
 - Gate checks run in a plain file checkout of the candidate tree, which has no
