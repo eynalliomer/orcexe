@@ -56,6 +56,7 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `questions_invalid` | 2 | The map, goal or question data is invalid. |
 | `questions_pending` | 2 | Answer the saved form before planning. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
+| `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /plan-exit-reasons -->
 
@@ -139,6 +140,7 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `signal_SIGTERM` | 1 | do: Cancelled by SIGTERM; do retains its failure exit code. |
 | `size` | 1 | do: Changes exceeded the fast-lane budget. |
 | `state_corrupt` | 2 | questions, answer, task, planrun, status: Saved state or ledger is unreadable or inconsistent. |
+| `state_dir_in_repository` | 2 | map: The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
 | `state_tampered` | 1 | task, do: Project code changed CLI control state; investigate before retrying. |
 | `state_tampered` | 2 | planrun: Project code changed CLI control state; investigate before retrying. |
 | `task_running` | 1 | task: Another dispatch holds the repository lock. |

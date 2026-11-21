@@ -29,7 +29,7 @@ EXIT_REASONS = {
         'manager_unavailable: no_route', 'manager_unavailable: stalled', 'manager_unavailable: timeout',
         'manager_unavailable: auth', 'manager_unavailable: quota', 'manager_unavailable: failed',
         'not_a_repository', 'output_symlink', 'gitlink_tree', 'head_moved', 'questions_invalid', 'write_failed',
-        'lane_not_supported')},
+        'lane_not_supported', 'state_dir_in_repository')},
 }
 CONTRACT = dict(schema='orcexe.manager.plan.v1', tasks=[dict(
     id='T<n>', goal='str', files=dict(allow=['glob']), done=['str'], depends_on=['T<n>'],

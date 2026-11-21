@@ -807,6 +807,6 @@ def _map_command(args):
     except Exception as error:
         return report_failure(error, failure, step,
                               ('manager_tool_not_read_only', 'not_a_repository', 'output_symlink',
-                               'gitlink_tree', 'head_moved', 'manager_unavailable'))
+                               'gitlink_tree', 'head_moved', 'manager_unavailable', 'state_dir_in_repository'))
     print(json.dumps(result, ensure_ascii=False) if args.json else 'Wrote .orcexe/project-map.json and project-map.md')
     return 0

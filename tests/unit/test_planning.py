@@ -14,7 +14,7 @@ from unittest import mock
 from tests.unit.test_gitutil import GitFixture, ROOT
 from tests.unit import test_mapping
 from tests.unit.test_questions import project, unknown
-from orcexe import cli, fsio, mapping, planning, questions, route
+from orcexe import cli, exitcodes, fsio, mapping, planning, questions, route
 
 
 def task(identifier='T1', **changes):
@@ -268,6 +268,20 @@ class PlanCLI(GitFixture):
         self.assertNotIn('That is all', published)
         brief = next((self.home / 'state/runs').glob('*/brief-source.md')).read_text()
         self.assertIn('no text before or after it', brief)
+
+    def test_state_dir_inside_repository_is_reported_without_model_call_or_plan(self):
+        for inside in (self.main / 'state-inside', self.main / 'deep/er/state', self.main):
+            with self.subTest(state=inside.relative_to(self.main).as_posix() or '.'):
+                self.env['ORCEXE_STATE_DIR'] = str(inside)
+                before = self.snapshot()
+                result = self.invoke('--goal', 'Fix 1 typo in README.md')
+                self.assertEqual(result, (2, '', 'not_seen: state_dir_in_repository\n'))
+                self.assertEqual(self.model_calls(), [])
+                self.assertFalse((self.state / 'plan.json').exists())
+                self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.main / 'state-inside').exists())
+        self.assertFalse((self.main / 'deep').exists())
+        self.assertEqual(planning.EXIT_REASONS['state_dir_in_repository'], exitcodes.USAGE)
 
     def test_fake_manager_single_call_and_access_snapshot_routes_and_determinism(self):
         (self.main / 'README.md').write_text('DIRTY')

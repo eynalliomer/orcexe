@@ -62,7 +62,7 @@ cache as an OS-owned exception, separately from orcexe state.
 | --- | --- |
 | Main repository `.orcexe/` | Intake `intake/u1.json`, `u2.json`, `u3.json`; slop reports, project map, history/direction, `form.json`, `decisions.jsonl`, `plan.json`/`plan.md`, `ledger.jsonl`, trust ledger, `current-state.md` and `status.md`. Publication metadata/generations, `.plan-state/`, human-edit backups/proposals, dispatch locks, tamper marker, recovery `archive/`, and `runs/` evidence also live here. |
 | `.orcexe/runs/<id>/` | Private briefs, `contract.lite.json`, attempt logs/results, gate/L0/L1 evidence and per-run status. Completed work and evidence are retained. |
-| `${ORCEXE_STATE_DIR:-~/.cache/orcexe}/` | `env.json` readiness cache, manager run evidence under `runs/`, Claude runtime files and disposable `gate/` checkouts. Set `ORCEXE_STATE_DIR` to an absolute path outside the repository to relocate state; manager runs reject a state dir inside the repository. |
+| `${ORCEXE_STATE_DIR:-~/.cache/orcexe}/` | `env.json` readiness cache, manager run evidence under `runs/`, Claude runtime files and disposable `gate/` checkouts. Set `ORCEXE_STATE_DIR` to an absolute path outside the repository to relocate state; manager runs (`map`, `plan`) reject a state dir inside the repository or its main worktree with `not_seen: state_dir_in_repository` (exit 2). |
 | Sibling `<repo>-wt/<plan>/<task>-<tool>/` | Managed executor worktrees, including executor edits. Interrupted task worktrees are archived/removed; completed ones remain for inspection. |
 | Git common directory | `info/exclude` gets `/.orcexe/`; `info/orcexe-worktrees/` stores creation receipts. Linked-worktree metadata, objects and `orcexe/…` branches are created by Git. Frozen acceptance refs use `refs/orcexe/accepted/…`; plan integration chains use `refs/orcexe/plans/…`. |
 | OS temporary directory | Manager/evaluator copies, Git scratch, and per-project-step scratch/temp HOME; context managers remove these on normal exit. A crash can leave temporary directories. |
@@ -497,6 +497,7 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 | `questions_invalid` | 2 | The map, goal or question data is invalid. |
 | `questions_pending` | 2 | Answer the saved form before planning. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
+| `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /plan-exit-reasons -->
 
@@ -878,6 +879,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `manager_unavailable: timeout` | 2 | Manager failed: timeout. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /map-exit-reasons -->
 

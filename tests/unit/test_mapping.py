@@ -416,6 +416,18 @@ class MappingTests(MappingFixture):
         self.assertFalse(self.calls.exists())
         self.assertEqual([c.tool for c in route.load_roles().stages['manager']['any']], ['claude-code'])
 
+    def test_state_dir_inside_repository_is_reported_without_model_call(self):
+        for inside in (self.main / 'state-inside', self.main / 'deep/er/state', self.main):
+            with self.subTest(state=inside.relative_to(self.main).as_posix() or '.'):
+                self.env['ORCEXE_STATE_DIR'] = str(inside)
+                with mock.patch.object(mapping.ClaudeCodeAdapter, 'run') as manager_call:
+                    result = self.invoke()
+                self.assertEqual(result, (2, '', 'not_seen: state_dir_in_repository\n'))
+                manager_call.assert_not_called()
+                self.assertFalse(self.calls.exists())
+        self.assertFalse((self.main / 'state-inside').exists())
+        self.assertFalse((self.main / 'deep').exists())
+        self.assertFalse((self.main / 'runs').exists())
 
     def test_publication_cleans_exact_prefixes_without_following_links(self):
         directory = self.directory / 'publication-cleanup'

@@ -1,3 +1,27 @@
+## T1 — `state_dir_in_repository` is reported by `map` and `plan`
+
+- `mapping.manager_run` already refused an `ORCEXE_STATE_DIR` that resolves inside the
+  repository or its main worktree, before creating any state directory or calling the
+  model. The reason was lost in `report_failure`, which only reports closed expected
+  reasons, so `map` printed `not_seen: manager_unavailable` and `plan` printed
+  `not_seen: manager_unavailable: failed`.
+- Both commands now exit 2 with exactly `not_seen: state_dir_in_repository` on stderr,
+  nothing on stdout, no manager model call and no published `plan.json`. The reason is
+  in the tuple `mapping._map_command` passes to `report_failure` and in
+  `planning.EXIT_REASONS` (USAGE); `plan` still derives its expected list from
+  `EXIT_REASONS`, so there is no second list.
+- README (map and plan reason tables, state-location row) and SKILL (plan table and
+  shared table, as `map: ...`) gained the row; `tests/security/test_reason_docs.py`
+  is unchanged. SKILL.md is 151 lines.
+- New tests in `tests/unit/test_mapping.py` and `tests/unit/test_planning.py` cover a
+  state dir under the repository, a nested one and the repository root itself, each
+  asserting the exact exit code and stderr, an empty stdout, no model call and no
+  state written inside the repository.
+- Validation: not run in this session. The authoring sandbox had no shell, so the new
+  tests, the default suite (test and module counts, skips), the Python version and
+  `scripts/check_marketplace.py` were not executed; the numbers must be filled in by
+  the gate run before this entry is final.
+
 ## T47g — manager output tolerates prose around one JSON fence
 
 - A real incremental `orcexe map` reply put one sentence and a blank line before a
