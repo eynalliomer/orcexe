@@ -624,9 +624,14 @@ against base (`test_count_dropped`; unknown runtime counts stay `not_seen`). Pyt
 uses AST definitions in `test*.py`/`*_test.py`; JS/TS conservatively counts `it`/`test`
 calls in `.test.*`/`.spec.*` files. Added skip/focus markers, `SkipTest`,
 `pytest.skip`/`xfail`/`importorskip`, expected-failure decorators, hollow tests
-(first statement `return`, `pass`, or `...`) and increased runtime skipped/xfailed/
+(no check, or an immediate `return`) and increased runtime skipped/xfailed/
 expected-failure counts fail `skip_added`. New or changed tests without assertions
-fail `assertion_missing`. Non-documentation edits require changed tests. Red-first
+fail `assertion_missing`. L0 shares slop's check detector: Python `assert`, calls
+starting with `assert`/`expect`/`should`/`verify` on any receiver, `fail` calls,
+exception-check contexts, and `raise`/`throw` in the test body count as checks.
+This includes Deno std assertions, XCTest `XCTAssert*`/`XCTFail` and Swift
+`#expect`/`#require`. Uncalled nested declarations and literal/comment text do
+not supply checks. Non-documentation edits require changed tests. Red-first
 proof overlays changed/added tests on a fresh base copy that must fail. Gate and
 red-first checkouts have the same absolute path shape, depth and `checkout` basename,
 with no `red`/`base` path markers. Importing a new, not-yet-existing symbol counts as
@@ -755,12 +760,26 @@ command candidates and CI evidence also apply here.
 The seven classes are fake tests, skipped/focused tests, checker suppressions,
 unimplemented bodies, advisory unused public exports, dependency mismatches and
 missing test/lint/CI checks. Python and JS/TS support all classes; Swift supports
-only skips, suppressions and stubs. Asserting test helpers are followed up to three
+fake tests, skips, suppressions and stubs. Asserting test helpers are followed up to three
 calls through local definitions and imported test-support source; product-only
 calls still need assertions. Conditional platform/environment/dependency skips
 remain visible with `advisory: true` and `signal: "conditional_skip"`; unconditional
 skips, constant conditions, xfail and focus markers stay scored. Counts include
-advisory findings. Other extensions, capped files and unsupported
+advisory findings. Constant-only assertions and known product-only assertion-like
+calls retain their slop precision signals; L0 checks whether assertion syntax is
+present. Dead exports exclude names used within their own file. Python scripts
+(shebang, main guard, `scripts/`/`bin/`/`tools/`, or unimported files outside a
+package) do not export. Unused public names in imported modules and packages
+remain advisory findings.
+
+Deno `jsr:`, `npm:`, `node:` and HTTP(S) specifiers declare their dependencies;
+`imports` mappings in `deno.json` and `import_map.json` also declare exact names
+and slash-terminated prefixes. Python module files anywhere in the HEAD inventory
+are local, including modules reached through literal `sys.path.insert`/`append`
+directories. Python declarations across manifests and supported locks
+(`Pipfile.lock`, `poetry.lock`, `uv.lock`) and Node package/shrinkwrap locks are
+recognized without executing code. Undeclared third-party imports still produce
+findings. Other extensions, capped files and unsupported
 syntax are explicit in `unseen`. Detection is syntactic: the unused-export name
 search is advisory, dynamic imports and computed exports are not resolved, and
 template literals are opaque. The Markdown report groups findings and suggests

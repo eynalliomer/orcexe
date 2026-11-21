@@ -48,8 +48,8 @@ def test_count(text):
     return runner_summary(text)['count']
 
 
-def _python_tests(path, text):
-    tree = ast.parse(text)
+def _python_tests(path, text, tree=None):
+    tree = tree if tree is not None else ast.parse(text)
     units = []
     def visit(body, prefix='', eligible=True):
         for node in body:
@@ -80,10 +80,13 @@ def static_count(checkout):
     return total
 
 
-def _python_markers(text, add):
-    tree = ast.parse(text)
-    helpers = slop._PythonAssertions({'test_source.py': text})
-    name = lambda node: helpers.callee('test_source.py', node)
+def _python_markers(text, add, path='test_source.py', helpers=None):
+    helpers = helpers or slop._PythonAssertions({path: text})
+    unit = helpers.unit(path)
+    if unit is None:
+        raise ValueError('source_parse')
+    tree = unit[0]
+    name = lambda node: helpers.callee(path, node)
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise) and name(node.exc).rsplit('.', 1)[-1] == 'SkipTest':
             add('skipped_test', node.lineno, 'runtime_skip')
@@ -93,19 +96,20 @@ def _python_markers(text, add):
             for decorator in node.decorator_list:
                 if name(decorator).rsplit('.', 1)[-1] == 'expectedFailure':
                     add('skipped_test', decorator.lineno, 'test_marker')
-    for _, node in _python_tests('', text):
+    for _, node in _python_tests('', text, tree):
         body = node.body
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
             body = body[1:]
-        if body and (isinstance(body[0], (ast.Return, ast.Pass)) or
-                     isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
-                     and body[0].value.value is Ellipsis):
+        if body and isinstance(body[0], ast.Return) and body[0].value is None:
             add('skipped_test', body[0].lineno, 'hollow_test')
+        elif not helpers.assertions(path, node):
+            add('skipped_test', node.lineno, 'hollow_test')
 
 
-def _js_tests(path, text):
+def _js_tests(path, text, helpers=None):
     code, _, tokens = slop._lex(text, PurePosixPath(path).suffix)
     pairs = slop._pairs(tokens)
+    helpers = helpers or slop._JavascriptAssertions({path: text})
     units, seen = [], {}
     for match in re.finditer(r'\b(?:it|test|xit|xtest|fit|ftest)\b(?:\s*\.\s*\w+)*\s*\(', code):
         opening = next((i for i, t in enumerate(tokens) if t[2] == match.end() - 1), None)
@@ -125,16 +129,52 @@ def _js_tests(path, text):
         label = next((t[1] for t in tokens[opening + 1:callback] if t[0] == 'literal'), '')
         seen[label] = seen.get(label, 0) + 1
         visible = tokens[body + 1:end] if tokens[body][1] == '{' else tokens[body:end]
+        checks = bool(helpers.assertions(path, body + 1 if tokens[body][1] == '{' else body, end))
         units.append(((label, seen[label]), tuple((t[0], t[1]) for t in tokens[opening:end + 1]),
                       text.count('\n', 0, match.start()) + 1,
-                      any(t[1] == 'expect' and i + 1 < len(visible) and visible[i + 1][1] == '('
-                          for i, t in enumerate(visible)),
-                      not visible or visible[0][1] in ('return', ';', '...')))
+                      checks, not checks or bool(visible and visible[0][1] == 'return'
+                                                 and (len(visible) == 1 or visible[1][1] == ';'))))
     return units
 
 
-def _assertion_missing(observed, blobs):
+def _version_sources(observed, blobs, texts, version):
+    sources = dict(texts or {})
+    for file, pair in observed['versions']:
+        sources[file['path']] = blobs.get(pair[version], b'').decode('utf-8')
+    return sources
+
+
+def _assertion_helpers(texts):
+    return dict(python=slop._PythonAssertions(texts), javascript=slop._JavascriptAssertions(texts),
+                swift=slop._SwiftAssertions(texts))
+
+
+def _support_sources(checkout):
+    """Read bounded support source from a frozen copy, never following links."""
+    sources, budget = {}, 0
+    for folder, dirs, files in os.walk(checkout, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not (Path(folder) / d).is_symlink()
+                         and not slop.intake._excluded((Path(folder) / d).relative_to(checkout).as_posix()))
+        for name in sorted(files):
+            target = Path(folder) / name
+            path = target.relative_to(checkout).as_posix()
+            if (target.is_symlink() or slop.intake._secret(path) or not slop._language(path) or not slop._test_support(path)
+                    or not slop._wanted(path)):
+                continue
+            size = target.stat().st_size
+            if size > slop.intake.FILE_CAP or budget + size > slop.intake.TOTAL_BUDGET:
+                continue
+            budget += size
+            try:
+                sources[path] = target.read_text(encoding='utf-8-sig')
+            except UnicodeError:
+                continue
+    return sources
+
+
+def _assertion_missing(observed, blobs, texts=None):
     findings = []
+    helpers = _assertion_helpers(_version_sources(observed, blobs, texts, 1))
     for file, (old, new) in observed['versions']:
         path = file['path']
         if not is_test(path):
@@ -142,24 +182,23 @@ def _assertion_missing(observed, blobs):
         before, after = (blobs.get(oid, b'').decode('utf-8') for oid in (old, new))
         if path.endswith('.py'):
             previous = {name: ast.dump(node) for name, node in _python_tests(path, before)}
-            helpers = slop._PythonAssertions({path: after})
-            for name, node in _python_tests(path, after):
+            unit = helpers['python'].unit(path)
+            if unit is None:
+                raise ValueError('source_parse')
+            for name, node in _python_tests(path, after, unit[0]):
                 if previous.get(name) == ast.dump(node):
                     continue
-                def assertion(part):
-                    if isinstance(part, ast.Assert):
-                        return True
-                    if isinstance(part, ast.Call):
-                        callee = helpers.callee(path, part.func)
-                        last = callee.rsplit('.', 1)[-1]
-                        return last.startswith('assert') or callee in ('self.fail', 'pytest.raises')
-                    return False
-                if not any(assertion(part) for part in slop._body_nodes(node)):
+                if not helpers['python'].assertions(path, node):
                     findings.append(dict(path=path, line=node.lineno, signal='no_assertions'))
         elif slop._language(path) in ('javascript', 'typescript'):
             previous = {key: content for key, content, _, _, _ in _js_tests(path, before)}
-            for key, content, line, assertion, _ in _js_tests(path, after):
+            for key, content, line, assertion, _ in _js_tests(path, after, helpers['javascript']):
                 if previous.get(key) != content and not assertion:
+                    findings.append(dict(path=path, line=line, signal='no_assertions'))
+        elif slop._language(path) == 'swift':
+            previous = {key: content for key, content, _, _, _ in slop._swift_tests(before)}
+            for key, content, line, checks, _ in slop._swift_tests(after, path, helpers['swift']):
+                if previous.get(key) != content and not checks:
                     findings.append(dict(path=path, line=line, signal='no_assertions'))
     return findings
 
@@ -211,7 +250,10 @@ def _tests(commands, checkout, directory, timeout, deadline, scratch):
     return observations
 
 
-def _skip_added(observed, blobs):
+def _skip_added(observed, blobs, texts=None, before_texts=None):
+    old_helpers = _assertion_helpers(_version_sources(
+        observed, blobs, before_texts if before_texts is not None else texts, 0))
+    new_helpers = _assertion_helpers(_version_sources(observed, blobs, texts, 1))
     for file, (old, new) in observed['versions']:
         path = file['path']
         language = slop._language(path)
@@ -225,23 +267,28 @@ def _skip_added(observed, blobs):
                      for offset in range(size)}
         parser = {'python': slop._python, 'javascript': slop._javascript,
                   'typescript': slop._javascript, 'swift': slop._swift}[language]
-        def markers(text):
+        def markers(text, helpers):
             found = set()
             def add(kind, line, signal):
                 if kind == 'skipped_test':
                     found.add((line, signal))
-            parser(path, text, add)
+            helper = helpers['javascript' if language == 'typescript' else language]
+            parser(path, text, add, helper)
             if language == 'python':
-                _python_markers(text, add)
+                _python_markers(text, add, path, helper)
             elif language in ('javascript', 'typescript'):
-                for _, _, line, _, hollow in _js_tests(path, text):
+                for _, _, line, _, hollow in _js_tests(path, text, helper):
+                    if hollow:
+                        add('skipped_test', line, 'hollow_test')
+            elif language == 'swift':
+                for _, _, line, _, hollow in slop._swift_tests(text, path, helper):
                     if hollow:
                         add('skipped_test', line, 'hollow_test')
             return found
-        current = markers(after)
+        current = markers(after, new_helpers)
         if not current:
             continue
-        previous = markers(before)
+        previous = markers(before, old_helpers)
         # A multiline marker can begin on an unchanged line. Compare its old
         # finding too, so newly added .only/skip decorators cannot hide there.
         findings = [dict(path=path, line=line, signal=signal) for line, signal in sorted(current)
@@ -272,10 +319,12 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             base_root = Path(temporary).resolve()
             base = gate_lite._checkout(repo_path, worktree.base_commit, base_root, {}, deadline)
             base_static = static_count(base)
+            base_sources = _support_sources(base)
             candidate_root = base_root / 'candidate'
             candidate_root.mkdir()
             candidate_copy = gate_lite._checkout(repo_path, observed['tree'], candidate_root, {}, deadline)
             attempt_static = static_count(candidate_copy)
+            candidate_sources = _support_sources(candidate_copy)
             shutil.rmtree(candidate_root)
             counts = _tests(selected, base, directory / 'base', command_timeout_s, deadline, base_root)
             candidate = []
@@ -292,7 +341,7 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
                 check('test_count_dropped', 'pass' if passed else 'fail',
                       'base=' + str([b['count'] for b in counts]) + '; candidate=' + str([n['count'] for n in candidate]))
             try:
-                skipped = _skip_added(observed, blobs)
+                skipped = _skip_added(observed, blobs, candidate_sources, base_sources)
                 runtime_skip = any(n.get('skip_counts') is not None and b.get('skip_counts') is not None
                                    and any(n['skip_counts'][key] > b['skip_counts'][key] for key in n['skip_counts'])
                                    for n, b in zip(candidate, counts))
@@ -301,7 +350,7 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             except (SyntaxError, ValueError, tokenize.TokenError, RecursionError):
                 check('skip_added', 'not_seen', 'source_parse_unavailable')
             try:
-                missing = _assertion_missing(observed, blobs)
+                missing = _assertion_missing(observed, blobs, candidate_sources)
                 check('assertion_missing', 'fail' if missing else 'pass', str(missing) if missing else 'assertions_present')
             except (SyntaxError, ValueError, tokenize.TokenError, RecursionError):
                 check('assertion_missing', 'not_seen', 'source_parse_unavailable')

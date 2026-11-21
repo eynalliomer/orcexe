@@ -76,6 +76,58 @@ it.each([1, 2])('data', value => { expect(value).toBe(1); });
         self.assertEqual([(v['path'], v['line']) for v in findings],
                          [(path, line) for path in ('suite.test.js', 'suite.test.ts') for line in (1, 2, 7)])
 
+    def test_constant_assertions_require_literal_expressions(self):
+        cases = {
+            'test_literals.py': (
+                'def sign(value): return value\n',
+                'def test_{}():\n    {}\n',
+                ['self.assertEqual(sign("b"), "b!")', 'assert sign(1) == 2',
+                 'assert value == 2', 'assert obj.value == 2', 'assert f"{value}" == "b"',
+                 'assert [sign(1)] == [2]'],
+                ['self.assertEqual(1, 1)', 'assert True', 'assert (1, "b", None) == (1, "b", None)',
+                 'assert {"key": [1, True]} == {"key": [1, True]}']),
+            'literals.test.ts': (
+                'function sign(value) { return value; }\n',
+                'test("{}", () => {{ {} }});\n',
+                ['assertEquals(sign("b"), "b!");', 'expect(sign(1)).toBe(2);',
+                 'assertEquals(value, 2);', 'assertEquals(obj.value, 2);',
+                 'assertEquals(await sign(1), 2);', 'expect(1 + value).toBe(2);',
+                 'assertEquals(`${value}`, "b");', 'assertEquals([sign(1)], [2]);',
+                 'assertEquals({key: sign(1)}, {key: 2});', 'expect(1).toBe(sign(2));',
+                 'assertEquals(undefined, null);', 'assertEquals(NaN, Infinity);',
+                 'assertEquals(nil, null);'],
+                ['assertEquals(1, 1);', 'expect(true).toBe(true);',
+                 'assertEquals({key: [1, "b", null]}, {key: [1, "b", null]});',
+                 'assertEquals(`plain`, "plain");',
+                 'assertEquals([-1, 0xff, 1e3, 1_000, .5], [-1, 255, 1000, 1000, 0.5]);',
+                 'expect(1 <= 2).toBe(true);']),
+            'Tests/Literals.swift': (
+                'func sign(_ value: Int) -> Int { return value }\n',
+                'func test{}() {{ {} }}\n',
+                ['#expect(sign(1) == 2)', 'XCTAssertEqual(sign(1), 2)',
+                 '#expect(value == 2)', '#expect(obj.value == 2)', '#expect(null == nil)',
+                 '#expect(await sign(1) == 2)', '#expect(1 + value == 2)',
+                 r'XCTAssertEqual("\(value)", "b")',
+                 'XCTAssertEqual([sign(1)], [2])'],
+                ['#expect(1 == 1)', 'XCTAssertEqual(1, 1)', 'XCTAssertTrue(true)',
+                 'XCTAssertEqual([1, 2], [1, 2])', 'XCTAssertEqual(nil, nil)',
+                 'XCTAssertEqual((1, "b", nil), (1, "b", nil))',
+                 'XCTAssertEqual(["key": [1, 2]], ["key": [1, 2]])',
+                 'XCTAssertEqual(1.0, 1.0, accuracy: 0.01)']),
+        }
+        cases['literals.test.js'] = cases['literals.test.ts']
+        files, expected = {}, []
+        for path, (header, template, dynamic, constant) in cases.items():
+            source = header
+            for i, body in enumerate(dynamic + constant):
+                if i >= len(dynamic):
+                    expected.append((path, source.count('\n') + 1, 'constant_assertions'))
+                source += template.format(i, body)
+            files[path] = source
+        self.commit(files)
+        self.assertEqual([(v['path'], v['line'], v['signal']) for v in self.findings('fake_test')],
+                         sorted(expected))
+
     def test_skips_markers_calls_and_comments(self):
         self.commit({'test_a.py': '''@pytest.mark.skip(reason="later")
 def test_skip():
@@ -422,7 +474,8 @@ import missing from 'undeclared';
             self.assertIn({'path': 'a.py', 'reason': 'total_byte_budget'}, self.scan()['unseen'])
 
     def test_cli_private_atomic_output_determinism_and_markdown(self):
-        self.commit({'a.py': '# noqa\ndef public(): raise NotImplementedError\n'})
+        self.commit({'a.py': '# noqa\ndef public(): raise NotImplementedError\n',
+                     'consumer.py': 'import a\n'})
         linked = self.linked()
         documents = []
         for _ in range(2):
@@ -776,3 +829,139 @@ def test_aliases():
 """})
         self.assertEqual([(v['line'], v['signal'], v['advisory']) for v in self.findings('skipped_test')],
                          [(4, 'conditional_skip', True), (7, 'conditional_skip', True), (8, 'runtime_skip', False)])
+
+    def test_deno_checks_and_hollow_control(self):
+        self.commit({'tests/checks_test.ts': '''import { assertEquals, assertThrows, assertRejects } from "jsr:@std/assert";
+Deno.test("conditional throw", () => { if (product() !== 2) { throw new Error("wrong"); } });
+Deno.test("throw", () => { throw new Error("wrong"); });
+Deno.test("std equals", () => { assertEquals(product(), 2); });
+Deno.test("std throws", () => { assertThrows(() => product()); });
+Deno.test("std rejects", async () => { await assertRejects(() => product()); });
+Deno.test("receiver", () => { custom.verifyResult(product()); });
+Deno.test("should", () => { custom.shouldMatch(product()); });
+Deno.test("fail", () => { t.fail("wrong"); });
+Deno.test("hollow", () => { product(); });
+'''})
+        findings = self.findings('fake_test')
+        self.assertEqual([(v['line'], v['signal']) for v in findings], [(10, 'no_assertions')])
+        self.assertEqual(self.findings('dependency'), [])
+
+    def test_python_raise_and_assertion_receivers(self):
+        self.commit({'tests/test_checks.py': '''def test_conditional_raise():
+    if product() != 2:
+        raise AssertionError("wrong")
+def test_raise():
+    raise ValueError("wrong")
+def test_receiver():
+    context.expectEqual(product(), 2)
+def test_should():
+    context.shouldMatch(product())
+def test_verify():
+    context.verifyResult(product())
+def test_fail():
+    fail("wrong")
+def test_namespace():
+    assert_module.assertEquals(product(), 2)
+def test_hollow():
+    product()
+'''})
+        self.assertEqual([(v['line'], v['signal']) for v in self.findings('fake_test')],
+                         [(16, 'no_assertions')])
+
+    def test_scripts_do_not_export_but_imported_modules_do(self):
+        script = 'UNUSED = 1\ndef unused(): return 1\n'
+        self.commit({'standalone.py': script,
+                     'executable.py': '#!/usr/bin/env python3\n' + script,
+                     'guarded.py': script + 'if __name__ == "__main__":\n    print("run")\n',
+                     'scripts/task.py': script, 'bin/task.py': script, 'tools/task.py': script,
+                     'consumer.py': 'import executable, guarded\nfrom library import live\n',
+                     'library.py': 'VALUE = 2\ndef live(): return VALUE\ndef unused(): return 1\n',
+                     'pkg/__init__.py': '', 'pkg/module.py': script})
+        self.assertEqual([(v['path'], v['signal']) for v in self.findings('dead_code')],
+                         [('library.py', 'unreferenced_export:unused'),
+                          ('pkg/module.py', 'unreferenced_export:UNUSED'),
+                          ('pkg/module.py', 'unreferenced_export:unused')])
+
+    def test_same_file_references_are_live(self):
+        self.commit({'module.py': '''VALUE = 2
+def leaf(): return VALUE
+async def async_leaf(): return VALUE
+def caller(): return leaf(), async_leaf()
+def unused(): return 1
+''', 'consumer.py': 'from module import caller\n',
+                     'module.ts': '''export const VALUE = 2;
+export function leaf() { return VALUE; }
+export function caller() { return leaf(); }
+export function unused() { return 1; }
+''', 'consumer.ts': 'import { caller } from "./module"; caller();\n'})
+        self.assertEqual([(v['path'], v['signal']) for v in self.findings('dead_code')],
+                         [('module.py', 'unreferenced_export:unused'),
+                          ('module.ts', 'unreferenced_export:unused')])
+
+    def test_deno_specifiers_import_maps_and_undeclared_control(self):
+        self.commit({'deno.json': json.dumps({'imports': {'@std/': 'jsr:@std/', 'mapped': './local.ts'}}),
+                     'import_map.json': json.dumps({'imports': {'other/': 'https://example.invalid/'}}),
+                     'main.ts': '''import 'jsr:@std/assert';
+import 'npm:@scope/package@1/subpath';
+import 'node:fs/promises';
+import 'https://example.invalid/mod.ts';
+import 'http://example.invalid/mod.ts';
+import '@std/assert';
+import 'mapped';
+import 'other/module';
+import 'mapped-but-undeclared';
+'''})
+        self.assertEqual([(v['line'], v['signal']) for v in self.findings('dependency')],
+                         [(9, 'undeclared_import')])
+
+    def test_python_local_modules_sys_path_and_lock_declarations(self):
+        self.commit({'scripts/check.py': '''import sys
+sys.path.insert(0, "lib")
+sys.path.append("helpers")
+import inserted, appended, anywhere, locked_uv, locked_poetry, locked_pipfile
+import third_party_missing
+''', 'lib/inserted.py': '', 'helpers/appended/__init__.py': '',
+                     'unrelated/deep/anywhere.py': '',
+                     'locks/uv.lock': 'version = 1\n[[package]]\nname = "locked-uv"\nversion = "1"\n',
+                     'poetry.lock': '[[package]]\nname = "locked-poetry"\nversion = "1"\n',
+                     'Pipfile.lock': '{"develop":{"locked-pipfile":{"version":"==1"}}}',
+                     'package-lock.json': '{"packages":{"node_modules/locked-js":{"version":"1"}}}',
+                     'main.js': "import 'locked-js/subpath';\nimport 'missing-js';\n"})
+        self.assertEqual([(v['path'], v['line'], v['signal']) for v in self.findings('dependency')],
+                         [('main.js', 2, 'undeclared_import'), ('scripts/check.py', 5, 'undeclared_import')])
+
+    def test_swift_checks_and_hollow_control(self):
+        self.commit({'Tests/Checks.swift': '''func testAssert() { XCTAssertEqual(product(), 2) }
+func testFail() { XCTFail("wrong") }
+func testExpect() { #expect(product() == 2) }
+@Test func validates() { #require(product() == 2) }
+func testThrow() throws { if product() != 2 { throw Wrong.value } }
+func testHollow() { product() }
+'''})
+        self.assertEqual([(v['line'], v['signal']) for v in self.findings('fake_test')],
+                         [(6, 'no_assertions')])
+
+    def test_external_assertion_libraries_and_npm_runtime_usage(self):
+        self.commit({'tests/test_external.py': '''from assertion_library import assertEquals
+def test_external():
+    assertEquals(product(), 2)
+''', 'tests/external.test.ts': '''import { assertEquals } from '@std/assert';
+test("mapped", () => { assertEquals(product(), 2); });
+''', 'deno.json': '{"imports":{"@std/":"jsr:@std/"}}',
+                     'package.json': '{"dependencies":{"lodash":"*","@scope/pkg":"*"}}',
+                     'main.ts': "import 'npm:lodash@1/map';\nimport 'npm:@scope/pkg@1/subpath';\n"})
+        self.assertEqual(self.findings('fake_test'), [])
+        # The deliberately undeclared Python assertion library remains visible.
+        self.assertEqual([(v['path'], v['line'], v['signal']) for v in self.findings('dependency')],
+                         [('tests/test_external.py', 1, 'undeclared_import')])
+
+    def test_malformed_import_maps_and_locks_are_unseen(self):
+        self.commit({'deno.json': '{"imports":[]}',
+                     'package-lock.json': '{"dependencies":null}',
+                     'Pipfile.lock': '{"default":[]}',
+                     'main.ts': "import 'undeclared';\n"})
+        report = self.scan()
+        self.assertEqual({v['path'] for v in report['unseen'] if 'path' in v},
+                         {'deno.json', 'package-lock.json', 'Pipfile.lock'})
+        self.assertEqual([v['signal'] for v in report['findings'] if v['class'] == 'dependency'],
+                         ['undeclared_import'])

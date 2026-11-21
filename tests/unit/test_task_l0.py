@@ -108,6 +108,55 @@ class CountTests(unittest.TestCase):
                 (root / name).write_text(text)
             self.assertEqual(task_l0.static_count(root), 5)
 
+    def test_shared_check_vocabulary_and_hollow_controls(self):
+        python_checks = [
+            'assert value', 'self.assertEqual(value, 2)', 'assertEquals(value, 2)',
+            'context.expectEqual(value, 2)', 'context.shouldMatch(value)', 'verifyResult(value)',
+            'fail("wrong")', 'self.fail("wrong")', 't.fail("wrong")',
+            'with pytest.raises(ValueError):\n        product()',
+            'with self.assertRaises(ValueError):\n        product()',
+            'if product() != 2:\n        raise AssertionError("wrong")',
+            'raise ValueError("wrong")',
+            'return self.assertEqual(product(), 2)',
+        ]
+        js_checks = [
+            'assert(value);', 'assert.equal(value, 2);', 'context.assertEquals(value, 2);',
+            'expect(value).toBe(2);', 'context.shouldMatch(value);', 'verifyResult(value);',
+            'fail("wrong");', 't.fail("wrong");', 'self.fail("wrong");',
+            'assertThrows(() => product());', 'assertRejects(() => product());',
+            'if (product() !== 2) { throw new Error("wrong"); }', 'throw new Error("wrong");',
+            'return expect(product()).toBe(2);',
+        ]
+        cases = [('tests/test_checks.py', 'def test_check():\n    ' + body + '\n', True)
+                 for body in python_checks]
+        cases += [('checks.test.ts', 'Deno.test("check", () => { ' + body + ' });\n', True)
+                  for body in js_checks]
+        cases += [('Tests/Checks.swift', 'func testCheck() throws { ' + body + ' }\n', True)
+                  for body in ('XCTAssertEqual(value, 2)', 'XCTFail("wrong")', '#expect(value == 2)',
+                               '#require(value == 2)', 'if value != 2 { throw Wrong.value }')]
+        cases += [('tests/test_checks.py', 'def test_check():\n    product()\n', False),
+                  ('checks.test.ts', 'Deno.test("check", () => { product(); });\n', False),
+                  ('Tests/Checks.swift', 'func testCheck() { product() }\n', False)]
+        for path, source, checks in cases:
+            with self.subTest(path=path, source=source):
+                observed = dict(versions=[(dict(path=path), ('old', 'new'))])
+                blobs = dict(old=b'', new=source.encode())
+                self.assertEqual(bool(task_l0._assertion_missing(observed, blobs)), not checks)
+                self.assertEqual(bool(task_l0._skip_added(observed, blobs)), not checks)
+
+    def test_shared_checks_do_not_borrow_literals_or_uncalled_helpers(self):
+        for path, source in [
+                ('tests/test_checks.py', 'def test_check():\n    text = "raise AssertionError()"\n    product()\n'),
+                ('tests/test_checks.py', 'def test_check():\n    def helper():\n        raise AssertionError()\n    product()\n'),
+                ('checks.test.ts', 'test("check", () => { const s = "throw Error()"; product(); });'),
+                ('checks.test.ts', 'test("check", () => { function helper() { throw Error(); } product(); });'),
+                ('Tests/Checks.swift', 'func testCheck() { func helper() { XCTFail("wrong") }; product() }')]:
+            with self.subTest(source=source):
+                observed = dict(versions=[(dict(path=path), ('old', 'new'))])
+                blobs = dict(old=b'', new=source.encode())
+                self.assertTrue(task_l0._assertion_missing(observed, blobs))
+                self.assertTrue(task_l0._skip_added(observed, blobs))
+
 
 class L0Tests(TaskFixture):
     def receipts(self):
@@ -144,6 +193,16 @@ class L0Tests(TaskFixture):
         self.assertEqual(len(copies), 2)
         self.assertNotEqual(copies[0], copies[1])
         self.assertFalse(any(p.exists() for p in copies))
+
+    def test_raise_style_unittest_passes_all_l0_checks(self):
+        updated = TEST.replace('self.assertEqual(app(), 1)',
+                               'if app() != 2:\n            raise AssertionError("wrong result")')
+        self.actions.write_text(json.dumps([{'src/app.py': APP.replace('1', '2'),
+                                            'tests/test_app.py': updated}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (0, 'gate_passed'), result)
+        self.assertEqual({c['id']: c['status'] for c in self.receipts()[0]['checks']},
+                         {identifier: 'pass' for identifier in task_l0.CHECK_IDS})
 
     def test_reported_test_count_drop_without_static_test_drop_fails(self):
         load = ('\ndef load_tests(loader, tests, pattern):\n'

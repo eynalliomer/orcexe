@@ -1,3 +1,50 @@
+## T47c — literal-only constant assertions
+
+- Parse JS/TS and Swift assertion arguments as literal expressions, retaining
+  constant containers and rejecting calls (including masked local helpers),
+  identifiers, member access, await and interpolated strings. Recognize numeric
+  literal forms and keep each language's null/nil rules separate.
+- Report Swift constant-only XCTest and Testing checks as `constant_assertions`.
+  L0 continues to share slop's assertion detector without a separate decision.
+- Add call-versus-literal regressions for Python, JavaScript, TypeScript and
+  Swift, including nested containers, operators, matcher arguments and strings.
+- Validation on Python 3.9.6: default runner (`-j 4`) passed 901 tests in 60
+  modules (23 skips); focused assertion/slop/L0 and stdlib checks passed 68 tests
+  (1 skip). Python 3.9 syntax and diff whitespace checks passed.
+
+## T47b — assertion gate regressions
+
+- Recognize Swift Testing `Issue.record` and XCTest `XCTUnwrap`; follow Swift
+  local, method, extension and test-support helpers up to three calls, without
+  borrowing checks from uncalled declarations, other suites or private support.
+- Preserve mixed literal/dynamic imported assertions, including Deno versioned
+  specifiers and assertion aliases. Keep constant-only slop findings and ensure
+  product calls such as `Rules.check(2)` remain hollow in every supported language.
+- Give L0 the same helper context as slop using bounded source snapshots from
+  frozen base/candidate copies, captured before test execution. Reuse Python AST
+  nodes so L0 can resolve local helpers as well as imported support.
+- Add synthetic check/hollow pairs for TS/Deno, Python, Swift Testing and XCTest,
+  plus scope, depth, cycle, argument and frozen-support regressions.
+- Validation on Python 3.9.6: default runner (`-j 4`) passed 900 tests in 60
+  modules (23 skips); focused assertion/slop/L0 tests passed 65 tests (1 skip).
+  Stdlib-only checks and Python 3.9 syntax validation passed.
+
+## T47a — assertion, dead-code and dependency precision
+
+- Share slop's assertion detector with L0 assertion/hollow checks; recognize
+  raise/throw-style checks, Deno std assertions, receiver-independent assertion
+  prefixes, failure calls and XCTest/Swift Testing checks. Preserve constant-only
+  and product-only slop signals and bounded test-helper resolution.
+- Exclude same-file references and Python scripts from dead-export findings;
+  retain advisory unused names in imported modules and packages.
+- Recognize Deno specifiers/import mappings, repository-local Python modules
+  (including sys.path directories), Python lock declarations and Node locks.
+  Keep undeclared third-party imports visible without executing project code.
+- Add synthetic positive/negative pairs and an L0 raise-style unittest regression.
+- Validation on Python 3.9.6: default suite with four workers passed 894 tests
+  (23 skips); extended L0 passed 8 tests. The first CPU-count worker run hit an
+  unrelated doctor timeout-budget assertion; it passed with reduced concurrency.
+
 ## T46 — v0.2 security, documentation and suite speed (C23, C25)
 
 - Inventory every subprocess-layer caller, including shared manager, evaluator,

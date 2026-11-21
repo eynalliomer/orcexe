@@ -1,7 +1,7 @@
 """Bounded, model-free observations of committed source, never a quality gate.
 
 Signals are deliberately syntactic. Dead exports use a cheap identifier search
-across other source files and are always advisory. No project code is imported.
+within and across source files and are always advisory. No project code is imported.
 """
 
 import ast
@@ -66,6 +66,20 @@ constants crypto dgram diagnostics_channel dns domain events fs http http2 https
 inspector module net os path perf_hooks process punycode querystring readline repl
 sea sqlite stream string_decoder sys test timers tls trace_events tty url util v8
 vm wasi worker_threads zlib'''.split())
+DENO_MANIFESTS = ('deno.json', 'import_map.json')
+LOCKS = ('package-lock.json', 'npm-shrinkwrap.json', 'Pipfile.lock', 'poetry.lock', 'uv.lock')
+
+
+def _check_call(name):
+    """Assertion vocabulary shared by the source scanners and L0.
+
+    The receiver is irrelevant (including namespace imports and test contexts).
+    Constant-only checks remain a separate slop signal, not a missing check.
+    """
+    last = name.rsplit('.', 1)[-1]
+    return (last.startswith(('assert', 'expect', 'should', 'verify', 'XCTAssert'))
+            or last in ('fail', 'XCTFail', 'XCTUnwrap') or 'assert' in name.split('.')[:-1]
+            or name in ('pytest.raises', 'Issue.record'))
 
 
 def _language(path):
@@ -76,7 +90,7 @@ def _wanted(path):
     if intake._own_state(path) or intake._excluded(path) or intake._instruction(path):
         return None
     name = PurePosixPath(path).name
-    return bool(_language(path) or name in ('package.json', 'pyproject.toml', 'setup.cfg')
+    return bool(_language(path) or name in ('package.json', 'pyproject.toml', 'setup.cfg') + DENO_MANIFESTS + LOCKS
                 or re.fullmatch(r'requirements[^/]*', name))
 
 
@@ -91,6 +105,11 @@ def _fetch(repo, entries, unseen, deadline):
 
 def _masked(text):
     return ''.join('\n' if c == '\n' else ' ' for c in text)
+
+
+_NUMBER = (r'(?:0[xX][\da-fA-F_]+(?:\.[\da-fA-F_]+)?(?:[pP][+-]?[\d_]+)?'
+           r'|0[bB][01_]+|0[oO][0-7_]+'
+           r'|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?[\d_]+)?)(?:n)?')
 
 
 def _lex(text, suffix):
@@ -185,7 +204,7 @@ def _lex(text, suffix):
             tokens.append(('literal', raw, start, i))
             previous = 'literal'
             continue
-        match = re.match(r'[A-Za-z_$][\w$]*|\d+(?:\.\d+)?|===|!==|=>|==|!=|&&|\|\||[^\s]', text[i:])
+        match = re.match(_NUMBER + r'|[A-Za-z_$][\w$]*|===|!==|=>|==|!=|<=|>=|&&|\|\||[^\s]', text[i:])
         raw = match[0]
         i += len(raw)
         output.append(raw)
@@ -367,7 +386,9 @@ class _PythonAssertions:
                 return None, True
             # An explicitly imported product API is not an unknown test helper.
             return None, (module.split('.')[0] in ('pytest', 'unittest')
-                          or _test_support(module.replace('.', '/') + '.py'))
+                          or _test_support(module.replace('.', '/') + '.py')
+                          or _check_call('.'.join(v for v in (module, symbol, *pieces[1:]) if v))
+                          and self.module(path, module, level) is None)
         if len(pieces) == 1:
             for parent in PurePosixPath(path).parents:
                 target = str(parent / 'conftest.py')
@@ -386,9 +407,12 @@ class _PythonAssertions:
         for node in _body_nodes(function):
             if isinstance(node, ast.Assert):
                 assertions.append(not _constant(node.test))
+            elif isinstance(node, ast.Raise):
+                assertions.append(True)
             elif isinstance(node, ast.Call):
                 name = _name(node.func)
-                last = name.rsplit('.', 1)[-1]
+                check_name = self.callee(path, node.func)
+                last = check_name.rsplit('.', 1)[-1]
                 target, fallback = self.resolve(path, function, name)
                 if target:
                     if depth < 3 and isinstance(target[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -401,8 +425,12 @@ class _PythonAssertions:
                                           or last.startswith(('assert_called', 'assert_not_called'))
                                           or any(not _constant(v) for v in node.args)
                                           or any(not _constant(v.value) for v in node.keywords))
-                    elif last.startswith(('check', 'verify', 'expect', 'ensure')):
+                    elif _check_call(check_name) or '.' not in name and last.startswith(('check', 'ensure')):
                         assertions.append(True)
+                if _check_call(name) and not assertions:
+                    # A known product call or empty helper still has assertion
+                    # syntax; retain slop's product/empty-helper precision signal.
+                    assertions.append(False)
             if any(assertions):
                 return [True]
         return assertions
@@ -530,8 +558,8 @@ def _python(path, text, add, helpers=None):
     names = Counter(v.id for v in ast.walk(tree) if isinstance(v, ast.Name))
     names.update(v.attr for v in ast.walk(tree) if isinstance(v, ast.Attribute))
     names.update(v.name.rsplit('.', 1)[-1] for v in ast.walk(tree) if isinstance(v, ast.alias))
-    names.update(v.name for v in ast.walk(tree) if isinstance(v, (ast.FunctionDef, ast.ClassDef)))
-    return imports, exports, set(names)
+    names.update(v.name for v in ast.walk(tree) if isinstance(v, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+    return imports, exports, names
 
 
 def _comments(comments, language, add):
@@ -563,20 +591,86 @@ def _pairs(tokens):
     return pairs
 
 
-def _js_dynamic(tokens):
-    constants = {'true', 'false', 'null', 'undefined', 'NaN', 'Infinity'}
-    for i, (kind, value, _, _) in enumerate(tokens):
-        if kind == 'literal' and value.startswith('`') and '${' in value:
+def _js_dynamic(tokens, swift=False):
+    """Admit only literal expressions, including containers and literal operators.
+
+    A blacklist of identifiers is insufficient: helper resolution can mask a
+    callee, and calls/member access must still be rejected by their structure.
+    This grammar is shared by JS/TS and Swift; it never evaluates source.
+    """
+    position = 0
+    operators = {'+', '-', '*', '/', '%', '==', '!=', '===', '!==', '<', '>',
+                 '<=', '>=', '&&', '||', '&', '|', '^'}
+
+    def value_at():
+        return tokens[position][1] if position < len(tokens) else ''
+
+    def expression():
+        nonlocal position
+        while value_at() in ('!', '~', '+', '-'):
+            position += 1
+        if position >= len(tokens):
+            return False
+        kind, value, _, _ = tokens[position]
+        position += 1
+        if kind == 'literal':
+            if not value.startswith(('"', "'", '`')):
+                return False  # Regexes are not literal data.
+            i = 1
+            while i < len(value):
+                if value[i] == '\\':
+                    if swift and value.startswith('"') and value[i:i + 2] == '\\(':
+                        return False  # Swift interpolation.
+                    i += 2
+                elif value.startswith('`') and value[i:i + 2] == '${':
+                    return False
+                else:
+                    i += 1
+        elif value in ('(', '[', '{'):
+            close = {'(': ')', '[': ']', '{': '}'}[value]
+            if not sequence(close, keyed=value in ('[', '{')):
+                return False
+        elif value not in ('true', 'false', 'nil' if swift else 'null') and not re.fullmatch(_NUMBER, value):
+            return False
+        while value_at() in operators:
+            position += 1
+            if not expression():
+                return False
+        return True
+
+    def sequence(close='', keyed=False):
+        nonlocal position
+        if close and value_at() == close:
+            position += 1
             return True
-        if kind == 'code' and re.fullmatch(r'[A-Za-z_$][\w$]*', value) and value not in constants:
-            # Literal object keys do not read product state; shorthand keys do.
-            if i + 1 < len(tokens) and tokens[i + 1][1] == ':' and (i == 0 or tokens[i - 1][1] in ('{', ',')):
-                continue
-            return True
-    return False
+        while position < len(tokens):
+            # Object keys and Swift argument/tuple labels do not read state.
+            label = ((keyed or swift) and position + 1 < len(tokens) and tokens[position + 1][1] == ':'
+                     and re.fullmatch(r'[A-Za-z_$][\w$]*', value_at()))
+            if label:
+                position += 2
+            elif not expression():
+                return False
+            if label or keyed and value_at() == ':':
+                if not label:
+                    position += 1
+                if not expression():
+                    return False
+            if close and value_at() == close:
+                position += 1
+                return True
+            if value_at() != ',':
+                return not close and position == len(tokens)
+            position += 1
+            if close and value_at() == close:
+                position += 1
+                return True
+        return not close
+
+    return not sequence() or position != len(tokens)
 
 
-def _js_assertions(tokens, pairs, start, end):
+def _js_assertions(tokens, pairs, start, end, imported_checks=(), swift=False):
     assertions = []
     tap = {'is', 'not', 'equal', 'equals', 'same', 'deepEqual', 'notDeepEqual',
            'ok', 'notOk', 'true', 'false', 'truthy', 'falsy', 'throws',
@@ -585,11 +679,15 @@ def _js_assertions(tokens, pairs, start, end):
         value = tokens[i][1]
         if tokens[i][0] != 'code':
             continue
+        if value == 'throw' and (i == start or tokens[i - 1][1] not in ('.', '?.')):
+            assertions.append(True)
+            continue
         framework = value == 't' and i + 2 < end and tokens[i + 1][1] == '.' and tokens[i + 2][1] in tap
-        if value in ('expect', 'assert') or re.match(r'^assert[A-Z_]', value) or framework:
-            j = i + 1
-            while j + 1 < end and tokens[j][1] == '.' and tokens[j + 1][0] == 'code':
-                j += 2
+        j, name = i + 1, value
+        while j + 1 < end and tokens[j][1] == '.' and tokens[j + 1][0] == 'code':
+            name += '.' + tokens[j + 1][1]
+            j += 2
+        if _check_call(name) or framework or value == 'require' and i > start and tokens[i - 1][1] == '#':
             if j >= end or tokens[j][1] != '(' or j not in pairs:
                 continue
             if value == 'expect' and any(t[1] in ('assertions', 'hasAssertions') for t in tokens[i:j]):
@@ -597,8 +695,11 @@ def _js_assertions(tokens, pairs, start, end):
             close = pairs[j]
             helper = any(t[1] in ('throws', 'rejects', 'doesNotThrow', 'doesNotReject',
                                   'throwsAsync', 'notThrows', 'notThrowsAsync', 'fail') for t in tokens[i:j])
-            dynamic = helper or _js_dynamic(tokens[j + 1:close])
-            matcher_found = value != 'expect'
+            helper = (helper or name in ('Issue.record', 'XCTUnwrap') or value in ('fail', 'XCTFail')
+                      or value.startswith(('assertThrows', 'assertRejects')))
+            dynamic = helper or close == j + 1 or _js_dynamic(tokens[j + 1:close], swift)
+            matcher_found = (value != 'expect' or i in imported_checks
+                             or i > start and tokens[i - 1][1] == '#')
             # Include matcher arguments; toThrow asserts by raising even on a
             # constant function expression. expect.assertions is only a counter.
             k = close + 1
@@ -607,10 +708,12 @@ def _js_assertions(tokens, pairs, start, end):
                 k += 2
                 if tokens[k][1] == '(' and k in pairs:
                     matcher_found = True
-                    dynamic = dynamic or matcher.startswith(('toThrow', 'toRaise')) or _js_dynamic(tokens[k + 1:pairs[k]])
+                    dynamic = dynamic or matcher.startswith(('toThrow', 'toRaise')) or _js_dynamic(tokens[k + 1:pairs[k]], swift)
                     k = pairs[k] + 1
             if matcher_found:
                 assertions.append(dynamic)
+            else:
+                assertions.append(False)
     return assertions
 
 
@@ -739,7 +842,7 @@ class _JavascriptAssertions:
         nested = [(decl, stop + 1) for _, decl, _, stop in functions if start <= decl < end]
         visible = [t if not any(a <= i < b for a, b in nested) else ('code', ';', t[2], t[3])
                    for i, t in enumerate(tokens)]
-        calls = []
+        calls, imported_checks = [], set()
         for i in range(start, end):
             if visible[i][0] != 'code' or not re.fullmatch(r'[A-Za-z_$][\w$]*', visible[i][1]):
                 continue
@@ -775,9 +878,16 @@ class _JavascriptAssertions:
             framework = root in imports and imports[root][0] in (
                 'vitest', '@jest/globals', '@playwright/test', 'bun:test', 'expect',
                 'chai', 'assert', 'assert/strict', 'node:assert', 'node:assert/strict')
+            imported_name = ('.'.join(v for v in (imports[root][1], member) if v)
+                             if root in imports and imports[root][1] != 'default' else name)
+            framework = framework or root in imports and imports[root][0].startswith(
+                ('jsr:', 'npm:', 'node:', 'http://', 'https://')) and _check_call(imported_name or name)
+            framework = framework or root in imports and not target_path and _check_call(imported_name or name)
             if framework:
-                if imports[root][1] in ('expect', 'assert'):
+                if imports[root][1] not in ('', 'default'):
                     visible[i] = ('code', imports[root][1], visible[i][2], visible[i][3])
+                if (imported_name or name).rsplit('.', 1)[-1].startswith(('assert', 'expect')):
+                    imported_checks.add(i)
                 continue
             if target or known:
                 for k in range(i, j):
@@ -785,7 +895,7 @@ class _JavascriptAssertions:
             if target_path and _test_support(target_path):
                 known = target is not None
             calls.append((name, target, target_path, known, pairs.get(j) == j + 1))
-        assertions = _js_assertions(visible, pairs, start, end)
+        assertions = _js_assertions(visible, pairs, start, end, imported_checks)
         for name, target, target_path, known, no_args in calls:
             if target and depth < 3:
                 body, stop = target[2:]
@@ -793,11 +903,13 @@ class _JavascriptAssertions:
                 beginning = body + 1 if other[0][body][1] == '{' else body
                 assertions.extend(self.assertions(target_path, beginning, stop, depth + 1,
                                                   seen + ((path, start, end),)))
-            elif not known and name.rsplit('.', 1)[-1].startswith(('check', 'verify', 'expect', 'ensure', 'assert')):
+            elif not known and (_check_call(name) or '.' not in name and name.startswith(('check', 'ensure'))):
                 # Framework expect/assert forms retain their constant checks.
                 if (not re.match(r'^(?:expect|assert)(?:\.|$)|^assert[A-Z_]', name)
                         or no_args and name.rsplit('.', 1)[-1].startswith('assert') and name != 'assert'):
                     assertions.append(True)
+            if _check_call(name) and not assertions:
+                assertions.append(False)
         return assertions
 
 
@@ -874,8 +986,7 @@ def _javascript(path, text, add, helpers=None):
         if re.search(r'(?:\bfrom\s*|\b(?:require|import)\s*\(\s*|\bimport\s*)$', prefix):
             spec = value[1:-1]
             if not spec.startswith(('.', '/', '#')):
-                root = '/'.join(spec.split('/')[:2]) if spec.startswith('@') else spec.split('/')[0]
-                imports.append((root, line(start)))
+                imports.append((spec, line(start)))
     exports = [(m[1], line(m.start())) for m in re.finditer(
         r'\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|enum|interface|type)\s+([\w$]+)', code)]
     exports.extend((m[1], line(m.start())) for m in re.finditer(r'\bexports\.([\w$]+)\s*=', code))
@@ -886,21 +997,150 @@ def _javascript(path, text, add, helpers=None):
             if names:
                 exports.append((names[-1], line(match.start())))
     exports.extend((m[1], line(m.start())) for m in re.finditer(r'\bmodule\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*[;\n]', code))
-    return imports, exports, {t[1] for t in tokens if t[0] == 'code'}
+    # Export lists repeat a declaration, rather than using its value.
+    names = Counter(t[1] for t in tokens if t[0] == 'code')
+    for match in re.finditer(r'\bexport\s*\{([^}]+)\}', code):
+        names.subtract(re.findall(r'[A-Za-z_$][\w$]*', match[1]))
+    return imports, exports, names
 
 
-def _swift(path, text, add):
+class _SwiftAssertions:
+    """Follow visible Swift functions and same-suite support, at most three calls."""
+
+    def __init__(self, texts):
+        self.texts, self.units, self.support = texts, {}, {}
+
+    def unit(self, path):
+        if path not in self.units:
+            code, _, tokens = _lex(self.texts[path], '.swift')
+            pairs = _pairs(tokens)
+            offsets = {t[2]: i for i, t in enumerate(tokens)}
+            types = [(m[1], offsets[m.end() - 1], pairs[offsets[m.end() - 1]],
+                      re.findall(r'\b\w+\b', m[2].split(':', 1)[1]) if ':' in m[2] else [])
+                     for m in re.finditer(r'\b(?:class|struct|enum|extension)\s+(\w+)([^{}]*)\{', code)]
+            type_scopes = {t[1] for t in types}
+            functions = []
+            for match in re.finditer(r'\bfunc\s+(\w+)\s*\([^{}]*\)[^{]*\{', code):
+                decl, opening = offsets[match.start()], offsets[match.end() - 1]
+                scope = tuple(a for a, b in pairs.items() if tokens[a][1] == '{' and a < decl < b)
+                # Nested functions are lexical helpers, not callable type members.
+                owner = next((name for name, a, b, _ in reversed(types) if a < decl < b
+                              and all(s in type_scopes for s in scope)), None)
+                private = bool(re.search(r'\b(?:private|fileprivate)\s*$', code[:match.start()]))
+                functions.append((match[1], decl, opening, pairs[opening], scope, owner, private))
+            self.units[path] = (tokens, pairs, functions, types)
+        return self.units[path]
+
+    def resolve(self, path, name, caller):
+        _, pairs, functions, types = self.unit(path)
+        root, _, member = name.rpartition('.')
+        wanted = member or name
+        owners = {name for name, a, b, _ in types if a < caller < b}
+        for _ in range(3):
+            owners.update(base for name, _, _, bases in types if name in owners for base in bases)
+        local = [f for f in functions if f[0] == wanted and
+                 ((not root or root in ('self', 'Self') and f[5])
+                  and (all(a < caller < pairs[a] for a in f[4]) or f[5] in owners)
+                  or root not in ('', 'self', 'Self') and f[5] == root)]
+        if local:
+            return path, max(local, key=lambda f: (len(f[4]), f[1]))
+        # Swift test-support files share their module without per-file imports.
+        # Search the nearest suite directory first; ambiguity supplies no check.
+        key = (path, name, tuple(sorted(owners)))
+        if key in self.support:
+            return self.support[key]
+        parts = PurePosixPath(path).parts
+        test_root = next((i for i, part in enumerate(parts[:-1]) if part.lower() in ('test', 'tests')), None)
+        suite = (PurePosixPath(*parts[:min(len(parts) - 1, test_root + 2)])
+                 if test_root is not None else PurePosixPath(path).parent)
+        for parent in PurePosixPath(path).parents:
+            candidates = []
+            for other_path in self.texts:
+                if (other_path == path or not other_path.endswith('.swift') or not _test_support(other_path)
+                        or parent not in PurePosixPath(other_path).parents):
+                    continue
+                try:
+                    other = self.unit(other_path)
+                except (ValueError, RecursionError):
+                    continue
+                for f in other[2]:
+                    if f[0] != wanted or f[6]:
+                        continue
+                    if (not root and not f[4] or root in ('', 'self', 'Self') and f[5] in owners
+                            or root not in ('', 'self', 'Self') and f[5] == root):
+                        candidates.append((other_path, f))
+            if candidates:
+                self.support[key] = candidates[0] if len(candidates) == 1 else None
+                return self.support[key]
+            if parent == suite:
+                break
+        self.support[key] = None
+        return None
+
+    def assertions(self, path, start, end, depth=0, seen=()):
+        key = (path, start, end)
+        if key in seen:
+            return []
+        tokens, pairs, functions = self.unit(path)[:3]
+        nested = [(decl, stop) for _, decl, _, stop, *_ in functions if start <= decl < end]
+        visible = [t if not any(a <= i <= b for a, b in nested) else ('code', ';', t[2], t[3])
+                   for i, t in enumerate(tokens)]
+        delegated = []
+        for i in range(start, end):
+            if (visible[i][0] != 'code' or not re.fullmatch(r'[A-Za-z_$][\w$]*', visible[i][1])
+                    or i > start and visible[i - 1][1] in ('.', '#')):
+                continue
+            name, j = visible[i][1], i + 1
+            while j + 1 < end and visible[j][1] == '.':
+                name += '.' + visible[j + 1][1]
+                j += 2
+            if j >= end or visible[j][1] != '(':
+                continue
+            target = self.resolve(path, name, i)
+            if target:
+                for k in range(i, j):
+                    visible[k] = ('code', ';', visible[k][2], visible[k][3])
+                if depth < 3:
+                    target_path, function = target
+                    delegated.extend(self.assertions(target_path, function[2] + 1, function[3],
+                                                      depth + 1, seen + (key,)))
+        return _js_assertions(visible, pairs, start, end, swift=True) + delegated
+
+
+def _swift_tests(text, path='test_source.swift', helpers=None):
+    """XCTest methods and Swift Testing functions, with literal contents opaque."""
+    helpers = helpers or _SwiftAssertions({path: text})
+    code, _, _ = _lex(text, '.swift')
+    tokens, _, functions = helpers.unit(path)[:3]
+    for name, decl, opening, end, *_ in functions:
+        if not name.startswith('test') and not re.search(r'@Test\s*(?:\([^{}]*\))?\s*$', code[:tokens[decl][2]]):
+            continue
+        body = tokens[opening + 1:end]
+        checks = bool(helpers.assertions(path, opening + 1, end))
+        yield (name, tuple((t[0], t[1]) for t in tokens[opening:end + 1]),
+               text.count('\n', 0, tokens[decl][2]) + 1, checks,
+               not checks or bool(body and body[0][1] == 'return'))
+
+
+def _swift(path, text, add, helpers=None):
     code, comments, tokens = _lex(text, '.swift')
     line = lambda offset: text.count('\n', 0, offset) + 1
     pairs = _pairs(tokens)
     _comments([(line(start), raw) for start, raw in comments], 'swift', add)
+    helpers = helpers or _SwiftAssertions({path: text})
+    for name, decl, opening, end, *_ in helpers.unit(path)[2]:
+        if not name.startswith('test') and not re.search(r'@Test\s*(?:\([^{}]*\))?\s*$', code[:tokens[decl][2]]):
+            continue
+        assertions = helpers.assertions(path, opening + 1, end)
+        if not any(assertions):
+            add('fake_test', line(tokens[decl][2]), 'constant_assertions' if assertions else 'no_assertions')
     for match in re.finditer(r'\bXCTSkip(?:If|Unless)?\s*\(', code):
         opening = next((i for i, t in enumerate(tokens) if t[2] == match.end() - 1), None)
         conditional = False
         if opening in pairs and not re.match(r'XCTSkip\s*\(', match[0]):
             end = pairs[opening]
             comma = next((i for i in range(opening + 1, end) if tokens[i][1] == ','), end)
-            conditional = _js_dynamic(tokens[opening + 1:comma])
+            conditional = _js_dynamic(tokens[opening + 1:comma], swift=True)
         add('skipped_test', line(match.start()), 'conditional_skip' if conditional else 'runtime_skip')
     for i, t in enumerate(tokens):
         if t[0] == 'code' and t[1] in ('fatalError', 'preconditionFailure'):
@@ -918,7 +1158,7 @@ def _swift(path, text, add):
         if i is not None and i in pairs and pairs[i] == i + 1 and any(
                 tokens[i][2] < start < tokens[pairs[i]][2] and TODO.search(raw) for start, raw in comments):
             add('stub', line(match.start()), 'todo_body')
-    return [], [], set()
+    return [], [], Counter()
 
 
 def _normalize(name):
@@ -934,7 +1174,31 @@ def _manifest(path, text):
     """Return all declarations, runtime declarations and local package names."""
     name = PurePosixPath(path).name
     declared, runtime, local = set(), set(), set()
-    if name == 'package.json':
+    if name in DENO_MANIFESTS:
+        data = intake._json(text)
+        imports = data.get('imports', {})
+        if not isinstance(imports, dict):
+            raise ValueError('imports')
+        declared.update(key for key, value in imports.items() if isinstance(value, str))
+    elif name in ('package-lock.json', 'npm-shrinkwrap.json'):
+        data = intake._json(text)
+        for field in ('dependencies', 'packages'):
+            if not isinstance(data.get(field, {}), dict):
+                raise ValueError('lock_dependencies')
+        declared.update(data.get('dependencies', {}))
+        for package in data.get('packages', {}):
+            if 'node_modules/' in package:
+                declared.add(package.rsplit('node_modules/', 1)[-1])
+    elif name == 'Pipfile.lock':
+        data = intake._json(text)
+        for section in ('default', 'develop'):
+            values = data.get(section, {})
+            if not isinstance(values, dict):
+                raise ValueError('lock_dependencies')
+            declared.update(values)
+    elif name in ('poetry.lock', 'uv.lock'):
+        declared.update(re.findall(r'(?m)^name\s*=\s*[\'"]([^\'"]+)[\'"]', text))
+    elif name == 'package.json':
         data = intake._json(text)
         for key in ('dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'):
             values = data.get(key, {})
@@ -998,13 +1262,17 @@ def _manifest(path, text):
                     runtime.add(key)
         if pending:
             raise ValueError('unterminated_dependencies')
-    normalize = str.lower if name == 'package.json' else _normalize
+    normalize = str.lower if name in ('package.json', 'package-lock.json', 'npm-shrinkwrap.json') else (
+        str if name in DENO_MANIFESTS else _normalize)
     return {normalize(v) for v in declared}, {normalize(v) for v in runtime}, local
 
 
-def _dependencies(sources, manifests, add_for):
+def _dependencies(sources, manifests, add_for, paths=None):
     local = set()
-    for path in sources:
+    # Paths come from the bounded HEAD inventory, never from filesystem imports.
+    # A local module anywhere in the repository also covers literal sys.path
+    # insert/append directories without evaluating project expressions.
+    for path in paths if paths is not None else sources:
         p = PurePosixPath(path)
         if _language(path) != 'swift':
             local.update(p.parts[:-1])
@@ -1017,13 +1285,28 @@ def _dependencies(sources, manifests, add_for):
         language = _language(path)
         if language == 'swift':
             continue
+        js_manifests = ('package.json', 'package-lock.json', 'npm-shrinkwrap.json') + DENO_MANIFESTS
         candidates = [p for p in manifests if PurePosixPath(p).parent in PurePosixPath(path).parents
-                      and (PurePosixPath(p).name == 'package.json') == (language != 'python')]
+                      and (PurePosixPath(p).name in js_manifests) == (language != 'python')]
         depth = max((len(PurePosixPath(p).parent.parts) for p in candidates), default=-1)
         nearest = [p for p in candidates if len(PurePosixPath(p).parent.parts) == depth]
         declared = set().union(*(manifests[p][0] for p in nearest))
+        if language == 'python':
+            declared.update(name for p, (names, _, _) in manifests.items()
+                            if PurePosixPath(p).name not in js_manifests for name in names)
+        deno = set().union(*(manifests[p][0] for p in candidates
+                            if PurePosixPath(p).name in DENO_MANIFESTS))
         seen = set()
-        for root, line in imports:
+        for spec, line in imports:
+            if language != 'python' and spec.startswith('npm:'):
+                package = spec[4:]
+                root = '/'.join(package.split('/')[:2]) if package.startswith('@') else package.split('/')[0]
+                used.add((False, re.sub(r'(?<!^)@[^/]*$', '', root).lower()))
+            if language != 'python' and (spec.startswith(('jsr:', 'npm:', 'node:', 'http://', 'https://'))
+                    or any(spec == key or key.endswith('/') and spec.startswith(key) for key in deno)):
+                continue
+            root = spec if language == 'python' else (
+                '/'.join(spec.split('/')[:2]) if spec.startswith('@') else spec.split('/')[0])
             distribution = _normalize(DISTRIBUTIONS.get(root.lower(), root)) if language == 'python' else root.lower()
             used.add((language == 'python', distribution))
             builtin = (root in PY_STDLIB or root in sys.builtin_module_names) if language == 'python' else root.startswith('node:') or root.split('/')[0] in NODE_BUILTINS
@@ -1032,7 +1315,7 @@ def _dependencies(sources, manifests, add_for):
             seen.add(root)
             add_for(path, 'dependency', line, 'undeclared_import')
     for path, (_, runtime, _) in sorted(manifests.items()):
-        python = PurePosixPath(path).name != 'package.json'
+        python = PurePosixPath(path).name not in ('package.json', 'package-lock.json', 'npm-shrinkwrap.json') + DENO_MANIFESTS
         for name in sorted(runtime):
             if (python, name) not in used:
                 add_for(path, 'dependency', 0, 'unused_runtime:' + name)
@@ -1071,6 +1354,7 @@ def scan(repo):
             unseen.append({'path': path, 'reason': 'malformed_or_unsupported'})
     python_helpers = _PythonAssertions(texts)
     js_helpers = _JavascriptAssertions(texts)
+    swift_helpers = _SwiftAssertions(texts)
     for path, text in sorted(texts.items()):
         try:
             add = lambda kind, line, signal: add_for(path, kind, line, signal)
@@ -1082,7 +1366,7 @@ def scan(repo):
                 try:
                     sources[path] = (parser(path, text, add, python_helpers) if language == 'python'
                                      else parser(path, text, add, js_helpers) if language in ('javascript', 'typescript')
-                                     else parser(path, text, add))
+                                     else parser(path, text, add, swift_helpers))
                 except (SyntaxError, ValueError, tokenize.TokenError, RecursionError):
                     del findings[before:]
                     raise ValueError('source_parse')
@@ -1090,12 +1374,39 @@ def scan(repo):
                 manifests[path] = _manifest(path, text)
         except (UnicodeError, ValueError, RecursionError, configparser.Error):
             unseen.append({'path': path, 'reason': 'malformed_or_unsupported'})
-    references = Counter(name for _, _, names in sources.values() for name in names)
+    references = Counter()
+    for _, exports, names in sources.values():
+        definitions = Counter(name for name, _ in exports)
+        references.update({name: count - definitions[name] for name, count in names.items()
+                           if count > definitions[name]})
+    imported_python = set()
+    for path in sources:
+        if _language(path) != 'python':
+            continue
+        unit = python_helpers.unit(path)
+        for module, symbol, level in unit[2].values():
+            target = python_helpers.module(path, '.'.join(v for v in (module, symbol) if v), level)
+            if target is None:
+                target = python_helpers.module(path, module, level)
+            if target and target != path:
+                imported_python.add(target)
     for path, (_, exports, names) in sources.items():
+        if _language(path) == 'python':
+            p = PurePosixPath(path)
+            tree = python_helpers.unit(path)[0]
+            main_guard = any(isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                             and len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.Eq)
+                             and any(isinstance(v, ast.Name) and v.id == '__name__' for v in ast.walk(node.test))
+                             and any(isinstance(v, ast.Constant) and v.value == '__main__' for v in ast.walk(node.test))
+                             for node in tree.body)
+            package = p.name == '__init__.py' or any(str(parent / '__init__.py') in entries for parent in p.parents)
+            if (texts[path].startswith('#!') or main_guard or set(p.parts[:-1]) & {'scripts', 'bin', 'tools'}
+                    or path not in imported_python and not package):
+                continue
         for name, line in exports:
-            if references[name] - int(name in names) == 0:
+            if not references[name]:
                 add_for(path, 'dead_code', line, 'unreferenced_export:' + name)
-    _dependencies(sources, manifests, add_for)
+    _dependencies(sources, manifests, add_for, (p for p in entries if _wanted(p)))
     kinds = {v['kind'] for v in discovery['commands']}
     for kind, present in (('test', 'test' in kinds), ('lint', 'lint' in kinds),
                           ('ci', bool(discovery['ci']['workflow_files']))):
