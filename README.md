@@ -437,6 +437,11 @@ Success publishes private (0600) `.orcexe/plan.json` (`orcexe.plan.v1`) and
 `plan.md` together, preserving the map. The single form shows the goal,
 assumptions, each task's allowed files, size, parallel flag, lane, tool/model, dependencies and done criteria, and the
 approval command. A plan starts as `proposed` and records HEAD and decision IDs.
+This version runs only `fast` and `standard` tasks. A task whose final lane is
+anything else (`risky`) gets `"lane_note": "lane_not_supported"` in `plan.json`,
+its lane cell in `plan.md` reads `risky (lane_not_supported)`, and a
+"Not runnable in this version" section lists such tasks, so the operator sees it
+before approving.
 
 `orcexe plan [--repo PATH] --approve PLAN_ID [--json]` requires that exact proposed
 plan at the same HEAD. It marks it `approved`, records `approved_at`, and appends
@@ -445,7 +450,12 @@ one `orcexe.decision.v1` record of kind `plan_approval` to `decisions.jsonl`.
 UTF-8), excluding `plan_id`, `content_sha256`, `status`, `approved_at` and `approval`.
 `plan_id` is `plan-` plus this digest. Approval recomputes it, rechecks cleaned
 tasks, P3 and current lanes, rejects empty or changed plans as `plan_tampered`,
-and records the digest in the approval decision. Later consumers can call
+and records the digest in the approval decision. A valid plan with any task
+whose final lane this version cannot run is refused with `lane_not_supported`
+(exit 2): stderr prints `not_seen: lane_not_supported` and one
+`lane_not_supported: T<n> <lane>` line per task, nothing is written and the plan
+stays `proposed`, so `plan --run` refuses it (`plan_not_approved`) before any
+dispatch. Later consumers can call
 `planning.content_sha256(plan)` to verify the same content. Corrupt plan/decision
 state reports `state_corrupt` (exit 2). Approval makes no model call. Failed validation changes nothing; write failures
 roll back the plan files and decision append. Neither command executes tasks.
@@ -459,6 +469,7 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 | `gitlink_tree` | 2 | The tree contains unsupported submodules. |
 | `head_moved` | 2 | HEAD changed while observations were being collected. |
 | `internal_error` | 70 | Internal computation failed; inspect the reported step. |
+| `lane_not_supported` | 2 | `--approve` refused: a task's final lane cannot run in this version; stderr names each task. |
 | `manager_output_invalid` | 2 | Manager output failed the closed schema or bounds. |
 | `manager_unavailable: auth` | 2 | Manager failed: auth. |
 | `manager_unavailable: failed` | 2 | Manager failed: failed. |

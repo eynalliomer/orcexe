@@ -15,6 +15,9 @@ from orcexe import classify, exitcodes, globs, fsio, gitutil, history, intake, m
 from orcexe.adapters import ClaudeCodeAdapter, CodexAdapter, CursorAdapter
 
 LANES = ('fast', 'standard', 'risky')
+# Lanes this version can dispatch; task/plan --run block the others at dispatch.
+SUPPORTED_LANES = ('fast', 'standard')
+LANE_NOTE = 'lane_not_supported'
 VIOLATION_CODES = ('empty_goal', 'empty_allow', 'empty_done', 'duplicate_id', 'unknown_dependency', 'cycle', 'size_l',
                    'too_many_tasks', 'no_tasks', 'parallel_overlap', 'invalid_glob', 'no_test_path')
 # Public diagnostic vocabulary; README and SKILL carry this exact table.
@@ -25,7 +28,8 @@ EXIT_REASONS = {
         'plan_missing', 'plan_mismatch', 'plan_stale', 'plan_not_proposed', 'plan_tampered', 'state_corrupt',
         'manager_unavailable: no_route', 'manager_unavailable: stalled', 'manager_unavailable: timeout',
         'manager_unavailable: auth', 'manager_unavailable: quota', 'manager_unavailable: failed',
-        'not_a_repository', 'output_symlink', 'gitlink_tree', 'head_moved', 'questions_invalid', 'write_failed')},
+        'not_a_repository', 'output_symlink', 'gitlink_tree', 'head_moved', 'questions_invalid', 'write_failed',
+        'lane_not_supported')},
 }
 CONTRACT = dict(schema='orcexe.manager.plan.v1', tasks=[dict(
     id='T<n>', goal='str', files=dict(allow=['glob']), done=['str'], depends_on=['T<n>'],
@@ -202,6 +206,27 @@ def task_lane(task, project, repo=None):
     return max((requested, cli_lane), key=LANES.index), list(dict.fromkeys(basis))
 
 
+class UnsupportedLanes(ValueError):
+    """Approval refusal naming the tasks whose final lane cannot run here."""
+
+    def __init__(self, tasks):
+        super().__init__(LANE_NOTE)
+        self.tasks = tasks
+
+
+def unsupported_tasks(plan):
+    """(id, lane) for every task whose final lane this version cannot dispatch."""
+    return [(t['id'], t['lane']) for t in plan['tasks'] if t['lane'] not in SUPPORTED_LANES]
+
+
+def mark_lanes(tasks):
+    for task in tasks:
+        task.pop('lane_note', None)
+        if task['lane'] not in SUPPORTED_LANES:
+            task['lane_note'] = LANE_NOTE
+    return tasks
+
+
 def build_brief(goal, project, form, decisions):
     facts = dict(goal=goal, map={key: project.get(key, []) for key in
                  ('risk_map', 'do_not_touch', 'conventions', 'commands')},
@@ -251,13 +276,20 @@ def render(plan):
         selection = task['route']
         who = (selection['tool'] + '/' + selection['model'] if selection['tool'] else
                'Unassigned: ' + selection['reason'])
-        lines.append('| ' + ' | '.join(cell(v) for v in (task['id'], task['goal'], task['lane'],
+        lane = task['lane'] + (' (' + LANE_NOTE + ')' if task['lane'] not in SUPPORTED_LANES else '')
+        lines.append('| ' + ' | '.join(cell(v) for v in (task['id'], task['goal'], lane,
                      '; '.join(lane_basis(b) for b in task.get('lane_basis', [])), who,
                      ', '.join(task['depends_on']) or '-', '; '.join(task['done']),
                      '; '.join(task['files']['allow']), task['size'], str(task['parallel']).lower())) + ' |')
     for task in plan['tasks']:
         if task.get('notes'):
             lines += ['', '## ' + cell(task['id']) + ' notes', '', cell(task['notes'])]
+    blocked = unsupported_tasks(plan)
+    if blocked:
+        lines += ['', '## Not runnable in this version', '',
+                  LANE_NOTE + ': ' + ', '.join(cell(i) + ' (' + cell(lane) + ')' for i, lane in blocked) +
+                  '. This version runs only ' + ' and '.join(SUPPORTED_LANES) +
+                  ' tasks; `orcexe plan --approve` refuses this plan.']
     lines += ['', 'Approve this entire plan: `orcexe plan --approve ' + plan['plan_id'] + '`', '']
     return '\n'.join(lines)
 
@@ -367,6 +399,9 @@ def validate_approval(plan, directory, repo, head):
             if (task['lane'] != lane or task['lane_basis'] != basis
                     or task['route']['lane'] != lane):
                 raise ValueError('plan_tampered')
+            # Plans written before T47e carry no note; a present note must match.
+            if 'lane_note' in task and (task['lane_note'] != LANE_NOTE or lane in SUPPORTED_LANES):
+                raise ValueError('plan_tampered')
         return digest
     except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
         raise ValueError('plan_tampered')
@@ -389,6 +424,10 @@ def approve(directory, repo, head, identifier):
         raise ValueError('plan_not_proposed')
     questions.read_decisions(directory)
     digest = validate_approval(plan, directory, repo, head)
+    blocked = unsupported_tasks(plan)
+    if blocked:
+        # Refuse before any write: the plan stays proposed, so plan --run refuses too.
+        raise UnsupportedLanes(blocked)
     at = datetime.now(timezone.utc).isoformat()
     plan.update(status='approved', approved_at=at)
     # T39's selector expects question_id/answer on every decision.v1 record.
@@ -407,7 +446,13 @@ def _plan_command(args):
         repo, directory, head = questions.context(args)
         if args.approve is not None:
             failure, step = 'write_failed', 'approve'
-            result = approve(directory, repo, head, args.approve)
+            try:
+                result = approve(directory, repo, head, args.approve)
+            except UnsupportedLanes as error:
+                print('not_seen: ' + LANE_NOTE, file=sys.stderr)
+                for identifier, lane in error.tasks:
+                    print(LANE_NOTE + ': ' + identifier + ' ' + lane, file=sys.stderr)
+                return EXIT_REASONS[LANE_NOTE]
         else:
             failure, step = 'questions_invalid', 'read_map'
             try:
@@ -483,6 +528,7 @@ def _plan_command(args):
             for task in tasks:
                 step = 'executor_route'
                 task['route'] = route.route('executor', task['lane'], access, roles)
+            mark_lanes(tasks)
             step = 'build_plan'
             result = dict(schema='orcexe.plan.v1', head=head,
                           goal=form['goal'], status='proposed', decisions=sorted(used),

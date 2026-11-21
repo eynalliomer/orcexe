@@ -109,7 +109,7 @@ def _select_task(plan, task_id, log):
     task = next((t for t in plan['tasks'] if t['id'] == task_id), None)
     if task is None:
         raise ValueError('task_unknown')
-    if task['lane'] not in ('fast', 'standard'):
+    if task['lane'] not in planning.SUPPORTED_LANES:
         raise ValueError('lane_not_supported')
     states = planrun.task_records(plan, log)
     if any(states[dep]['state'] != 'accepted' for dep in task['depends_on']):

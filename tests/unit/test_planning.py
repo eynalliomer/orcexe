@@ -415,6 +415,77 @@ class PlanCLI(GitFixture):
 
 
 
+    def unsupported_plan(self):
+        self.final.write_text(json.dumps(manager([
+            task(), task('T2', lane='risky'), task('T3', depends_on=['T2'])])))
+        return self.proposed()
+
+    def test_unsupported_lane_is_marked_in_json_and_markdown(self):
+        result = self.unsupported_plan()
+        self.assertEqual([t['lane'] for t in result['tasks']], ['fast', 'risky', 'fast'])
+        self.assertEqual([t.get('lane_note') for t in result['tasks']], [None, 'lane_not_supported', None])
+        self.assertEqual(result['status'], 'proposed')
+        saved = fsio.read_json(self.state / 'plan.json')
+        self.assertEqual(saved['tasks'][1]['lane_note'], 'lane_not_supported')
+        markdown = (self.state / 'plan.md').read_text()
+        row = next(line for line in markdown.splitlines() if line.startswith('| T2 |'))
+        self.assertIn('| risky (lane_not_supported) |', row)
+        self.assertNotIn('lane_not_supported', next(line for line in markdown.splitlines()
+                                                     if line.startswith('| T1 |')))
+        self.assertIn('lane_not_supported: T2 (risky)', markdown)
+        self.assertIn('`orcexe plan --approve` refuses this plan', markdown)
+        code, human, error = self.invoke('--goal', 'Fix 1 typo in README.md')
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(json.loads(human)['tasks'][1]['lane_note'], 'lane_not_supported')
+        plain = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), redirect_stdout(plain), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['plan', '--repo', str(self.main), '--goal', 'Fix 1 typo in README.md']), 0)
+        self.assertIn('risky (lane_not_supported)', plain.getvalue())
+        # A supported-only plan carries no note anywhere.
+        self.final.write_text(json.dumps(manager()))
+        plain_plan = self.proposed()
+        self.assertNotIn('lane_note', plain_plan['tasks'][0])
+        self.assertNotIn('lane_not_supported', (self.state / 'plan.md').read_text())
+
+    def test_approve_refuses_unsupported_lane_and_run_refuses_before_dispatch(self):
+        from orcexe import task as task_module
+        result = self.unsupported_plan()
+        before = self.snapshot()
+        with mock.patch.object(mapping, 'manager_run') as run:
+            self.assertEqual(self.invoke('--approve', result['plan_id']),
+                             (2, '', 'not_seen: lane_not_supported\nlane_not_supported: T2 risky\n'))
+            run.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(fsio.read_json(self.state / 'plan.json')['status'], 'proposed')
+        self.assertFalse((self.state / 'decisions.jsonl').exists())
+        with mock.patch.object(task_module, 'run_task') as dispatch:
+            code, out, error = self.invoke('--run', result['plan_id'])
+            dispatch.assert_not_called()
+        self.assertEqual(code, 2, (out, error))
+        self.assertIn('not_seen: plan_not_approved', error)
+        self.assertEqual(self.snapshot(), before)
+        # Every unsupported task is named, in plan order.
+        self.final.write_text(json.dumps(manager([task('T1', lane='risky'), task('T2'), task('T3', lane='risky')])))
+        second = self.proposed()
+        self.assertEqual(self.invoke('--approve', second['plan_id']),
+                         (2, '', 'not_seen: lane_not_supported\nlane_not_supported: T1 risky\n'
+                                 'lane_not_supported: T3 risky\n'))
+
+    def test_lane_note_is_bound_and_legacy_unmarked_plans_still_refuse(self):
+        original = self.unsupported_plan()
+        for change, expected in [(lambda p: p['tasks'][0].update(lane_note='lane_not_supported'), 'plan_tampered'),
+                                 (lambda p: p['tasks'][1].update(lane_note='other'), 'plan_tampered'),
+                                 (lambda p: p['tasks'][1].pop('lane_note'), 'lane_not_supported')]:
+            plan = copy.deepcopy(original)
+            change(plan)
+            plan['content_sha256'] = planning.content_sha256(plan)
+            plan['plan_id'] = planning.plan_id(plan['content_sha256'])
+            (self.state / 'plan.json').write_text(json.dumps(plan))
+            before = self.snapshot()
+            code, out, error = self.invoke('--approve', plan['plan_id'])
+            self.assertEqual((code, error.splitlines()[0]), (2, 'not_seen: ' + expected))
+            self.assertEqual(self.snapshot(), before)
+
     def test_signal_uses_map_cleanup(self):
         for sig in (signal.SIGINT, signal.SIGTERM):
             handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}

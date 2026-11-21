@@ -1,3 +1,36 @@
+## T47e — approval refuses lanes this version cannot run; verbs inside identifiers are not actions
+
+- `plan --approve` refuses a plan in which any task's final lane is not supported
+  by this version (only `fast` and `standard` run): exit 2,
+  `not_seen: lane_not_supported` plus one `lane_not_supported: T<n> <lane>` line
+  per task on stderr. Nothing is written and the plan stays `proposed`, so
+  `plan --run` refuses it as unapproved before any dispatch. The check runs after
+  the existing tamper validation.
+- `plan --goal` still publishes such a plan, but marks each unsupported task with
+  `"lane_note": "lane_not_supported"` in the JSON, `risky (lane_not_supported)` in
+  the `plan.md` lane cell, and a "Not runnable in this version" section. The note is
+  bound by the content hash; a note on a supported lane or with another value is
+  `plan_tampered`. Plans written before T47e (no note) are still refused.
+- `lane_not_supported` is documented in the README and SKILL plan reason tables.
+  `planning.SUPPORTED_LANES` is now shared with `task`'s lane check.
+- Classifier: outward-action and destructive stems count only as plain prose words.
+  A stem that is only part of an identifier — snake_case, camelCase / PascalCase,
+  dotted names and calls (`git.commit_count()`, `commit()`), file-like tokens (a
+  file extension such as `mailer.py`, or a leading `./`, `../`, `/` or `~/`), or a
+  backticked name without spaces — is not that action, and a multiword stem cannot
+  span an identifier. Prose (`commit the change`, `send an email`,
+  `Değişikliği gönder`, `PUSHsuffix`, `_push_`) signals as before, and so do
+  kebab-case and slash-joined words (`force-push`, `hard-delete`, `re-deploy`,
+  `pre-commit`, `commit/push`); false positives such as `publish-date` are accepted.
+  Backticked text containing spaces is read as a command line, so its plain words
+  (`git push origin`) still signal.
+- Risk words are not loosened: risk stems inside identifiers still signal, and
+  camelCase parts now also match (`userAuth` → `risk_word:auth`,
+  `APIKey` → `risk_word:api_key`).
+- Tests: approve refusal, `--run` refusal without dispatch, JSON/`plan.md` marks,
+  note binding and legacy plans; identifier forms, prose forms, multiword spans
+  and risk stems inside identifiers.
+
 ## T47d — retries gated on the cumulative tree; throughput budgets leave the default suite
 
 - Standard and fast task gates no longer fail a retry (an attempt after the first

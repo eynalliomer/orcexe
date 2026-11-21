@@ -6,6 +6,11 @@ Fast additionally requires a complete, bounded editing production below;
 recognizing individual words is never sufficient. Project maps add risk only.
 Unknown mentions block fast even alongside a known target.
 Only README has a bare-name convenience rule; other symbols need backticks.
+Outward-action and destructive stems count only as plain prose words: a stem
+that is merely part of an identifier (snake/camel case, dotted names and calls,
+file-like tokens, backticked names) is not that action. Kebab-case and
+slash-joined words (force-push, commit/push) remain prose. Risk stems are never
+loosened and additionally match camelCase parts (userAuth -> auth).
 """
 
 from __future__ import annotations
@@ -132,6 +137,66 @@ def _fold(text):
 def _words(text):
     """Unicode letters/digits, split at punctuation (including underscores)."""
     return _WORD.findall(_fold(text))
+
+
+# Not a word: separates prose runs so a multiword stem cannot span an identifier.
+_IDENTIFIER = "\0identifier"
+# Markdown emphasis (_word_, *word*) is prose; only inner underscores count.
+_EDGE = "\"'`’‘“”()[]{}<>,;:!?.…_*"
+# Kebab-case and slash-joined words (force-push, commit/push) stay prose: only
+# snake_case, dotted names/file extensions and anchored paths hide a stem.
+_IDENTIFIER_SHAPE = re.compile(r"_|[^\W_]\.[^\W_]|^(?:\.{1,2}/|/|~/)", re.UNICODE)
+_CALL = re.compile(r"[^\W_]\(", re.UNICODE)
+
+
+def _visible(text):
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+
+
+def _camel(chunk):
+    """lower->upper inside a chunk (sendEmail, PushNotifier, userAuth).
+
+    Upper-then-lower alone is prose: PUSHsuffix, APIs and PRs stay words.
+    """
+    return any((a.islower() or a.isdigit()) and b.isupper() for a, b in zip(chunk, chunk[1:]))
+
+
+def _prose_words(task):
+    """Words from plain prose only; each identifier becomes one separator token.
+
+    Case is read before folding (camelCase needs it). A backticked name with
+    no whitespace is an identifier as a whole; backticked text with spaces is a
+    command line (`git push origin`), whose plain words still count. An
+    unbalanced backtick leaves the rest as prose.
+    """
+    tokens = []
+    for index, part in enumerate(re.split(r"`([^`]*)`", _visible(task))):
+        if index % 2:
+            # Either way the quoted span never joins the surrounding prose.
+            tokens.append(_IDENTIFIER)
+            if not any(c.isspace() for c in part):
+                continue
+        for chunk in part.split():
+            core = chunk.strip(_EDGE)
+            if core and (_IDENTIFIER_SHAPE.search(core) or _CALL.search(chunk) or _camel(core)):
+                tokens.append(_IDENTIFIER)
+            else:
+                tokens.extend(_words(chunk))
+    return tokens
+
+
+def _camel_words(task):
+    """Words with camelCase parts split, used only to add risk matches."""
+    text = _visible(task)
+    split = []
+    for i, c in enumerate(text):
+        after = text[i + 1] if i + 1 < len(text) else " "
+        if i and c.isupper() and (text[i - 1].islower() or text[i - 1].isdigit()
+                                  or text[i - 1].isupper() and after.islower()):
+            split.append(" ")
+        split.append(c)
+    return _words("".join(split))
 
 
 _FAST_SUFFIXES = frozenset(_fold(s) for s in _FAST_SUFFIX_TEXT.split())
@@ -371,14 +436,16 @@ def classify(task: str, files: Sequence[str] | None,
     tokens = _words(task)
     if any(_mixed_script(token) for token in tokens):
         signal("mixed_script", "Latin with Cyrillic/Greek")
+    camel_tokens = _camel_words(task)
     for stem in set(_RISK_WORDS + risk_map.risky_words):
-        if _contains(tokens, stem):
+        if _contains(tokens, stem) or _contains(camel_tokens, stem):
             signal("risk_word", stem)
+    prose = _prose_words(task)
     for stem in _DESTRUCTIVE:
-        if _contains(tokens, stem):
+        if _contains(prose, stem):
             signal("destructive", stem)
     for stem in _OUTWARD:
-        if _contains(tokens, stem):
+        if _contains(prose, stem):
             signal("outward_action", stem)
     # SQL UPDATE may put a table name and other tokens before SET.
     if any(token.startswith("update") for token in tokens):

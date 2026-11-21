@@ -742,3 +742,101 @@ class RiskMapTests(GitFixture):
         result = classify_repo(str(self.main), "Fix README.md")
         self.assertEqual(result.lane, "standard")
         self.assertIn("risk_map_invalid", {s.id for s in result.signals})
+
+
+class IdentifierVerbTests(unittest.TestCase):
+    """T47e: an action stem inside an identifier is not that action."""
+
+    def ids(self, task, files=None):
+        return {(s.id, s.detail) for s in classify(task, files).signals
+                if s.id in ("outward_action", "destructive", "risk_word")}
+
+    def test_real_t47_goal_is_not_an_outward_commit(self):
+        result = classify("Count Turkish fix keywords in history fix_commits", None)
+        self.assertNotIn("outward_action", {s.id for s in result.signals})
+        self.assertNotEqual(result.lane, "risky")
+
+    def test_identifier_forms_do_not_signal_actions(self):
+        cases = {
+            "snake_case": ["fix_commits", "send_email_count", "rm_cache", "delete_marker"],
+            "camelCase": ["sendEmail", "commitCount", "userPush", "deleteRows"],
+            "PascalCase": ["PushNotifier", "CommitGraph", "MailerService", "RemoveFilter"],
+            "dotted": ["git.commit_count", "mailer.send", "obj.delete", "config.push"],
+            "call": ["git.commit_count()", "commit()", "send(message)", "delete()."],
+            "path": ["src/push/x.py", "docs/commit/notes.md", "./push", "../deploy/run",
+                     "/usr/bin/send", "~/mail/inbox"],
+            "file name": ["mailer.py", "commit.txt", "send.js", "delete.rs"],
+            "backticks": ["`commit`", "`send`", "`fix_commits`", "`delete`"],
+        }
+        for form, names in cases.items():
+            for name in names:
+                for task in ("Count " + name + " values", "Rename " + name + ".", "(" + name + ") düzelt"):
+                    with self.subTest(form=form, task=task):
+                        found = {s for s in self.ids(task) if s[0] in ("outward_action", "destructive")}
+                        self.assertEqual(found, set())
+
+    def test_prose_forms_still_signal_actions(self):
+        cases = [
+            ("commit the change", ("outward_action", "commit")),
+            ("Commit, then push.", ("outward_action", "push")),
+            ("send an email", ("outward_action", "send")),
+            ("send an email", ("outward_action", "email")),
+            ("(send an email)", ("outward_action", "send")),
+            ("Değişikliği gönder", ("outward_action", "gönder")),
+            ("commit'leri birleştir", ("outward_action", "commit")),
+            ("PUSH it", ("outward_action", "push")),
+            ("_push_ it", ("outward_action", "push")),
+            ("delete the old notes", ("destructive", "delete")),
+            ("delete from users", ("outward_action", "delete from")),
+            ("docker push image", ("outward_action", "docker push")),
+            ("rm -rf build", ("destructive", "rm")),
+            ("fix_commits then commit", ("outward_action", "commit")),
+            ("mailer.py and send it", ("outward_action", "send")),
+            # A backticked command line keeps its plain words.
+            ("run `git push origin`", ("outward_action", "push")),
+        ]
+        for task, expected in cases:
+            with self.subTest(task=task):
+                self.assertIn(expected, self.ids(task))
+                if expected[0] == "outward_action":
+                    self.assertEqual(classify(task, None).lane, "risky")
+
+    def test_kebab_and_slash_joined_words_remain_prose(self):
+        cases = [
+            ("force-push to main", ("outward_action", "push")),
+            ("hard-delete old rows", ("destructive", "delete")),
+            ("commit/push the changes", ("outward_action", "commit")),
+            ("commit/push the changes", ("outward_action", "push")),
+            ("re-deploy the service", ("outward_action", "deploy")),
+            ("run pre-commit hooks", ("outward_action", "commit")),
+            ("send-email now", ("outward_action", "send")),
+            ("remove-dupes in notes", ("destructive", "remove")),
+            ("push/pull the branch", ("outward_action", "push")),
+            ("rename publish-date", ("outward_action", "publish")),
+            ("tools/mail/x", ("outward_action", "mail")),
+        ]
+        for task, expected in cases:
+            with self.subTest(task=task):
+                self.assertIn(expected, self.ids(task))
+                if expected[0] == "outward_action":
+                    self.assertEqual(classify(task, None).lane, "risky")
+
+    def test_multiword_stems_do_not_span_an_identifier(self):
+        self.assertNotIn(("outward_action", "docker push"), self.ids("docker push_count"))
+        self.assertNotIn(("outward_action", "delete from"), self.ids("delete from_cache"))
+        self.assertNotIn(("outward_action", "docker push"), self.ids("docker `x` push"))
+
+    def test_risk_stems_inside_identifiers_still_signal(self):
+        for task, stem in [("fix api_key_loader", "api_key"), ("fix payment_service", "payment"),
+                           ("fix `auth_token`", "auth"), ("update src/billing/x.py", "billing"),
+                           ("fix userAuth", "auth"), ("fix UserAuth flow", "auth"),
+                           ("rename getPassword()", "password"), ("load APIKey", "api_key"),
+                           ("check customerData.py", "customer"), ("fix secret-store", "secret")]:
+            with self.subTest(task=task):
+                self.assertIn(("risk_word", stem), self.ids(task))
+                self.assertEqual(classify(task, None).lane, "risky")
+
+    def test_camel_risk_split_with_repository_files(self):
+        result = classify("Fix userAuth in README.md", TREE)
+        self.assertIn(Signal("risk_word", "auth"), result.signals)
+        self.assertEqual(result.lane, "risky")
