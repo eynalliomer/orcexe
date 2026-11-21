@@ -1,4 +1,63 @@
-## T1 — `state_dir_in_repository` is reported by `map` and `plan`
+## 0.2.0 — 2026-11-21 (local; not tagged, not published)
+
+Existing projects: `intake`, `slop`, `history`, `map` (one read-only manager call), at most four
+questions, `plan` with content-bound approval, and standard-lane `task` / `plan --run` with
+contract.lite, an isolated gate copy, L0 checks and a cross-family L1 evaluator. Known gaps: CI has
+not run (no push), the review profile and L1 have not run with real tools, the default suite takes
+about 75 s instead of 60 s. See the v0.2 closure review for open P2 items.
+
+### T48b — the macOS gate sandbox cannot start processes outside itself
+
+- L2 review T48 (P2-1, raised to P1 by a main-session test): the Seatbelt profile was
+  `(allow default)` with only file-write and network denies, so gate-run project code
+  could call `/usr/bin/open -a <App>` and LaunchServices started the app outside the
+  sandbox (measured with TextEdit). Such an app (for example Terminal running a
+  `.command` file) could write anywhere, including orcexe state, after the step ended.
+- `isolation.profile` now adds `(deny lsopen)` and `(deny appleevent-send)`. The rest
+  of the profile is unchanged (still `(allow default)`); git, Python, subprocesses and
+  writes inside the checkout/step temp keep working.
+- Tests: `tests/unit/test_isolation.py` checks that the generated profile contains both
+  denies. `tests/slow/test_isolation.py` (opt-in: `--slow` / `ORCEXE_SLOW_TESTS=1`, because
+  its control run launches an app outside any sandbox and registers it with LaunchServices)
+  runs `/usr/bin/open` on a throwaway background-only probe bundle inside the real profile:
+  the probe writes a marker outside the writable directories and exits, an unsandboxed
+  control launch proves the host can start it, and the sandboxed open must fail with no
+  marker. Skipped when `sandbox-exec` or LaunchServices launching is unavailable. Both
+  tests fail without the denies.
+- README: the "children and daemons inherit the policy" claim is replaced with what is
+  enforced on macOS and Linux; a mach-lookup allow-list and `bwrap --unshare-all` are
+  planned for v0.3.
+
+### T48a — the L1 verdict is read only from output that cannot carry a second verdict
+
+- L2 review T48 (P1): T47g let `mapping.parse_json_output` accept prose around one
+  ```` ```json ```` fence and ignore the prose, and the L1 evaluator used the same
+  parser. An evaluator that quoted a passing ```` ```json ```` rubric from the
+  executor-controlled diff and wrote its real, failing verdict as bare JSON outside
+  the fence had the quoted block read as the verdict, so the task could reach
+  `accepted`.
+- New `mapping.parse_strict_json_output`, used only by `task_l1.parse_rubric`. Valid
+  output is a bare object (the whole stripped reply) or exactly one ```` ```json ````
+  fence starting at column 0 and closed by a bare ```` ``` ````, where the text before
+  it has no `{` or `}`, no line anywhere is fence-like besides the two fence lines
+  (```` ``` ```` or `~~~` after any indentation or `>` blockquote markers), and only
+  whitespace follows the closing fence. One plain sentence before the fence stays
+  valid. Anything else is `l1_invalid`, so the task stays `gate_passed`; there is
+  no retry, as for other invalid rubrics.
+- Every rubric rule is unchanged: closed schema, byte-for-byte `d1..dN` IDs,
+  `overall_pass == all(pass)`, reason caps and the same-model refusal.
+- Manager output (`map`, incremental `map`, `plan`) keeps the T47g tolerance;
+  `parse_json_output` is unchanged and its results still pass human approval.
+- Tests: `tests/unit/test_task_l1.py` covers a quoted fence with a bare verdict
+  before or after it, a verdict in a `~~~json` fence, indented and blockquoted
+  quoted fences, an indented real fence, prose after the closing fence, braces in
+  the prose, an extra fence line, the still-valid intro sentence + fence and bare
+  object, the unchanged manager parser on the same input, and an end-to-end task
+  whose evaluator smuggles a passing block beside a failing verdict and ends
+  `gate_passed` / `l1_invalid`. Both new tests fail against the old parser.
+- README: evaluator output is strict, manager output tolerant.
+
+### T47 (landed by orcexe as plan task T1) — `state_dir_in_repository` is reported by `map` and `plan`
 
 - `mapping.manager_run` already refused an `ORCEXE_STATE_DIR` that resolves inside the
   repository or its main worktree, before creating any state directory or calling the
@@ -17,12 +76,10 @@
   state dir under the repository, a nested one and the repository root itself, each
   asserting the exact exit code and stderr, an empty stdout, no model call and no
   state written inside the repository.
-- Validation: not run in this session. The authoring sandbox had no shell, so the new
-  tests, the default suite (test and module counts, skips), the Python version and
-  `scripts/check_marketplace.py` were not executed; the numbers must be filled in by
-  the gate run before this entry is final.
+- Validation (gate run by the main session after landing): default runner passed 920
+  tests, 0 failures.
 
-## T47g — manager output tolerates prose around one JSON fence
+### T47g — manager output tolerates prose around one JSON fence
 
 - A real incremental `orcexe map` reply put one sentence and a blank line before a
   single ```` ```json ```` block holding a valid map; the strict parser rejected it as
@@ -39,7 +96,7 @@
 - The map brief (full and incremental) and the plan brief now say the reply must be
   the JSON object only, with no text before or after it.
 
-## T47f — the default suite passes in a checkout without `.git`
+### T47f — the default suite passes in a checkout without `.git`
 
 - Gate checks run in a plain file checkout of the candidate tree, which has no
   `.git`. orcexe's own default suite errored there in
@@ -58,7 +115,7 @@
 - README gate section: gate checkouts have no `.git`; project checks must not
   depend on it.
 
-## T47e — approval refuses lanes this version cannot run; verbs inside identifiers are not actions
+### T47e — approval refuses lanes this version cannot run; verbs inside identifiers are not actions
 
 - `plan --approve` refuses a plan in which any task's final lane is not supported
   by this version (only `fast` and `standard` run): exit 2,
@@ -91,7 +148,7 @@
   note binding and legacy plans; identifier forms, prose forms, multiword spans
   and risk stems inside identifiers.
 
-## T47d — retries gated on the cumulative tree; throughput budgets leave the default suite
+### T47d — retries gated on the cumulative tree; throughput budgets leave the default suite
 
 - Standard and fast task gates no longer fail a retry (an attempt after the first
   in the same worktree) on the executor's per-attempt `empty_diff` warning alone.
@@ -112,7 +169,7 @@
   fast), empty first attempts, never-changed trees, retries that break the tree,
   the timeout detail and an invalid `retry` argument.
 
-## T47c — literal-only constant assertions
+### T47c — literal-only constant assertions
 
 - Parse JS/TS and Swift assertion arguments as literal expressions, retaining
   constant containers and rejecting calls (including masked local helpers),
@@ -126,7 +183,7 @@
   modules (23 skips); focused assertion/slop/L0 and stdlib checks passed 68 tests
   (1 skip). Python 3.9 syntax and diff whitespace checks passed.
 
-## T47b — assertion gate regressions
+### T47b — assertion gate regressions
 
 - Recognize Swift Testing `Issue.record` and XCTest `XCTUnwrap`; follow Swift
   local, method, extension and test-support helpers up to three calls, without
@@ -143,7 +200,7 @@
   modules (23 skips); focused assertion/slop/L0 tests passed 65 tests (1 skip).
   Stdlib-only checks and Python 3.9 syntax validation passed.
 
-## T47a — assertion, dead-code and dependency precision
+### T47a — assertion, dead-code and dependency precision
 
 - Share slop's assertion detector with L0 assertion/hollow checks; recognize
   raise/throw-style checks, Deno std assertions, receiver-independent assertion
@@ -159,7 +216,7 @@
   (23 skips); extended L0 passed 8 tests. The first CPU-count worker run hit an
   unrelated doctor timeout-budget assertion; it passed with reduced concurrency.
 
-## T46 — v0.2 security, documentation and suite speed (C23, C25)
+### T46 — v0.2 security, documentation and suite speed (C23, C25)
 
 - Inventory every subprocess-layer caller, including shared manager, evaluator,
   task/plan execution and project gate/L0/red-first paths. Observe real fake-child
@@ -190,7 +247,7 @@
   normalize the discovery start path along with its top-level path. Add a real
   worker proof that --slow propagates. No product-source change was needed.
 
-## T45 — bounded fast-lane vocabulary (K6)
+### T45 — bounded fast-lane vocabulary (K6)
 
 - Add four bilingual documentation intents: update a document, add an example,
   fix a source docstring and clarify a document; accept bare or backtick targets.
@@ -200,14 +257,14 @@
 - Document every fast form in README/SKILL and add bilingual positive and
   adversarial regressions without changing existing classifier tests.
 
-## T44b — regenerate current-state with all human blocks
+### T44b — regenerate current-state with all human blocks
 
 - Always refresh current-state.md, preserving every human block in order after
   the generated summary, including user-added blocks and malformed tails.
 - Save outside-block edits once in private current-state.previous.md and report
   the backup; avoid proposals and duplicated generated summaries.
 
-## T44 — incremental maps and preserved human context
+### T44 — incremental maps and preserved human context
 
 - Update maps incrementally from ancestor intake_sha using changed-file-only
   manager copies; retain omitted entries and recheck evidence at HEAD. Add
@@ -218,7 +275,7 @@
 - Maintain current-state.md from CLI map/plan/ledger/ref data across map, plan,
   task and plan runs, preserving its delimited human block verbatim.
 
-## T43 — stacked, resumable plan execution
+### T43 — stacked, resumable plan execution
 
 - Add `orcexe plan --run PLAN_ID [--resume]`: sequential deterministic dependency
   ordering through the existing task gates, transitive failure blocking, risky
@@ -230,7 +287,7 @@
 - Add read-only, ledger-derived `orcexe status --json` and private atomic
   `.orcexe/status.md`, with task outcomes and a manual integration land command.
 
-## T42d — gate isolation and stronger L0
+### T42d — gate isolation and stronger L0
 
 - Run all task/do project checks and L0 base/red-first steps with Seatbelt on
   macOS or bwrap on Linux; writable checkout/temp only, outbound network denied.
@@ -244,7 +301,7 @@
 - Document known-weak red evidence from imports of new symbols; add regressions
   for isolation policy, tamper, no-sandbox execution, count spoofing and L0 forms.
 
-## 0.1.0 — 2026-11-18 (local tag; not published)
+### T34–T42c — intake, slop, history, map, questions, plan, standard task
 
 - Share repository risk areas across planning, gate checks and escalation; judge any-depth plan risks by concrete paths, reject standard risk touches immediately with `risk_path_touched`, and reject non-documentation standard/risky plans without an L0 test path (`no_test_path`).
 - Complete standard `task` acceptance with L0 test-count, added skip, test-change and red-first checks; independent read-only L1 evaluation with strict ordered rubric IDs, fail feedback, shared retry budget and content-free ledger verdicts.
@@ -258,9 +315,6 @@
 - Add `orcexe map`: one read-only manager call over HEAD evidence, strict manager JSON validation, evidence-checked project maps, hotspot coverage, private capped history/direction reports, and offline fake-CLI proofs. Project commands remain unverified.
 - Restrict map managers to Claude with command/web tools denied; isolate briefs in external state, omit nested agent instructions, normalize repository roots, publish all four outputs through one generation swap, and harden rendering, hotspot globs, cancellation and HEAD checks.
 - Give map and plan a dedicated Claude manager profile with measured restricted/safe-mode isolation and a Read/Glob/Grep allow-list; normalize customization names with NFC/casefold, restore identity redaction, bound protective glob processing, and retain snapshots across rollback failures. Clean stale publication artifacts, suppress invisible prose/autolinks, handle SIGHUP/SIGQUIT, and classify discovery write failures correctly.
-
-Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), updated review restrictions await a real-tool recheck, native Windows is unverified.
-
 - Deny Claude review Bash/WebFetch/WebSearch explicitly (plan mode alone permits Bash); pin all three tools' review argv and document their differing limits.
 - Give map managers named 900-second timeout/300-second stall budgets, distinguish unavailable reasons without changing exit 2, require file-reading tools in the brief, and compact evidence into counts plus at most three deduplicated examples per section.
 - Harden gate checkouts using raw committed blobs; refuse committed symlinks escaping the copy, including through the linked `node_modules`.
@@ -268,6 +322,11 @@ Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Cla
 - Resolve asserting test helpers to depth three and mark conditional skips advisory in `slop`, retaining product-only fake tests and unconditional skip signals.
 - Add model-free `slop` scanning of committed Python/JS/TS and selected Swift signals, private atomic JSON/Markdown reports, advisory unused exports, dependency checks and prioritized fix lanes; reuse intake's bounded reader and safety controls.
 - Add internal model-free `intake` discovery from bounded committed Git blobs, private U1 JSON, opaque instruction fingerprints, candidate commands and declaration-only security evidence; never fetch secret paths or execute project code.
+
+## 0.1.0 — 2026-11-18 (local tag; not published)
+
+Walking skeleton: `orcexe do` runs one fast-lane task end to end with Codex, Claude Code or Cursor in an isolated worktree, gates it with the project's own checks and leaves landing to the human. Known gaps: CI has not run yet (no push), the review profile was not run against the real tools, native Windows is unverified.
+
 - Report doctor's configured per-probe timeout budget even when the shared total deadline leaves less execution time.
 - Give the manual-run integration fake's Cursor model preflight a scaled setup budget; retain early-exit stdout/stderr diagnostics before signal handshakes.
 - Freeze gate commands and classifier config before executor dispatch; detect main `.orcexe` config byte changes.

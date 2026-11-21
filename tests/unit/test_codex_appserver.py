@@ -135,7 +135,7 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual([r["method"] for r in requests],
                          ["initialize", "initialized", "account/read", "model/list"])
         self.assertEqual([r["id"] for r in requests if "id" in r], [0, 1, 2])
-        self.assertEqual(requests[0]["params"]["clientInfo"], {"name": "orcexe", "version": "0.1.0"})
+        self.assertEqual(requests[0]["params"]["clientInfo"], {"name": "orcexe", "version": json.loads((Path(__file__).resolve().parents[2] / "plugins" / "orcexe" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]})
         self.assert_closed(session)
         session.close()
 

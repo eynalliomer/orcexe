@@ -2,6 +2,8 @@
 
 Only checkout and fresh command scratch are writable. A missing backend is
 explicit evidence, never permission to accept. Child processes inherit policy.
+On macOS, LaunchServices opens and Apple events are denied because an app they
+start runs outside the profile (T48b); wider IPC confinement is planned for v0.3.
 """
 
 from contextvars import ContextVar
@@ -59,7 +61,11 @@ def _quote(path):
 
 def profile(checkout, temporary):
     return ('(version 1)\n(allow default)\n(deny file-write*)\n'
-            '(deny network-outbound)\n(allow file-write* (subpath ' + _quote(checkout)
+            '(deny network-outbound)\n'
+            # LaunchServices (`open`) and Apple events start or drive processes
+            # outside this profile, which would escape the write policy (T48b).
+            '(deny lsopen)\n(deny appleevent-send)\n'
+            '(allow file-write* (subpath ' + _quote(checkout)
             + ') (subpath ' + _quote(temporary) + ')\n'
             ' (literal "/dev/null") (literal "/dev/tty")'
             ' (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n')

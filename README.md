@@ -4,7 +4,7 @@ orcexe is an open-source Python CLI and Claude Code plugin that orchestrates AI 
 It uses only the Python standard library and supports Python 3.9 and later.
 orcexe has no telemetry.
 
-Status: **v0.1.0 walking skeleton** (local tag, not published). See `CHANGELOG.md` for known gaps.
+Status: **v0.2.0** (local, not published): existing-project map, plan and standard lane. See `CHANGELOG.md` for known gaps.
 
 ## v0.2 flow
 
@@ -32,7 +32,9 @@ Candidate gate checks, L0 baseline counts and red-first checks each get a fresh
 temp HOME and scratch directory. macOS uses Seatbelt (`sandbox-exec`); Linux uses
 bubblewrap (`bwrap`) with a read-only root, writable checkout/scratch and private
 network. Sandboxed project steps have network off and cannot write outside the
-checkout and their temporary scratch/HOME. Descendants inherit the policy.
+checkout and their temporary scratch/HOME. Descendant processes inherit the
+policy; on macOS the profile also refuses LaunchServices opens and Apple events,
+so a step cannot start an app outside it (see below for the exact limits).
 On other systems, or when sandbox creation is denied, steps still run with a
 temp HOME but without OS confinement: `isolation_unavailable` prevents acceptance
 (`task`: `gate_passed`, exit 0; `do`: `unverified`, exit 1). The reports record
@@ -343,6 +345,11 @@ file is saved once as private (0600) `current-state.previous.md`, reported as
 `current_state_previous_saved`. Current-state never uses `human_edit_kept` or
 proposals. Foreign symlink targets are refused.
 
+Manager output (`map`, incremental `map` and `plan`) is tolerant in form: a bare
+JSON object, or exactly one ```` ```json ```` fence with prose before or after it that is
+ignored, never parsed. Its results still pass human approval. The L1 evaluator
+output is strict (see the task section).
+
 Strict manager JSON is checked against HEAD evidence before writing private,
 atomic (0600) `.orcexe/project-map.json`, `project-map.md`, `history.md`, and
 `direction.md`. Unresolved claims are dropped and counted; uncovered U2 hotspots
@@ -628,8 +635,14 @@ red-first reruns, uses a fresh sandbox and temp directory. On macOS, Seatbelt
 (`/usr/bin/sandbox-exec`) allows writes only to that checkout, the step temp and
 runner device files, and denies outbound network. Profile paths are canonical and
 escaped. Linux uses `bwrap` with a read-only root, writable checkout/temp and private
-network. Children and daemons inherit the policy; symlinks cannot grant outside
-writes. `TMPDIR`/`TEMP`/`TMP` point to the fresh step temp. A denied write fails the
+network. Processes a step forks or execs inherit the policy; symlinks cannot grant
+outside writes. On macOS the profile also denies LaunchServices opens (`lsopen`,
+for example `/usr/bin/open -a App`) and sending Apple events (`appleevent-send`),
+because an app started that way runs outside the sandbox; the rest of the profile
+is `(allow default)`, so other mach/XPC services stay reachable. On Linux, `bwrap`
+unshares only the network namespace; other IPC with the host is not restricted.
+A narrower IPC policy (a macOS mach-lookup allow-list, `bwrap --unshare-all`) is
+planned for v0.3. `TMPDIR`/`TEMP`/`TMP` point to the fresh step temp. A denied write fails the
 project check normally, with `write outside checkout denied` in feedback.
 
 If a backend is missing or the host refuses sandbox creation, steps still run, but
@@ -671,7 +684,13 @@ L1 routes an evaluator from one access snapshot, denying the executor's model,
 preferring another family, and excluding Cursor. Claude uses `manager`; Codex
 uses `review` (`-s read-only`), in a fresh candidate copy. It returns strict
 `orcexe.rubric.v1`: exact ordered `d1..dN` IDs for the done criteria, boolean
-pass values, bounded reasons and `overall_pass == all(pass)`. The CLI accepts
+pass values, bounded reasons and `overall_pass == all(pass)`. The evaluator output
+is parsed strictly, unlike manager output: either the whole reply is one bare JSON
+object, or it is exactly one ```` ```json ```` fence, optionally after plain prose that
+holds no `{` or `}` and no fence-like line (```` ``` ```` or `~~~` after indentation or
+`>` blockquote markers), with only whitespace after the closing fence. Anything else
+is `l1_invalid`, so a rubric block quoted from the diff cannot stand in for the
+verdict. The CLI accepts
 only when every criterion passes. Missing access/runtime failure leaves
 `gate_passed` with `l1_unavailable`; invalid output leaves `gate_passed` with
 `l1_invalid`, without retries. Ledger `l0.passed|l0.failed` events include check

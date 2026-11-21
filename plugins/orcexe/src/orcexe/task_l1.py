@@ -35,8 +35,12 @@ def select_evaluator(executor, adapters):
 
 
 def parse_rubric(text, done):
-    """IDs stay byte-for-byte as returned: no stripping, folding or remapping."""
-    value = mapping.parse_json_output(text)
+    """IDs stay byte-for-byte as returned: no stripping, folding or remapping.
+
+    Parsed strictly: the diff is executor-controlled, so a quoted rubric block must not
+    stand in for a verdict written elsewhere in the reply.
+    """
+    value = mapping.parse_strict_json_output(text)
     invalid = mapping.ManagerOutputInvalid
     if (not isinstance(value, dict) or set(value) != {'schema', 'criteria', 'overall_pass'}
             or value['schema'] != 'orcexe.rubric.v1'):

@@ -32,6 +32,14 @@ class IsolationTests(unittest.TestCase):
             if sys.platform == 'darwin':
                 self.assertIn('/private/var/', isolation.profile('/var/tmp/checkout', '/var/tmp/scratch'))
 
+    def test_profile_denies_launchservices_and_apple_events(self):
+        # An app started through LaunchServices or driven by Apple events runs
+        # outside the profile and could write anywhere after the step (T48b).
+        policy = isolation.profile('/var/tmp/checkout', '/var/tmp/scratch')
+        self.assertIn('(deny lsopen)', policy)
+        self.assertIn('(deny appleevent-send)', policy)
+        self.assertIn('(allow default)', policy)
+
     def test_real_sandbox_denies_outside_writes_including_children_and_symlinks(self):
         if isolation.backend() == 'none':
             self.skipTest('OS sandbox unavailable (missing backend or host denies sandbox creation)')

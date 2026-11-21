@@ -96,7 +96,9 @@ CONTRACT = {
 
 
 def parse_json_output(text):
-    """A bare object, or exactly one ```json fence; prose around the fence is ignored, never parsed.
+    """Manager replies (map, plan): a bare object, or exactly one ```json fence; prose around it is ignored.
+
+    The L1 evaluator does not use this tolerant form; see parse_strict_json_output.
 
     Fence lines are lines that start (after indentation) with three backticks. JSON cannot put
     a backtick at the start of a line, so lines inside a valid object are never fence lines.
@@ -111,6 +113,36 @@ def parse_json_output(text):
         fences = [i for i, line in enumerate(lines) if line.lstrip().startswith('```')]
         if (len(fences) != 2 or lines[fences[0]].strip() != '```json'
                 or lines[fences[1]].strip() != '```'):
+            raise ManagerOutputInvalid('output', 'invalid_json')
+        text = '\n'.join(lines[fences[0] + 1:fences[1]])
+    try:
+        return intake._json(text)
+    except (ValueError, RecursionError):
+        raise ManagerOutputInvalid('output', 'invalid_json')
+
+
+_FENCE_LIKE = re.compile(r'[\s>]*(```|~~~)')
+
+
+def parse_strict_json_output(text):
+    """The L1 evaluator reply: a bare object, or one ```json fence with no other JSON-like text.
+
+    Prose may only precede the fence and must hold no brace and no fence-like line (``` or ~~~
+    after indentation or blockquote markers); only whitespace may follow the closing fence. A
+    quoted rubric block can therefore never sit beside a second verdict that is ignored.
+    """
+    if not isinstance(text, str):
+        raise ManagerOutputInvalid('output', 'expected_string')
+    if len(text.encode('utf-8')) > OUTPUT_CAP:
+        raise ManagerOutputInvalid('output', 'too_long', len(text.encode('utf-8')), OUTPUT_CAP)
+    text = text.strip()
+    if not text.startswith('{'):
+        lines = text.split('\n')
+        fences = [i for i, line in enumerate(lines) if _FENCE_LIKE.match(line)]
+        if (len(fences) != 2 or lines[fences[0]].rstrip() != '```json'
+                or lines[fences[1]].rstrip() != '```'
+                or any(c in line for line in lines[:fences[0]] for c in '{}')
+                or any(line.strip() for line in lines[fences[1] + 1:])):
             raise ManagerOutputInvalid('output', 'invalid_json')
         text = '\n'.join(lines[fences[0] + 1:fences[1]])
     try:
