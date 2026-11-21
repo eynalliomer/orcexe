@@ -8,12 +8,10 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
-import time
-from unittest import mock, skipUnless
+from unittest import mock
 
 from orcexe import cli, intake, slop
-from tests.unit.test_gitutil import GitFixture, ROOT
-from tests.unit._timing import scaled
+from tests.unit.test_gitutil import GitFixture
 from tests.security import capture_children
 
 
@@ -526,14 +524,6 @@ import missing from 'undeclared';
         self.assertNotIn('/home/private', finding['evidence'])
         self.assertNotIn('<script>', slop._markdown(report))
         self.assertNotIn('[link]', slop._markdown(report))
-
-    @skipUnless(os.environ.get('ORCEXE_SLOW_TESTS') == '1',
-                'wall-clock scan budget requires ORCEXE_SLOW_TESTS=1')
-    def test_repository_scan_wall_clock_budget(self):
-        started = time.monotonic()
-        report = slop.scan(ROOT)[1]
-        self.assertLess(time.monotonic() - started, scaled(10))
-        self.assertLess(report['meta']['duration_ms'], scaled(10000))
 
     def test_subdirectory_scope_and_only_git_children(self):
         self.commit({'a.py': '# noqa\n', 'nested/b.py': '# noqa\n',

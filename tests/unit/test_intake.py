@@ -11,11 +11,9 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
-import time
-from unittest import mock, skipUnless
+from unittest import mock
 
-from tests.unit.test_gitutil import GitFixture, ROOT
-from tests.unit._timing import scaled
+from tests.unit.test_gitutil import GitFixture
 from tests.security import capture_children
 from tests.security.test_no_pii_in_outputs import pii_canaries, PRIVATE_KEYS
 from orcexe import cli, intake, proc
@@ -461,10 +459,3 @@ class IntakeTests(GitFixture):
         for value in ('user@example.invalid', '/home/private', '/Users/private'):
             self.assertNotIn(value.encode(), raw)
 
-    @skipUnless(os.environ.get('ORCEXE_SLOW_TESTS') == '1',
-                'wall-clock scan budget requires ORCEXE_SLOW_TESTS=1')
-    def test_repository_scan_wall_clock_budget(self):
-        started = time.monotonic()
-        report = intake.scan(ROOT)[1]
-        self.assertLess(time.monotonic() - started, scaled(10))
-        self.assertLess(report['meta']['duration_ms'], scaled(10000))

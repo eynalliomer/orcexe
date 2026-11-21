@@ -8,8 +8,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 
+from orcexe import intake
 from tests.unit._timing import scaled
 from tests.unit.test_gitutil import ROOT
 from tests.unit.test_intake import IntakeTests
@@ -40,8 +42,16 @@ class SlowIntakeTests(IntakeTests):
             self.skipTest('scan/import verified; child CPU budget requires POSIX resource accounting')
         self.assertLess(cpu_seconds, scaled(10))
 
+    def test_repository_scan_wall_clock_budget(self):
+        started = time.monotonic()
+        report = intake.scan(ROOT)[1]
+        self.assertLess(time.monotonic() - started, scaled(10))
+        self.assertLess(report['meta']['duration_ms'], scaled(10000))
+
 
 def load_tests(loader, standard_tests, pattern):
     if os.environ.get("ORCEXE_SLOW_TESTS") != "1":
         return unittest.TestSuite()
-    return unittest.TestSuite([SlowIntakeTests('test_this_repository_budget')])
+    return unittest.TestSuite([SlowIntakeTests(name) for name in
+                               ('test_this_repository_budget',
+                                'test_repository_scan_wall_clock_budget')])

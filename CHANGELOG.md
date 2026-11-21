@@ -1,3 +1,22 @@
+## T47f — the default suite passes in a checkout without `.git`
+
+- Gate checks run in a plain file checkout of the candidate tree, which has no
+  `.git`. orcexe's own default suite errored there in
+  `test_history.test_repository_child_cpu_and_python39_import`, which scans this
+  repository with git.
+- That CPU/import budget and the opt-in history wall budget moved to
+  `tests/slow/test_history.py` (slow-only subclass, same assertions with
+  `scaled()`). The opt-in repository wall-clock scans of `slop` and `intake` moved
+  from the unit modules into `tests/slow/test_slop.py` and `tests/slow/test_intake.py`,
+  so the default suite no longer collects any test that reads this repository's git.
+- New `tests/unit/test_default_suite_no_git.py` runs no git: it discovers the default
+  suite with child processes forbidden and statically rejects any collected test (or
+  a same-class helper it calls) that runs a child with this repository's root as `cwd`,
+  hands that root to a git-backed orcexe module, or joins it with `.git`. A self-check
+  confirms it flags the scans kept in `tests/slow/`.
+- README gate section: gate checkouts have no `.git`; project checks must not
+  depend on it.
+
 ## T47e — approval refuses lanes this version cannot run; verbs inside identifiers are not actions
 
 - `plan --approve` refuses a plan in which any task's final lane is not supported

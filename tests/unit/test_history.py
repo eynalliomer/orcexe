@@ -5,13 +5,10 @@ import json
 import os
 from pathlib import Path
 import stat
-import subprocess
 import sys
-import time
-from unittest import mock, skipUnless
+from unittest import mock
 
 from tests.unit.test_gitutil import GitFixture, ROOT
-from tests.unit._timing import scaled
 from tests.security import capture_children
 from orcexe import cli, history, proc
 
@@ -319,21 +316,3 @@ class HistoryTests(GitFixture):
                          [dict(dir='.', changes=1), dict(dir='b', changes=1), dict(dir='z', changes=1)])
         self.commit('2024-06-30')
         self.assertTrue(self.scan()['u3']['docs'][0]['stale'])
-
-    def test_repository_child_cpu_and_python39_import(self):
-        if os.name == 'posix':
-            import resource
-            before = resource.getrusage(resource.RUSAGE_CHILDREN)
-        result = subprocess.run([sys.executable, '-c', 'from orcexe.history import scan; from pathlib import Path; import json; print(json.dumps(scan(Path.cwd())[1]))'],
-                                cwd=ROOT, env=dict(os.environ, PYTHONPATH=str(ROOT / 'plugins/orcexe/src')),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        self.assertEqual(json.loads(result.stdout)['u2']['schema'], 'orcexe.intake.u2.v1')
-        if os.name == 'posix':
-            after = resource.getrusage(resource.RUSAGE_CHILDREN)
-            self.assertLess(after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime, 10)
-
-    @skipUnless(os.environ.get('ORCEXE_SLOW_TESTS') == '1', 'opt-in wall clock budget')
-    def test_wall_budget(self):
-        start = time.monotonic()
-        history.scan(ROOT)
-        self.assertLess(time.monotonic() - start, scaled(10))

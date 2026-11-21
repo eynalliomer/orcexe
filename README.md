@@ -38,6 +38,12 @@ temp HOME but without OS confinement: `isolation_unavailable` prevents acceptanc
 (`task`: `gate_passed`, exit 0; `do`: `unverified`, exit 1). The reports record
 `seatbelt`, `bwrap` or `none`; do not interpret an exit of zero alone as acceptance.
 
+Gate checks run in a plain file checkout of the candidate tree: it has no
+`.git`, so project checks must not depend on the repository's own git metadata
+or history. orcexe's default suite follows this rule (checked by
+`tests/unit/test_default_suite_no_git.py`); budgets that scan this repository's
+history live in `tests/slow/`.
+
 Manager and evaluator copies exclude repository hooks, instructions and tool
 customizations. Claude manager/evaluator children use `--restricted --safe-mode`;
 a Claude **executor** child loads the user's own Claude hooks/plugins. Codex and
