@@ -649,20 +649,6 @@ class ClassifyTests(unittest.TestCase):
         for odd in ("\ud800", "\u0307", "\n", "`", "\0", "\uffff"):
             self.assertIsInstance(classify(odd, [odd]), Classification)
 
-    def test_100000_paths_performance(self):
-        files = ["src/part{}/module{}.py".format(i // 100, i) for i in range(100000)]
-        task = "Fix src/part999/module99999.py " + "small " * 328 + "x" * 3
-        task = task[:2000].ljust(2000)
-        self.assertEqual(len(task), 2000)
-        started = time.process_time()
-        result = classify(task, files)
-        elapsed = time.process_time() - started
-        self.assertEqual(result.lane, "standard")
-        self.assertIn("task_too_long_for_fast", {s.id for s in result.signals})
-        self.assertEqual(classify("Add a docstring to src/part999/module99999.py", files).lane, "fast")
-        self.assertLess(elapsed, scaled(.5))
-        print("classifier 100000-path CPU time: {:.4f}s".format(elapsed))
-
 
 class RiskMapTests(GitFixture):
     def write_map(self, text):

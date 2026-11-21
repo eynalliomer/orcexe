@@ -847,8 +847,9 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
             else:
                 output.append(line + "\n")
 
+        limit = min(timeout, remaining)
         result = isolation.run(list(command.argv), cwd=str(path), env=env,
-                          timeout_s=min(timeout, remaining), stall_s=None,
+                          timeout_s=limit, stall_s=None,
                           on_line=capture, on_stderr_line=capture,
                           kill_grace_s=min(0.1, timeout), max_line_bytes=1048576)
         # Redact complete multiline carriers *before* taking the last 4 KiB.
@@ -868,8 +869,10 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
         if time.monotonic() >= deadline:
             return "fail", command.id + ": total_timeout"
         if result.status != "exited" or result.returncode != 0 or result.pipes_held:
-            return "fail", command.id + ": " + (result.status if result.status != "exited"
-                                                else "exit_nonzero_or_incomplete") + ("; write outside checkout denied"
+            return "fail", command.id + ": " + (
+                "timeout ({:g}s)".format(round(limit, 3)) if result.status == "timeout"
+                else result.status if result.status != "exited"
+                else "exit_nonzero_or_incomplete") + ("; write outside checkout denied"
                     if re.search(r"PermissionError|Operation not permitted|Permission denied|Read-only file system", text, re.I) else "")
         missing = missing or bool(incomplete)
         observations.append(command.id + (": not_seen (log_observation_incomplete)" if incomplete else ": pass"))
@@ -879,8 +882,13 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
 @isolation.guarded
 def gate(*, repo_path, worktree, classification, run_result, run_dir,
          controls_before=None, commands=None, command_timeout_s=600, total_timeout_s=1800,
-         diff_line_limit=50, added_byte_limit=20000) -> dict:
+         diff_line_limit=50, added_byte_limit=20000, retry=False) -> dict:
     """Fail closed, never expose exception text, atomically replace gate.json.
+
+    retry=True marks a later attempt in the same task worktree: the executor's
+    per-attempt empty_diff warning then does not fail run_status, because
+    diff_collect and every later check observe the cumulative tree against
+    the base. `orcexe do` has a single attempt and never passes it.
 
     The caller owns run_dir and must make it writable. No API can persist a
     result to an unwritable/nonexistent device; persistence errors also return
@@ -921,6 +929,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
             _require(type(value) in (int, float) and math.isfinite(value) and value > 0, key)
         _require(type(diff_line_limit) is int and diff_line_limit >= 0, 'diff_line_limit')
         _require(type(added_byte_limit) is int and added_byte_limit >= 0, 'added_byte_limit')
+        _require(type(retry) is bool, 'retry')
         deadline = time.monotonic() + total_timeout_s
         changes, files, versions, verified = [], [], [], {}
         scope_problem = None
@@ -939,7 +948,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                     else:
                         if run_result['status'] != 'completed':
                             status, detail = 'fail', run_result['status']
-                        elif 'empty_diff' in run_result['warnings']:
+                        elif 'empty_diff' in run_result['warnings'] and not retry:
                             status, detail = 'fail', 'empty_diff'
                 elif check == 'controls':
                     if controls_before is None:

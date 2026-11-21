@@ -251,6 +251,84 @@ class TaskTests(TaskFixture):
         self.assertEqual(events.count('attempt.started'), 2)
         self.assertEqual(events.count('gate.failed'), 1)
 
+    def flaky_project_checks(self, failures=1):
+        """The first project-check runs fail as an environmental timeout would."""
+        real, calls = gate_lite._project, []
+        def project(*args, **kwargs):
+            calls.append(args)
+            if len(calls) <= failures:
+                return 'fail', 'unittest: timeout (600s)'
+            return real(*args, **kwargs)
+        return mock.patch.object(gate_lite, '_project', side_effect=project), calls
+
+    def gate_reasons(self):
+        return [r['event'] if r['event'] == 'gate.passed' else (r['event'], r['data']['reason'])
+                for r in self.log().records() if r['event'] in ('gate.passed', 'gate.failed')]
+
+    def ended_empty(self):
+        return ['empty_diff' in r['data']['warnings'] for r in self.log().records(event='attempt.ended')]
+
+    def test_retry_after_project_check_timeout_without_new_edit_is_accepted(self):
+        # Attempt 1 makes the right edit; the check times out. Attempt 2 finds
+        # the work done and changes nothing: the cumulative tree is gated.
+        patch, calls = self.flaky_project_checks()
+        with patch:
+            code, result, _ = self.invoke()
+        self.assertEqual((code, result['state'], result['attempts']), (0, 'gate_passed', 2), result)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.ended_empty(), [False, True])
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'project_checks'), 'gate.passed'])
+        self.assertEqual(self.git_run(self.main, 'show', result['land']['ref'] + ':src/app.py'), APP.replace('1', '2'))
+        brief = self.briefs[1]
+        self.assertIn('"failed_check"', brief)
+        self.assertIn('failed in project checks (unittest: timeout (600s))', brief)
+        self.assertIn('re-check the current files', brief)
+        self.assertNotIn('failed in project checks', self.briefs[0])
+
+    def test_fast_retry_after_project_check_timeout_without_new_edit_is_accepted(self):
+        self.saved = self.save([plan_task()])
+        self.actions.write_text(json.dumps([{'README.md': 'Example corrected\n'}]))
+        patch, calls = self.flaky_project_checks()
+        with patch:
+            code, result, _ = self.invoke()
+        self.assertEqual((code, result['state'], result['attempts']), (0, self.accepted_state, 2), result)
+        self.assertEqual(self.ended_empty(), [False, True])
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'project_checks'), 'gate.passed'])
+        self.assertIn('failed in project checks (unittest: timeout (600s))', self.briefs[1])
+        self.assertEqual(self.git_run(self.main, 'show', result['land']['ref'] + ':README.md'), 'Example corrected\n')
+
+    def assert_never_changed_tree_exhausts(self, lane):
+        # A first attempt with empty_diff fails run_status; retries on a tree
+        # that never differed from the base fail diff_collect.
+        self.saved = self.save([plan_task(lane=lane, files={'allow': ['src/*.py', 'tests/**', 'README.md']})])
+        self.actions.write_text(json.dumps([{}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state'], result['attempts']), (1, 'exhausted', 3), result)
+        self.assertIsNone(result['land'])
+        self.assertEqual(self.ended_empty(), [True] * 3)
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'run_status'),
+                         ('gate.failed', 'diff_collect'), ('gate.failed', 'diff_collect')])
+
+    def test_standard_empty_first_attempt_fails_and_unchanged_tree_is_never_accepted(self):
+        self.assert_never_changed_tree_exhausts('standard')
+
+    def test_fast_empty_first_attempt_fails_and_unchanged_tree_is_never_accepted(self):
+        self.assert_never_changed_tree_exhausts('fast')
+
+    def test_retry_whose_own_edit_breaks_the_tree_fails(self):
+        # Attempt 1 is right but times out; attempt 2 breaks the test; attempt 3
+        # changes nothing, so the broken cumulative tree is gated and fails.
+        self.actions.write_text(json.dumps([
+            {'src/app.py': APP.replace('1', '2'), 'tests/test_app.py': TEST.replace('1', '2')},
+            {'src/app.py': APP.replace('1', '3')}, {}]))
+        patch, _ = self.flaky_project_checks()
+        with patch:
+            code, result, _ = self.invoke()
+        self.assertEqual((code, result['state'], result['attempts']), (1, 'exhausted', 3), result)
+        self.assertEqual(self.ended_empty(), [False, False, True])
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'project_checks')] * 3)
+        self.assertIn('unittest: exit_nonzero_or_incomplete', self.briefs[2])
+
     def test_exhausted_after_three_and_forged_worktree_status_ignored(self):
         self.saved = self.save([plan_task(lane='standard', files={'allow': ['src/**', 'tests/**', 'status.md', 'result.json']})])
         self.actions.write_text(json.dumps([{'src/app.py': APP.replace('1', '2'),

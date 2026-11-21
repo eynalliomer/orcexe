@@ -122,6 +122,36 @@ class GateTests(GitFixture):
         self.assertEqual(result["checks"][2]["detail"], "empty_diff")
         self.assertFalse(self.marker.exists())
 
+    def test_retry_gates_empty_diff_warning_on_cumulative_tree(self):
+        # The executor found the earlier attempt's edit and changed nothing more.
+        self.edit("VALUE = 1 # edit\n")
+        self.run_result.update(warnings=["empty_diff"])
+        self.outcome(self.call(commands=self.marker_command), "failed", "run_status")
+        self.assertFalse(self.marker.exists())
+        result = self.call(commands=self.marker_command, retry=True)
+        self.outcome(result, "accepted")
+        self.assertEqual(result["diff"]["target_path"], "value.py")
+        self.assertIn("command-ran", (self.run_dir / "gate/marker.log").read_text())
+
+    def test_retry_on_never_changed_tree_is_not_accepted(self):
+        self.run_result.update(warnings=["empty_diff"])
+        result = self.call(commands=self.marker_command, retry=True)
+        self.outcome(result, "failed", "diff_collect")
+        self.assertEqual(result["checks"][2]["detail"], "empty_diff")
+        self.assertFalse(self.marker.exists())
+
+    def test_retry_still_runs_later_checks_on_cumulative_tree(self):
+        self.run_result.update(warnings=["empty_diff"])
+        self.edit("VALUE = 1 # edit \n")
+        self.outcome(self.call(commands=self.marker_command, retry=True), "needs_fix", "diff_check")
+        self.edit("VALUE = 2\n")
+        self.outcome(self.call(commands=self.marker_command, retry=True), "escalated", "code_unchanged")
+        self.assertFalse(self.marker.exists())
+        for status in ("failed", "timeout"):
+            with self.subTest(status=status):
+                self.run_result.update(status=status, warnings=[])
+                self.outcome(self.call(commands=self.marker_command, retry=True), "failed", "run_status")
+
     def test_whitespace_and_conflict_markers(self):
         self.git_run(self.path, "config", "core.whitespace", "-blank-at-eol")
         self.addCleanup(self.git_run, self.path, "config", "--unset", "core.whitespace")
@@ -207,13 +237,18 @@ class GateTests(GitFixture):
         self.edit("VALUE = 1 # edit\n")
         spin = gl.Command("spin", [sys.executable, "-c", "while True: pass"])
         start = time.monotonic()
-        self.outcome(self.call(commands=[spin], command_timeout_s=scaled(.12)), "needs_fix", "project_checks")
+        result = self.call(commands=[spin], command_timeout_s=scaled(.12))
+        self.outcome(result, "needs_fix", "project_checks")
         self.assertLess(time.monotonic() - start, scaled(5))
+        # The detail names the per-command limit that was hit.
+        self.assertEqual(result["checks"][-1]["detail"],
+                         "spin: timeout ({:g}s)".format(round(scaled(.12), 3)))
         # Exercise the project-stage total budget independently of Git startup.
         status, detail = gl._project([spin], self.path, self.run_dir / "gate",
                                      scaled(5), time.monotonic() + scaled(.12))
         self.assertEqual(status, "fail")
         self.assertIn("timeout", detail)
+        self.assertEqual(detail, "spin: total_timeout")
         self.outcome(self.call(commands=self.marker_command, total_timeout_s=scaled(.000001)),
                      "unverified", "diff_collect", "not_seen")
         self.assertFalse(self.marker.exists())
@@ -808,7 +843,8 @@ class GateTests(GitFixture):
     def test_bad_inputs_and_transient_receipt_error_return_fresh_valid_results(self):
         self.edit("VALUE = 1 # edit\n")
         for args in ({'total_timeout_s': float('nan')}, {'diff_line_limit': None},
-                     {'added_byte_limit': -1}, {'controls_before': {}}, {'commands': [None]}):
+                     {'added_byte_limit': -1}, {'controls_before': {}}, {'commands': [None]},
+                     {'retry': 1}):
             self.run_dir.mkdir(parents=True, exist_ok=True)
             (self.run_dir / 'gate.json').write_text('{"stale":true}')
             result = self.call(**args)

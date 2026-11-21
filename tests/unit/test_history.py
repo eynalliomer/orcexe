@@ -11,6 +11,7 @@ import time
 from unittest import mock, skipUnless
 
 from tests.unit.test_gitutil import GitFixture, ROOT
+from tests.unit._timing import scaled
 from tests.security import capture_children
 from orcexe import cli, history, proc
 
@@ -335,4 +336,4 @@ class HistoryTests(GitFixture):
     def test_wall_budget(self):
         start = time.monotonic()
         history.scan(ROOT)
-        self.assertLess(time.monotonic() - start, 10)
+        self.assertLess(time.monotonic() - start, scaled(10))

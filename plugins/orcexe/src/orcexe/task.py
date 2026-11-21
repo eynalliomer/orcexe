@@ -156,6 +156,20 @@ def _block(label, value):
     return label + '\n' + fence + 'json\n' + data + '\n' + fence + '\n'
 
 
+def _feedback(attempt, checks):
+    """Gate feedback for the next attempt; names a project-check failure plainly."""
+    feedback = dict(attempt=attempt, verdict='failed', checks=checks)
+    failed = next((c for c in checks if c['status'] in ('fail', 'not_seen')), None)
+    if failed is not None and failed['id'] == 'project_checks':
+        feedback['failed_check'] = dict(id=failed['id'], detail=failed['detail'])
+        feedback['guidance'] = (
+            'The previous attempt failed in project checks (' + failed['detail'] + '). '
+            'The worktree keeps your earlier edits and the next gate checks the whole '
+            'tree against the task base, so first re-check the current files and run '
+            'the checks; change only what is still wrong instead of rewriting.')
+    return feedback
+
+
 def build_brief(contract, notes, feedback=None):
     return ('# Approved task\n'
             + _block('CONTRACT DATA (scope and completion criteria):', contract)
@@ -454,14 +468,19 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 return finish('rejected', 'risk_path_touched')
             if 'pipes_held' in result['warnings']:
                 return finish('rejected', 'pipes_held')
+            # A later attempt in this worktree is gated on the cumulative tree:
+            # finding the work already done (empty_diff) is not itself a failure.
+            retry = attempt > start + 1
             if contract['lane'] == 'fast':
                 classification = SimpleNamespace(targets=sorted({f['path'] for f in observed['files']}))
                 gate = gate_lite.gate(repo_path=main, worktree=wt, classification=classification,
-                    run_result=result, run_dir=attempt_dir, controls_before=controls, commands=commands)
+                    run_result=result, run_dir=attempt_dir, controls_before=controls, commands=commands,
+                    retry=retry)
                 passed = gate['verdict'] == 'accepted'
             else:
                 gate = task_gate.standard_gate(repo_path=main, worktree=wt, run_result=result,
-                    run_dir=attempt_dir, controls_before=controls, commands=commands, observed=observed)
+                    run_dir=attempt_dir, controls_before=controls, commands=commands, observed=observed,
+                    retry=retry)
                 passed = gate['verdict'] == 'passed'
             isolated = isolation.evidence(gate)
             if isolation.tampered(gate):
@@ -545,7 +564,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 summary['land'] = dict(ref=ref, command='git -C ' + shlex.quote(str(main))
                                        + ' ' + action + shlex.quote(ref))
                 return finish('accepted' if isolated != 'none' and (contract['lane'] == 'fast' or l1_accepted) else 'gate_passed', l1_reason)
-            feedback = dict(attempt=attempt, verdict='failed', checks=gate['checks'])
+            feedback = _feedback(attempt, gate['checks'])
         return finish('exhausted', 'exhausted')
     except (KeyboardInterrupt, do._Cancelled):
         summary['land'] = None

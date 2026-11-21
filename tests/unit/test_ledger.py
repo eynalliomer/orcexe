@@ -550,25 +550,6 @@ for i in range(200):
         self.assertEqual(self.ledger.verify(), {"records": 800, "last_seq": 800, "ok": True})
         self.assertEqual([r["seq"] for r in self.ledger.records()], list(range(1, 801)))
 
-    def test_verify_100000_records_within_scaled_four_seconds(self):
-        # Bulk fixture creation avoids timing 100k fsyncs; every link is real.
-        self.path.parent.mkdir()
-        record = {"schema": "orcexe.ledger.v1", "seq": 1, "ts": "2026-11-16T21:30:00.123Z",
-                  "event": "task.state", "task": "T1", "data": dict(EVENTS["task.state"]), "prev": "0" * 64}
-        with self.path.open("wb") as handle:
-            for number in range(1, 100001):
-                record["seq"] = number
-                raw = ledger._serialize(record)
-                handle.write(raw + b"\n")
-                record["prev"] = hashlib.sha256(raw).hexdigest()
-        start = time.monotonic()
-        self.assertEqual(self.ledger.verify(), {"records": 100000, "last_seq": 100000, "ok": True})
-        # Keep verification of every record in the default run. Only the
-        # megabyte-throughput clock assertion requires an idle slow-suite job.
-        if os.environ.get('ORCEXE_SLOW_TESTS') != '1':
-            self.skipTest('ledger throughput timing requires ORCEXE_SLOW_TESTS=1; 100000 records verified')
-        self.assertLess(time.monotonic() - start, scaled(4))
-
     def test_kpi_empty_population_is_not_seen(self):
         self.assertEqual(ledger.kpis(self.ledger), {name: metric() for name in (
             "orchestration_overhead", "time_to_first_dispatch_ms", "questions_per_task",

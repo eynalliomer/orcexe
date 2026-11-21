@@ -594,6 +594,17 @@ Other gate failures give feedback and retry, up to three
 attempts, then end as `exhausted`. Escaped processes (`pipes_held`) and changed
 controls/main repository stop the run.
 
+Every gate checks the cumulative worktree against the task base, not just the
+latest attempt's edits. A retry that finds the work already done and edits nothing
+(the executor reports `empty_diff`) is therefore gated on that tree: scope, text,
+secrets, test floor, project checks and L0/L1 run as for the first attempt. A first
+attempt with `empty_diff` still fails `run_status`; a tree that never differed from
+the base fails `diff_collect`; a retry whose own edits break the tree fails. When the
+previous attempt failed in project checks, the feedback names the check and its
+detail and asks the executor to re-check the current files rather than rewrite them.
+A timed-out project check reports its limit, for example `unittest: timeout (600s)`.
+`do` has a single attempt and keeps failing `empty_diff` at `run_status`.
+
 Every code-executing project step, including candidate checks, L0 base counts and
 red-first reruns, uses a fresh sandbox and temp directory. On macOS, Seatbelt
 (`/usr/bin/sandbox-exec`) allows writes only to that checkout, the step temp and

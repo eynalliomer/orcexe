@@ -17,6 +17,11 @@ class SlowTaskTests(TaskTests):
     test_fast_success_is_accepted = None
     test_project_failure_retries_in_same_worktree_with_feedback = None
     test_exhausted_after_three_and_forged_worktree_status_ignored = None
+    test_retry_after_project_check_timeout_without_new_edit_is_accepted = None
+    test_fast_retry_after_project_check_timeout_without_new_edit_is_accepted = None
+    test_standard_empty_first_attempt_fails_and_unchanged_tree_is_never_accepted = None
+    test_fast_empty_first_attempt_fails_and_unchanged_tree_is_never_accepted = None
+    test_retry_whose_own_edit_breaks_the_tree_fails = None
     test_contract_tampered_between_attempts_stops = None
     test_contract_tampered_between_attempts_before_next_executor = None
     test_contract_tamper_after_executor_refuses_gate = None

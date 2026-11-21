@@ -1,3 +1,24 @@
+## T47d — retries gated on the cumulative tree; throughput budgets leave the default suite
+
+- Standard and fast task gates no longer fail a retry (an attempt after the first
+  in the same worktree) on the executor's per-attempt `empty_diff` warning alone.
+  Whether anything changed is decided on the cumulative tree against the task base
+  (`diff_collect`), and scope, text, secrets, test floor, project checks and L0/L1
+  run on that tree as for attempt 1. A first-attempt `empty_diff` still fails
+  `run_status`, a never-changed tree still fails `diff_collect`, and a retry whose
+  own edits break the tree still fails. `do` (single attempt) is unchanged.
+- Feedback for the next attempt names a project-check failure plainly (check id and
+  detail) and asks the executor to re-check the current files instead of rewriting.
+- A timed-out project check reports its limit, e.g. `unittest: timeout (600s)`,
+  within the redacted 300-character detail rule.
+- Move throughput budgets that fail on a loaded machine to `tests/slow/`
+  (`--slow` / `ORCEXE_SLOW_TESTS=1`): slop and intake repository-scan CPU budgets,
+  100000-record ledger verification and the 100000-path classifier budget. The
+  history wall budget now uses `scaled()`.
+- Add gate_lite and task-level regressions for retry-after-timeout (standard and
+  fast), empty first attempts, never-changed trees, retries that break the tree,
+  the timeout detail and an invalid `retry` argument.
+
 ## T47c — literal-only constant assertions
 
 - Parse JS/TS and Swift assertion arguments as literal expressions, retaining

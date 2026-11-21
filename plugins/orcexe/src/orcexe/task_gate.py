@@ -62,8 +62,14 @@ def observe(main, wt, allow):
 
 @isolation.guarded
 def standard_gate(*, repo_path, worktree, run_result, run_dir, controls_before,
-                  commands, observed, command_timeout_s=600, total_timeout_s=1800):
-    """Run shared safety rules and project checks against immutable raw objects."""
+                  commands, observed, command_timeout_s=600, total_timeout_s=1800, retry=False):
+    """Run shared safety rules and project checks against immutable raw objects.
+
+    On a retry in the same worktree the executor's own per-attempt empty_diff
+    warning is not a failure: whether anything changed is decided on the
+    cumulative tree against the task base (diff_collect), and every later
+    check runs on that cumulative tree exactly as for the first attempt.
+    """
     directory = Path(run_dir)
     result = dict(schema='orcexe.task.gate.v1', verdict='failed', checks=[],
                   tree=observed['tree'], files=observed['files'])
@@ -78,8 +84,10 @@ def standard_gate(*, repo_path, worktree, run_result, run_dir, controls_before,
 
     try:
         validate_run_result(run_result)
+        if type(retry) is not bool:
+            raise ValueError('retry')
         check('run_status', run_result['status'] == 'completed'
-              and 'empty_diff' not in run_result['warnings']
+              and (retry or 'empty_diff' not in run_result['warnings'])
               and 'pipes_held' not in run_result['warnings'], run_result['status'])
         check('controls', gate_lite.snapshot_controls(repo_path, worktree) == controls_before,
               'git_controls_changed')
