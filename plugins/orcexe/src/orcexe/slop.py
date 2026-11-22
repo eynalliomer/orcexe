@@ -229,7 +229,7 @@ def _name(node):
 
 
 def _constant(node):
-    if isinstance(node, (ast.Constant, ast.Num, ast.Str, ast.NameConstant)):
+    if isinstance(node, ast.Constant):
         return True
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return all(_constant(v) for v in node.elts)

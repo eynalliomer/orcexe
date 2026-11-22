@@ -1,5 +1,21 @@
 ## Unreleased
 
+### T54c — no deprecated ast nodes on 3.12; docs-only diffs pass L0 red-first
+
+- `slop._constant` checked `ast.Num` / `ast.Str` / `ast.NameConstant` alongside `ast.Constant`;
+  on Python 3.12 that emits `DeprecationWarning` (failing `test_ast_warnings` and filling the
+  gate's 4 KiB log tail, finding F1). Python 3.9+ parses every literal as `ast.Constant`, so the
+  check is now `ast.Constant` only, behaviour unchanged. No other product use of the deprecated
+  nodes remains under `plugins/orcexe/src/orcexe/` (`gate_lite.py` had none).
+- Real run A task T3 (only CHANGELOG.md, README.md, SKILL.md changed) failed L0 three times with
+  `red_first_missing: no_observed_failure_on_base`: `tests_missing` exempted docs-only diffs but
+  red-first did not. New `task_l0.docs_only(paths)` (non-empty, every path `is_doc`, none
+  `is_test`); red-first now passes with detail `docs_only` for such diffs. Any diff touching a
+  code or test file still needs a test that fails on base; all other L0 checks still run.
+- Tests: the fast doc-only case now expects red-first `pass`/`docs_only` (was `fail`); new cases
+  for docs-only (passes), doc + code without a red test (fails), doc + test passing on base
+  (fails), and the `docs_only` predicate.
+
 ### T52c — runner summary trusts orcexe's own aggregate line (T52a regression)
 
 - Real run A lost every attempt to L0 `test_count_dropped` / `runner_count_not_seen`: T52a

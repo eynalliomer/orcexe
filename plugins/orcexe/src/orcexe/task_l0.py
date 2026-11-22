@@ -257,6 +257,11 @@ def is_doc(path):
             or p.name.upper() in ('LICENSE', 'NOTICE', 'COPYING'))
 
 
+def docs_only(paths):
+    """True only for a non-empty diff whose every path is a doc and none is a test."""
+    return bool(paths) and all(is_doc(p) and not is_test(p) for p in paths)
+
+
 def test_commands(commands):
     return [c for c in commands if re.search(r'(?:^|[-_/ .])(?:test|tests|pytest|unittest)(?:$|[-_/ .])',
                                              c.id + ' ' + ' '.join(c.argv))]
@@ -429,8 +434,12 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
                            if overlaid and selected else [])
             failed = any(v['exit_code'] is not None and v['exit_code'] > 0 for v in red_results)
             unknown = not selected or any(v['exit_code'] is None for v in red_results)
-            check('red_first_missing', 'pass' if failed else 'not_seen' if unknown else 'fail',
-                  'tests_fail_on_base' if failed else 'no_observed_failure_on_base')
+            if docs_only(paths):
+                # T54c: a docs-only diff has no behaviour to prove red; other checks still run.
+                check('red_first_missing', 'pass', 'docs_only')
+            else:
+                check('red_first_missing', 'pass' if failed else 'not_seen' if unknown else 'fail',
+                      'tests_fail_on_base' if failed else 'no_observed_failure_on_base')
     except Exception:
         completed = {v['id'] for v in checks}
         for identifier in CHECK_IDS:
