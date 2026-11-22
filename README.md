@@ -783,11 +783,18 @@ The small goal heuristic treats “so that”, “until”, “when”, “must�
 “tests pass” (whole phrases), or any digit as a completion criterion.
 Missing/stale maps exit 2 with `not_seen: map_missing` / `not_seen: map_stale`.
 
-`orcexe answer [--repo PATH] --form FORM_ID --choice QID=INDEX --text QID=TEXT`
-accepts repeated choice/text flags and optional `--json`. Choice indexes start
-at zero. The entire batch must reference the current form and HEAD and contain
+`orcexe answer [--repo PATH] --form FORM_ID --choice QID=INDEX|LABEL --text QID=TEXT`
+accepts repeated choice/text flags and optional `--json`. A choice may be the
+option's exact label or its zero-based index; both forms record the same
+decision. An all-digit value that is in range is read as an index, even if it
+equals another option's label; any other value must exactly match an option
+label. The entire batch must reference the current form and HEAD and contain
 valid, distinct question IDs before any records append to
-`.orcexe/decisions.jsonl`. Recorded questions become assumptions on later forms,
+`.orcexe/decisions.jsonl`. An unmatched choice for a valid, unanswered question
+exits 2, prints `not_seen: answer_invalid`, then `valid choices for QID:` and one
+`  INDEX: LABEL` line per option on stderr, and appends nothing. Other invalid
+batches (unknown or repeated question ID, empty text, already decided) print
+only `not_seen: answer_invalid`. Recorded questions become assumptions on later forms,
 for every goal, including after HEAD changes and a map refresh. The form hash is
 recomputed before answering; modified forms report `form_tampered`. A question
 ID can be answered once. Answers empty after cleaning are invalid; the batch
@@ -818,7 +825,9 @@ network access, or executing project code. It writes atomic, private (0600)
 prints the saved JSON. Findings do not fail the command (exit 0); a non-repository
 exits 2. Dirty and untracked source is ignored. Intake's secret-path/blob guards,
 vendored-tree and state exclusions, 256 KiB file cap, 4 MiB fetch budget, redaction,
-command candidates and CI evidence also apply here.
+command candidates and CI evidence also apply here. Slop, the gate and L0 parse
+scanned Python with SyntaxWarning and DeprecationWarning suppressed; findings and
+results do not change.
 
 The seven classes are fake tests, skipped/focused tests, checker suppressions,
 unimplemented bodies, advisory unused public exports, dependency mismatches and
