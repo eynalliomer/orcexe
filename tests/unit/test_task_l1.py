@@ -97,6 +97,13 @@ class RubricTests(unittest.TestCase):
             self.assertIn(expected, text)
         self.assertLess(len(text), task_l1.DIFF_CAP + 3000)
 
+    def test_brief_labels_gate_and_l0_results_untrusted(self):
+        text = task_l1.build_brief(dict(done=['first']), 'diff', dict(checks=[]), dict(checks=[]))
+        for label in ('UNTRUSTED DIFF DATA (bounded):', 'UNTRUSTED GATE RESULTS DATA:', 'UNTRUSTED L0 RESULTS DATA:'):
+            self.assertIn(label + '\n', text)
+        self.assertNotIn('\nGATE RESULTS:', text)
+        self.assertNotIn('\nL0 RESULTS:', text)
+
     def test_route_skips_executor_model_and_cursor_and_reuses_access(self):
         def access(tool, family):
             return route.Access(tool, family, True, 'ok', None, None, None)
@@ -174,6 +181,38 @@ class EvaluatorTests(TaskFixture):
         self.assertEqual(verdict['model'], 'claude-sonnet-5-5')
         self.assertNotIn('observed behavior', json.dumps(events))
         self.assertTrue(self.log().verify()['ok'])
+
+    def test_l1_copy_drops_tracked_secret_paths(self):
+        secrets = {'.env': 'TOKEN=x\n', 'config/.env.local': 'A=1\n', 'secrets/prod.txt': 'x\n',
+                   'deploy/server.pem': 'x\n', 'keys/id_rsa': 'x\n', 'credentials.json': '{}\n',
+                   '.npmrc': 'x\n', 'auth/api.key': 'x\n', 'certs/push.p8': 'x\n'}
+        for name, contents in secrets.items():
+            path = self.main / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+        self.git_run(self.main, 'add', '-f', '.')
+        self.git_run(self.main, 'commit', '-qm', 'tracked secrets')
+        head = self.git_run(self.main, 'rev-parse', 'HEAD').strip()
+        tree = self.git_run(self.main, 'rev-parse', 'HEAD^{tree}').strip()
+        seen = []
+
+        class Adapter:
+            def run(self, req):
+                root = Path(req.workdir)
+                seen.extend(p.relative_to(root).as_posix() for p in root.rglob('*') if '.git' not in p.parts)
+                raise RuntimeError('stop after observing the copy')
+
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            outcome = task_l1.evaluate(repo_path=self.main, tree=tree,
+                                       contract=dict(head=head, task_id='T1', done=['x']), gate={}, l0={},
+                                       selection=dict(tool='claude-code', model='m', effort='high'),
+                                       adapter=Adapter(), run_dir=self.directory / 'l1-run', run_id='T1-r1')
+        self.assertEqual(outcome['reason'], 'l1_unavailable')
+        self.assertIn('src/app.py', seen)
+        self.assertIn('README.md', seen)
+        for name in secrets:
+            self.assertNotIn(name, seen)
+        self.assertFalse(any(p == 'secrets' or p.startswith('secrets/') for p in seen), seen)
 
     def test_no_independent_model_leaves_gate_passed(self):
         code, result, _ = self.invoke()

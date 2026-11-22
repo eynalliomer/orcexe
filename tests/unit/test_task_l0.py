@@ -19,7 +19,9 @@ class CountTests(unittest.TestCase):
                                ('=== 2 failed, 3 passed, 1 skipped, 2 xfailed, 1 xpassed, 4 deselected, 8 warnings in 1.20s ===', 9),
                                ('collected 14 items\nall good', None), ('0.3s complete', None),
                                ('no tests ran in 0.1s', None),
-                               ('Ran 1 test in 0.01s\nOK\nRan 2 tests in 0.02s\nOK', 2)]:
+                               # P3-1: a later summary is trusted only as the sum of earlier ones.
+                               ('Ran 1 test in 0.01s\nOK\nRan 2 tests in 0.02s\nOK', None),
+                               ('Ran 1 test in 0.01s\nOK\nRan 2 tests in 0.02s\nOK\nRan 3 tests in 2 modules in 0.1s', 3)]:
             with self.subTest(text=text):
                 self.assertEqual(task_l0.test_count(text), expected)
 
@@ -55,11 +57,52 @@ class CountTests(unittest.TestCase):
                 self.assertEqual(bool(result), expected)
 
     def test_runtime_final_summary_and_skip_totals(self):
-        text = 'Ran 50 tests in 0.1s\nOK\nRan 1 test in 0.01s\nOK (skipped=1, expected failures=2)\n'
+        unseen = dict(count=None, skips=None, skip_counts=None)
+        text = 'Ran 1 test in 0.01s\nOK (skipped=1, expected failures=2)\n'
         self.assertEqual(task_l0.runner_summary(text), dict(count=1, skips=3, skip_counts=dict(skipped=1, xfailed=0, expected_failures=2)))
-        self.assertEqual(task_l0.runner_summary('50 passed in 1.0s\n1 passed, 2 xfailed in 0.1s'),
+        self.assertEqual(task_l0.runner_summary('1 passed, 2 xfailed in 0.1s'),
                          dict(count=3, skips=2, skip_counts=dict(skipped=0, xfailed=2, expected_failures=0)))
-        self.assertEqual(task_l0.runner_summary('collected 5 items'), dict(count=None, skips=None, skip_counts=None))
+        # P3-1: a later summary that is not the sum of the earlier ones is not trusted.
+        self.assertEqual(task_l0.runner_summary('Ran 50 tests in 0.1s\nOK\n' + text), unseen)
+        self.assertEqual(task_l0.runner_summary('50 passed in 1.0s\n1 passed, 2 xfailed in 0.1s'), unseen)
+        self.assertEqual(task_l0.runner_summary('collected 5 items'), unseen)
+
+    def test_aggregate_summary_of_orcexe_runner_is_trusted_and_measures_skips(self):
+        blocks = ('tests.unit.a: tests=3 failures=0 errors=0 skips=1 duration=0.10s\n'
+                  '..s\n' + '-' * 70 + '\nRan 3 tests in 0.010s\n\nOK (skipped=1)\n'
+                  'tests.unit.b: tests=2 failures=0 errors=0 skips=0 duration=0.20s\n'
+                  '..\n' + '-' * 70 + '\nRan 2 tests in 0.020s\n\nOK\n'
+                  '10 slowest modules:\n  0.20s tests.unit.b\n  0.10s tests.unit.a\n')
+        aggregate = 'Ran 5 tests in 2 modules in 0.31s; failures=0 errors=0 skips=1; failed modules=0\n'
+        expected = dict(count=5, skips=1, skip_counts=dict(skipped=1, xfailed=0, expected_failures=0))
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate), expected)
+        # The aggregate line alone (earlier blocks unparsed) still measures skips.
+        self.assertEqual(task_l0.runner_summary(aggregate), expected)
+        unseen = dict(count=None, skips=None, skip_counts=None)
+        # An atexit handler printing a bigger total after the real aggregate is not trusted.
+        forged = blocks + aggregate + 'Ran 999 tests in 0.001s\n\nOK\n'
+        self.assertEqual(task_l0.runner_summary(forged), unseen)
+        # A forged aggregate that does not add up, or hides skips, is not trusted.
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('Ran 5', 'Ran 7')), unseen)
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('skips=1', 'skips=0')), unseen)
+        # pytest single-line summaries keep working.
+        self.assertEqual(task_l0.runner_summary('== 4 passed, 1 skipped in 0.20s =='),
+                         dict(count=5, skips=1, skip_counts=dict(skipped=1, xfailed=0, expected_failures=0)))
+
+    def test_l0_runs_declared_interpreter_and_missing_one_is_not_seen(self):
+        import sys, tempfile, time
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            checkout, logs = root / 'checkout', root / 'logs'
+            checkout.mkdir()
+            command = gate_lite.Command('unittest', ['python3', '-c', 'print("Ran 2 tests in 0.1s"); print("OK")'])
+            missing = task_l0._tests([command], checkout, logs, 5, time.monotonic() + 30, root,
+                                     dict(declared='3.43', path=None))
+            self.assertEqual(missing, [dict(id='unittest', count=None, skips=None, skip_counts=None, exit_code=None)])
+            self.assertIn('interpreter_unavailable: python 3.43', (logs / 'unittest.log').read_text())
+            resolved = task_l0._tests([command], checkout, logs, 5, time.monotonic() + 30, root,
+                                      dict(declared='3.9', path=sys.executable))
+            self.assertEqual((resolved[0]['count'], resolved[0]['exit_code']), (2, 0))
 
     def test_each_runtime_skip_and_hollow_form(self):
         cases = ['raise unittest.SkipTest("reason")', 'pytest.skip("reason")',
@@ -224,6 +267,19 @@ class L0Tests(TaskFixture):
         self.assertEqual((code, result['state']), (1, 'exhausted'), result)
         self.assertEqual(self.checks()['test_count_dropped']['status'], 'not_seen')
         self.assertIsNone(result['land'])
+
+    def test_standard_gate_declared_missing_interpreter_is_not_seen(self):
+        self.seed_files({'.python-version': '3.43\n'})
+        with mock.patch.object(gate_lite, '_PYTHON_LOCATIONS', ()):
+            code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertIsNone(result['land'])
+        gates = [json.loads(p.read_text()) for p in sorted(
+            (self.main / '.orcexe/runs').glob('*/attempt-*/gate.json'))]
+        self.assertTrue(gates)
+        last = gates[-1]['checks'][-1]
+        self.assertEqual(last['id'], 'project_checks')
+        self.assertIn('interpreter_unavailable: python 3.43', last['detail'])
 
     def test_code_edit_without_test_file_fails(self):
         self.actions.write_text(json.dumps([{'src/app.py': APP + '\n'}]))

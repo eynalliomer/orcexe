@@ -62,7 +62,7 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCES = {".orcexe/commands.yaml", "package.json", "pnpm-lock.yaml",
             "yarn.lock", "bun.lockb", "package-lock.json", "pyproject.toml",
             "pytest.ini", "setup.cfg", "conftest.py", "Makefile", "Cargo.toml",
-            "go.mod"}
+            "go.mod", ".python-version"}
 
 
 @dataclass(frozen=True)
@@ -311,8 +311,10 @@ def _detect(repo_path, base_commit, deadline=None):
         if not isinstance(data, dict):
             raise _ConfigError("commands.yaml")
         for key in data:
-            if key not in {"version", "commands"}:
+            if key not in {"version", "commands", "python"}:
                 raise _ConfigError("commands.yaml." + redact_text(str(key))[:64])
+        if "python" in data:
+            _python_value(data["python"])
         if type(data.get("version")) is not int or data["version"] != 1:
             raise _ConfigError("version")
         if not isinstance(data.get("commands"), list):
@@ -805,29 +807,185 @@ def _inside_copy(root, relative, blocked=()):
     return True
 
 
-def _project(commands, path, directory, timeout, deadline, gate_dir=None):
+# F5: a declared project Python is resolved by version, never taken from PATH order.
+_PYTHON_NAMES = frozenset(("python3", "python"))
+_PYTHON_LOCATIONS = ("/usr/bin", "/usr/local/bin", "/opt/homebrew/bin")
+_PYTHON_PROBE = 'import sys; print("%d.%d" % sys.version_info[:2]); print(sys.executable)'
+
+
+def _python_value(value):
+    """commands.yaml `python:` is a "major.minor" string, never a path."""
+    if not (isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?\.[0-9]{1,3}", value)):
+        raise _ConfigError("commands.yaml.python (interpreter: expected \"major.minor\")")
+    return value
+
+
+def _lower_bound(spec):
+    """Lowest major.minor admitted by a PEP 440 specifier list, or None."""
+    bounds = []
+    for operator, major, minor in re.findall(r"(>=|~=|==|>)\s*(\d+)\.(\d+)", spec):
+        bounds.append((int(major), int(minor) + (1 if operator == ">" else 0)))
+    return "{}.{}".format(*min(bounds)) if bounds else None
+
+
+def declared_python(repo_path, base_commit, deadline=None, checkout=None):
+    """(version, source) from the main override or the base commit, never a worktree.
+
+    Order: main .orcexe/commands.yaml `python:`, base .python-version, base
+    requires-python (pyproject.toml) / python_requires (setup.cfg) lower bound.
+    No declaration: (None, "PATH"). checkout may name a gate-owned copy already
+    materialised and verified from base_commit; its regular root files are read
+    instead of asking Git again.
+    """
+    if checkout is None:
+        _require(isinstance(base_commit, str) and _SHA.fullmatch(base_commit), "base_commit")
+    main, _ = _main_metadata(repo_path)
+    override = main / ".orcexe" / "commands.yaml"
+    if os.path.lexists(override):
+        try:
+            data = miniyaml.load_path(override)
+        except (ValueError, OSError, UnicodeError):
+            raise _ConfigError("commands.yaml") from None
+        if isinstance(data, dict) and "python" in data:
+            return _python_value(data["python"]), "commands.yaml"
+    names = (".python-version", "pyproject.toml", "setup.cfg")
+    if checkout is not None:
+        root = Path(checkout)
+        paths = {n for n in names if (root / n).is_file() and not (root / n).is_symlink()}
+
+        def read(name):
+            return (root / name).read_text(encoding="utf-8")
+    else:
+        _, listing = _git(repo_path, "ls-tree", "--name-only", "-z", base_commit,
+                          nul=True, deadline=deadline)
+        paths = set(listing.split("\0")[:-1])
+
+        def read(name):
+            return _git(repo_path, "show", base_commit + ":" + name, deadline=deadline)[1]
+
+    if ".python-version" in paths:
+        match = re.search(r"(?<![\d.])(\d+)\.(\d+)", read(".python-version"))
+        if match:
+            return match[1] + "." + match[2], ".python-version"
+    for name, pattern in (("pyproject.toml", r"(?m)^\s*requires-python\s*=\s*[\"']([^\"'\n]*)[\"']"),
+                          ("setup.cfg", r"(?m)^\s*python_requires\s*=\s*([^\n]*)$")):
+        if name in paths:
+            match = re.search(pattern, read(name))
+            version = _lower_bound(match[1]) if match else None
+            if version:
+                return version, "requires-python"
+    return None, "PATH"
+
+
+def _probe_python(interpreter, cwd, env, timeout, deadline):
+    """Run the interpreter inside the project sandbox: ("M.m", sys.executable) or None."""
+    lines = []
+    try:
+        probe = isolation.run([interpreter, '-c', _PYTHON_PROBE], cwd=str(cwd), env=env,
+                              on_line=lines.append, stall_s=None,
+                              timeout_s=max(.001, min(timeout, deadline - time.monotonic())))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = [line.strip() for line in lines if line.strip()]
+    if (probe.status == 'exited' and probe.returncode == 0 and not probe.pipes_held
+            and len(lines) == 2 and re.fullmatch(r"\d+\.\d+", lines[0])):
+        return lines[0], lines[1]
+    return None
+
+
+def project_python(repo_path, base_commit, cwd, env, timeout, deadline, probe_path=True, checkout=None):
+    """Resolve the interpreter python3/python commands must run with.
+
+    Returns dict(declared, source, path, version, executable). path is None
+    when undeclared (argv stays PATH python3) or when the declared version is
+    unavailable (python commands are then not_seen). probe_path=False skips
+    the identity probe of an undeclared PATH python3 (nothing is rewritten).
+    """
+    declared, source = declared_python(repo_path, base_commit, deadline, checkout)
+    search = env.get("PATH", os.defpath)
+    if declared is None:
+        found = shutil.which("python3", path=search)
+        probed = _probe_python(found, cwd, env, timeout, deadline) if found and probe_path else None
+        return dict(declared=None, source="PATH", path=None, which=found,
+                    version=probed[0] if probed else None,
+                    executable=probed[1] if probed else "unavailable")
+    candidates = []
+    found = shutil.which("python" + declared, path=search)
+    if found:
+        candidates.append(os.path.abspath(found))
+    for folder in _PYTHON_LOCATIONS:
+        for name in ("python" + declared, "python3"):
+            candidate = os.path.join(folder, name)
+            if candidate not in candidates and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                candidates.append(candidate)
+    for candidate in candidates:
+        if time.monotonic() >= deadline:
+            break
+        probed = _probe_python(candidate, cwd, env, timeout, deadline)
+        if probed and probed[0] == declared:
+            return dict(declared=declared, source=source, path=candidate, which=candidate,
+                        version=declared, executable=probed[1])
+    return dict(declared=declared, source=source, path=None, which=None, version=None,
+                executable="unavailable")
+
+
+def python_argv(argv, interpreter):
+    """Replace a python3/python argv[0] with the resolved absolute interpreter."""
+    if interpreter and interpreter.get("path") and argv and argv[0] in _PYTHON_NAMES:
+        return [interpreter["path"]] + list(argv[1:])
+    return list(argv)
+
+
+def python_unavailable(argv, interpreter):
+    """Detail when a python command's declared interpreter cannot be found, else None."""
+    if (interpreter and interpreter.get("declared") and not interpreter.get("path")
+            and argv and argv[0] in _PYTHON_NAMES):
+        return "interpreter_unavailable: python " + interpreter["declared"]
+    return None
+
+
+def with_path_identity(interpreter, cwd, env, timeout, deadline):
+    """Add the historical PATH python3 identity (probed once when undeclared)."""
+    if interpreter is not None and interpreter["declared"] is None:
+        return dict(interpreter, path_python=interpreter["executable"])
+    found = shutil.which("python3", path=env.get("PATH", os.defpath))
+    probed = _probe_python(found, cwd, env, timeout, deadline) if found else None
+    if interpreter is None:
+        interpreter = dict(declared=None, source="PATH", path=None, which=found,
+                           version=probed[0] if probed else None,
+                           executable=probed[1] if probed else "unavailable")
+    return dict(interpreter, path_python=probed[1] if probed else "unavailable")
+
+
+def interpreters_log(interpreter):
+    return ("gate sys.executable: {}\nPATH python3 sys.executable: {}\n"
+            "project python: {} version {} source {}{}\n").format(
+        sys.executable, interpreter.get("path_python", "unavailable"),
+        interpreter.get("path") or interpreter.get("which") or "unavailable",
+        interpreter.get("version") or "unavailable", interpreter["source"],
+        " (declared {})".format(interpreter["declared"]) if interpreter.get("declared") else "")
+
+
+def _project(commands, path, directory, timeout, deadline, gate_dir=None, repo_path=None, base=None):
     if not commands:
         return "not_seen", "no_commands"
     env, _ = child_env()
-    interpreter = shutil.which("python3", path=env.get("PATH", os.defpath))
-    path_python = 'unavailable'
-    if interpreter:
-        lines = []
-        try:
-            probe = isolation.run([interpreter, '-c', 'import sys; print(sys.executable)'],
-                                  cwd=str(path), env=env, on_line=lines.append,
-                                  timeout_s=max(.001, min(timeout, deadline - time.monotonic())), stall_s=None)
-            if probe.status == 'exited' and probe.returncode == 0 and not probe.pipes_held:
-                path_python = ''.join(lines).strip()
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    identity = "gate sys.executable: {}\nPATH python3 sys.executable: {}\n".format(sys.executable, path_python)
-    safe_write_text(directory / "interpreters.log", redact_text(identity), mode=0o600)
+    interpreter = with_path_identity(
+        project_python(repo_path, base, path, env, timeout, deadline) if repo_path is not None
+        else None, path, env, timeout, deadline)
+    safe_write_text(directory / "interpreters.log", redact_text(interpreters_log(interpreter)), mode=0o600)
     observations, missing = [], False
     for command in commands:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return "fail", command.id + ": total_timeout"
+        unavailable = python_unavailable(command.argv, interpreter)
+        if unavailable:
+            missing = True
+            observations.append(command.id + ": not_seen (" + unavailable + ")")
+            safe_write_text(directory / (command.id + ".log"), "not_seen: " + unavailable + "\n", mode=0o600)
+            continue
+        command = Command(command.id, python_argv(command.argv, interpreter), command.source_path)
         if not shutil.which(command.argv[0], path=env.get("PATH", os.defpath)):
             missing = True
             observations.append(command.id + ": not_seen (binary_missing)")
@@ -876,6 +1034,12 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None):
                     if re.search(r"PermissionError|Operation not permitted|Permission denied|Read-only file system", text, re.I) else "")
         missing = missing or bool(incomplete)
         observations.append(command.id + (": not_seen (log_observation_incomplete)" if incomplete else ": pass"))
+    if interpreter["declared"] and not interpreter["path"]:
+        # A declared interpreter that cannot be found never lets the gate pass.
+        missing = True
+        unavailable = "interpreter_unavailable: python " + interpreter["declared"]
+        if not any(unavailable in item for item in observations):
+            observations.append("python: not_seen (" + unavailable + ")")
     return ("not_seen" if missing else "pass"), "; ".join(observations)
 
 
@@ -1115,7 +1279,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                     gate_dir = Path(tempfile.mkdtemp(dir=str(cache))).resolve()
                     checkout = _checkout(repo_path, base, gate_dir, verified, deadline)
                     status, detail = _project(selected, checkout, directory / 'gate',
-                                              command_timeout_s, deadline, gate_dir)
+                                              command_timeout_s, deadline, gate_dir, repo_path, base)
                 record(check, status, detail, started)
             except _ConfigError as error:
                 record(check, 'fail', 'invalid ' + str(error), started)

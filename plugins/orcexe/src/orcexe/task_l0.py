@@ -21,13 +21,25 @@ CHECK_IDS = ('test_count_dropped', 'skip_added', 'tests_missing', 'red_first_mis
 
 
 def runner_summary(text):
-    """Only the final runner summary; collection and printed earlier totals lose."""
+    """Trusted runner totals; text printed after the real summary cannot inflate them.
+
+    One summary is used as is. With several, the last is trusted only as an
+    aggregate: its count (and skip total, when every earlier one is known)
+    must equal the sum of the earlier summaries, as tests/tools/run_tests.py
+    prints per-module unittest blocks then `Ran N tests in M modules ...
+    skips=K`. Anything else is not_seen (count/skips None).
+    """
     summaries = []
-    for match in re.finditer(r'(?m)^Ran\s+(\d+)\s+tests?\s+in\s+[^\n]+$', text):
-        tail = text[match.end():]
-        outcome = re.search(r'(?m)^(?:OK|FAILED)(?:\s*\(([^\n]*)\))?\s*$', tail)
-        categories = dict(skipped=0, xfailed=0, expected_failures=0) if outcome else None
-        if outcome:
+    unittest_runs = list(re.finditer(r'(?m)^Ran\s+(\d+)\s+tests?\s+in\s+[^\n]+$', text))
+    for index, match in enumerate(unittest_runs):
+        end = unittest_runs[index + 1].start() if index + 1 < len(unittest_runs) else len(text)
+        aggregate = re.search(r'\bskips=(\d+)\b', match[0])
+        outcome = re.search(r'(?m)^(?:OK|FAILED)(?:\s*\(([^\n]*)\))?\s*$', text[match.end():end])
+        categories = None
+        if aggregate:
+            categories = dict(skipped=int(aggregate[1]), xfailed=0, expected_failures=0)
+        elif outcome:
+            categories = dict(skipped=0, xfailed=0, expected_failures=0)
             categories.update((kind.replace(' ', '_'), int(n)) for kind, n in re.findall(
                 r'(skipped|expected failures)=(\d+)', outcome[1] or ''))
         summaries.append((match.start(), int(match[1]), categories))
@@ -38,9 +50,21 @@ def runner_summary(text):
             summaries.append((match.start(), sum(int(n) for n, k in parts if k in kinds),
                               dict(skipped=sum(int(n) for n, k in parts if k == 'skipped'),
                                    xfailed=sum(int(n) for n, k in parts if k == 'xfailed'), expected_failures=0)))
+    unseen = dict(count=None, skips=None, skip_counts=None)
     if not summaries:
-        return dict(count=None, skips=None, skip_counts=None)
-    _, count, categories = max(summaries, key=lambda v: v[0])
+        return unseen
+    summaries.sort(key=lambda v: v[0])
+    *earlier, (_, count, categories) = summaries
+    if earlier:
+        if count != sum(n for _, n, _ in earlier):
+            return unseen
+        if all(c is not None for _, _, c in earlier):
+            totals = {key: sum(c[key] for _, _, c in earlier) for key in ('skipped', 'xfailed', 'expected_failures')}
+            if categories is not None and (categories['skipped'] + categories['xfailed']
+                                           != totals['skipped'] + totals['xfailed']):
+                return unseen
+            # The earlier blocks carry the category detail an aggregate line omits.
+            categories = totals
     return dict(count=count, skips=None if categories is None else sum(categories.values()), skip_counts=categories)
 
 
@@ -223,18 +247,23 @@ def test_commands(commands):
                                              c.id + ' ' + ' '.join(c.argv))]
 
 
-def _tests(commands, checkout, directory, timeout, deadline, scratch):
+def _tests(commands, checkout, directory, timeout, deadline, scratch, interpreter=None):
     """Keep runner exit evidence separate from timeout, missing and partial output."""
     env, _ = child_env()
     observations = []
     for command in commands:
+        unavailable = gate_lite.python_unavailable(command.argv, interpreter)
+        if unavailable:
+            safe_write_text(directory / (command.id + '.log'), 'not_seen: ' + unavailable + '\n')
+            observations.append(dict(id=command.id, count=None, skips=None, skip_counts=None, exit_code=None))
+            continue
         lines, size = [], 0
         def capture(line):
             nonlocal size
             size += len(line.encode('utf-8')) + 1
             if size <= 1024 * 1024:
                 lines.append(line + '\n')
-        observed = isolation.run(list(command.argv), cwd=str(checkout), env=env,
+        observed = isolation.run(gate_lite.python_argv(command.argv, interpreter), cwd=str(checkout), env=env,
                             timeout_s=max(.001, min(timeout, deadline - time.monotonic())),
                             stall_s=None, on_line=capture, on_stderr_line=capture,
                             kill_grace_s=min(.1, timeout), max_line_bytes=1048576)
@@ -318,6 +347,11 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
                 tempfile.TemporaryDirectory(dir=str(cache)) as overlay:
             base_root = Path(temporary).resolve()
             base = gate_lite._checkout(repo_path, worktree.base_commit, base_root, {}, deadline)
+            # F5: the gate's declared interpreter, read from this verified base copy before
+            # any test runs in it; probed in the sandbox only when declared.
+            interpreter = gate_lite.project_python(repo_path, worktree.base_commit, base, child_env()[0],
+                                                   command_timeout_s, deadline, probe_path=False,
+                                                   checkout=base) if selected else None
             base_static = static_count(base)
             base_sources = _support_sources(base)
             candidate_root = base_root / 'candidate'
@@ -326,7 +360,7 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             attempt_static = static_count(candidate_copy)
             candidate_sources = _support_sources(candidate_copy)
             shutil.rmtree(candidate_root)
-            counts = _tests(selected, base, directory / 'base', command_timeout_s, deadline, base_root)
+            counts = _tests(selected, base, directory / 'base', command_timeout_s, deadline, base_root, interpreter)
             candidate = []
             for command in selected:
                 text = (Path(run_dir) / 'gate' / (command.id + '.log')).read_text(encoding='utf-8')
@@ -376,7 +410,7 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
                 safe_write_bytes(target, final_blobs[fingerprint[0][1:].split()[3]],
                                  mode=0o755 if file['new_mode'] == '100755' else 0o644)
                 overlaid = True
-            red_results = (_tests(selected, red, directory / 'red', command_timeout_s, deadline, red_root)
+            red_results = (_tests(selected, red, directory / 'red', command_timeout_s, deadline, red_root, interpreter)
                            if overlaid and selected else [])
             failed = any(v['exit_code'] is not None and v['exit_code'] > 0 for v in red_results)
             unknown = not selected or any(v['exit_code'] is None for v in red_results)

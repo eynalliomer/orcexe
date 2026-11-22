@@ -30,7 +30,7 @@ SPAWN_SITES = {
     'intake': {'_git'}, 'isolation': {'_available_backend', 'run'},
     'task': {'run_task'}, 'run': {'run_command'}, 'planning': {'_plan_command'}, 'planrun': {'run_plan'}, 'task_l1': {'evaluate'},
     'task_l0': {'_tests'}, 'gitutil': {'_git'}, 'proc': {'_WindowsJob.stop', 'run'},
-    'gate_lite': {'_git_bytes', '_project'}, 'do': {'_git', '_resolve_identity.config', 'run_do'},
+    'gate_lite': {'_git_bytes', '_project', '_probe_python'}, 'do': {'_git', '_resolve_identity.config', 'run_do'},
     'worktree': {'_git'}, 'mapping': {'manager_run'},
     'doctor': {'_prerequisites', '_main_worktree'}, 'history': {'_issues'},
     'adapters/codex': {'CodexAdapter.auth_status'}, 'adapters/codex_appserver': {'AppServer.__enter__'},

@@ -1117,6 +1117,173 @@ class GateTests(GitFixture):
 
 
 
+class InterpreterTests(GitFixture):
+    """F5: python3/python commands run with the base commit's declared interpreter."""
+
+    PROBE_CASE = 'case "$*" in *version_info*) echo {reported}; echo "$0";; *) echo "fake-{reported} $*";; esac\n'
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        fixture = cls.shared = GitFixture()
+        fixture.templates = cls.templates
+        fixture.setUp()
+        _native_git(fixture)
+        cls.addClassCleanup(fixture.doCleanups)
+        GateTests.write(fixture.main, "value.py", "VALUE = 1\n")
+        fixture.git_run(fixture.main, "add", ".")
+        fixture.git_run(fixture.main, "commit", "-qm", "seed")
+
+    def setUp(self):
+        self.copy_fixture(self.shared)
+        patch = mock.patch.dict(os.environ, self.env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.bin = self.directory / "fake-path"
+        self.standard = self.directory / "fake-standard"
+        for folder in (self.bin, self.standard):
+            folder.mkdir(exist_ok=True)
+        # Hermetic: the fixed standard locations are a fake folder, never /usr/bin.
+        locations = mock.patch.object(gl, "_PYTHON_LOCATIONS", (str(self.standard),))
+        locations.start()
+        self.addCleanup(locations.stop)
+        self.scratch = self.directory / "scratch"
+        self.scratch.mkdir(exist_ok=True)
+
+    def fake(self, folder, name, reported):
+        path = folder / name
+        path.write_text("#!/bin/sh\n" + self.PROBE_CASE.format(reported=reported))
+        path.chmod(0o755)
+        return path
+
+    def define(self, files):
+        for name, text in files.items():
+            GateTests.write(self.main, name, text)
+        self.git_run(self.main, "add", ".")
+        self.git_run(self.main, "commit", "--quiet", "--allow-empty", "-m", "definitions")
+        return self.git_run(self.main, "rev-parse", "HEAD").strip()
+
+    def resolve(self, base, path=None):
+        env = dict(os.environ, PATH=str(self.bin) if path is None else path)
+        return gl.project_python(self.main, base, self.scratch, env, scaled(5), time.monotonic() + scaled(15))
+
+    def test_declaration_sources_in_order_from_main_and_base_only(self):
+        base = self.define({"value.py": "VALUE = 2\n"})
+        self.assertEqual(gl.declared_python(self.main, base), (None, "PATH"))
+        for files, expected in (({"setup.cfg": "[options]\npython_requires = >=3.6\n"}, ("3.6", "requires-python")),
+                                ({"pyproject.toml": '[project]\nrequires-python = ">=3.8, <4"\n'},
+                                 ("3.8", "requires-python")),
+                                ({".python-version": "3.7.2\n"}, ("3.7", ".python-version"))):
+            with self.subTest(files=files):
+                base = self.define(files)
+                self.assertEqual(gl.declared_python(self.main, base), expected)
+        # The executor's worktree and uncommitted main edits never declare anything.
+        linked = self.linked()
+        GateTests.write(Path(linked), ".python-version", "3.12\n")
+        GateTests.write(self.main, ".python-version", "3.11\n")
+        self.assertEqual(gl.declared_python(linked, base), ("3.7", ".python-version"))
+        # The main commands.yaml override wins over base files.
+        GateTests.write(self.main, ".orcexe/commands.yaml",
+                        'version: 1\npython: "3.10"\ncommands: [{id: t, argv: [python3, -V]}]\n')
+        self.assertEqual(gl.declared_python(linked, base), ("3.10", "commands.yaml"))
+        self.assertEqual(gl.detect_commands(self.main, base)[0].argv, ["python3", "-V"])
+        # A verified base copy is read like the base commit (L0 uses it).
+        copy = self.directory / "base-copy"
+        GateTests.write(copy, ".python-version", "3.5\n")
+        (self.main / ".orcexe/commands.yaml").unlink()
+        self.assertEqual(gl.declared_python(self.main, None, checkout=copy), ("3.5", ".python-version"))
+        (copy / ".python-version").unlink()
+        (copy / ".python-version").symlink_to(self.main / "value.py")
+        self.assertEqual(gl.declared_python(self.main, None, checkout=copy), (None, "PATH"))
+
+    def test_invalid_python_value_is_a_commands_yaml_config_error(self):
+        base = self.define({"value.py": "VALUE = 3\n"})
+        for value in ("3", "/usr/bin/python3", "python3.9", "3.9.1", "[3, 9]"):
+            with self.subTest(value=value):
+                GateTests.write(self.main, ".orcexe/commands.yaml",
+                                "version: 1\npython: " + json.dumps(value) + "\ncommands: []\n")
+                for call in (gl.detect_commands, gl.declared_python):
+                    with self.assertRaisesRegex(gl._ConfigError, r"commands\.yaml\.python.*interpreter"):
+                        call(self.main, base)
+        GateTests.write(self.main, ".orcexe/commands.yaml", "version: 1\npython: 3.9\ncommands: []\n")
+        with self.assertRaisesRegex(gl._ConfigError, "interpreter"):
+            gl.declared_python(self.main, base)
+
+    def test_resolution_by_probed_version_on_path_then_standard_locations(self):
+        base = self.define({".python-version": "3.7\n"})
+        self.fake(self.bin, "python3", "3.12")
+        self.assertEqual(self.resolve(base)["path"], None)
+        located = self.fake(self.standard, "python3", "3.7")
+        found = self.resolve(base)
+        self.assertEqual((found["path"], found["version"], found["source"]), (str(located), "3.7", ".python-version"))
+        on_path = self.fake(self.bin, "python3.7", "3.7")
+        self.assertEqual(self.resolve(base)["path"], str(on_path))
+        # A PATH name that lies about its version is probed and skipped.
+        self.fake(self.bin, "python3.7", "3.12")
+        self.assertEqual(self.resolve(base)["path"], str(located))
+        located.unlink()
+        missing = self.resolve(base)
+        self.assertEqual((missing["path"], missing["declared"]), (None, "3.7"))
+        # No declaration: today's PATH python3 is left in argv.
+        undeclared = self.resolve(self.define({".python-version": "system\n"}))
+        self.assertEqual((undeclared["declared"], undeclared["path"], undeclared["source"]), (None, None, "PATH"))
+        self.assertEqual(gl.python_argv(["python3", "-V"], undeclared), ["python3", "-V"])
+
+    def test_argv_rewrite_only_for_python_names(self):
+        interpreter = dict(declared="3.9", path="/opt/py/python3.9")
+        self.assertEqual(gl.python_argv(["python3", "-m", "x"], interpreter), ["/opt/py/python3.9", "-m", "x"])
+        self.assertEqual(gl.python_argv(["python", "-V"], interpreter), ["/opt/py/python3.9", "-V"])
+        self.assertEqual(gl.python_argv(["make", "test"], interpreter), ["make", "test"])
+        self.assertEqual(gl.python_argv(["/usr/bin/python3", "-V"], interpreter), ["/usr/bin/python3", "-V"])
+        missing = dict(declared="3.7", path=None)
+        self.assertEqual(gl.python_unavailable(["python3", "-V"], missing), "interpreter_unavailable: python 3.7")
+        self.assertIsNone(gl.python_unavailable(["make"], missing))
+
+    def gate(self, base_files, commands):
+        self.define(base_files)
+        self.gates = getattr(self, "gates", 0) + 1
+        wt = worktree.create(self.main, worktree.Spec("plan", "interp-" + str(self.gates), "fake"))
+        GateTests.write(Path(wt.path), "value.py", "VALUE = 1 # edit\n")
+        run_dir = self.main / ".orcexe/runs" / ("I-" + Path(wt.path).name)
+        with mock.patch.dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"]):
+            result = gl.gate(repo_path=self.main, worktree=wt,
+                             classification=Classification("write", "fast", ("value.py",), ()),
+                             controls_before=gl.snapshot_controls(self.main, wt),
+                             run_result=valid_result(run_dir), run_dir=run_dir, commands=commands,
+                             command_timeout_s=scaled(5), total_timeout_s=scaled(15))
+        return result, run_dir
+
+    def test_gate_runs_declared_interpreter_and_logs_its_source(self):
+        fake = self.fake(self.bin, "python3.42", "3.42")
+        commands = [gl.Command("probe", ["python3", "-c", "print(1)"]),
+                    gl.Command("other", [sys.executable, "-c", "print(2)"])]
+        result, run_dir = self.gate({".python-version": "3.42\n"}, commands)
+        self.assertEqual(result["verdict"], "accepted", result)
+        self.assertIn("fake-3.42 -c print(1)", (run_dir / "gate/probe.log").read_text())
+        log = (run_dir / "gate/interpreters.log").read_text()
+        self.assertIn("project python: " + str(fake) + " version 3.42 source .python-version", log)
+        self.assertIn("PATH python3 sys.executable:", log)
+
+    def test_gate_declared_but_missing_interpreter_is_not_seen(self):
+        commands = [gl.Command("probe", ["python3", "-c", "print(1)"])]
+        result, run_dir = self.gate({"pyproject.toml": '[project]\nrequires-python = ">=3.43"\n'}, commands)
+        self.assertEqual(result["verdict"], "unverified", result)
+        self.assertEqual(result["checks"][-1]["status"], "not_seen")
+        self.assertIn("interpreter_unavailable: python 3.43", result["checks"][-1]["detail"])
+        self.assertIn("source requires-python (declared 3.43)", (run_dir / "gate/interpreters.log").read_text())
+        # Without any python command the declared-but-missing interpreter still blocks a pass.
+        result, _ = self.gate({".python-version": "3.44\n"}, [gl.Command("other", [sys.executable, "-c", "print(2)"])])
+        self.assertEqual(result["checks"][-1]["status"], "not_seen", result)
+        self.assertIn("python: not_seen (interpreter_unavailable: python 3.44)", result["checks"][-1]["detail"])
+
+    def test_gate_invalid_python_value_fails_project_checks_naming_interpreter(self):
+        GateTests.write(self.main, ".orcexe/commands.yaml", 'version: 1\npython: "3"\ncommands: []\n')
+        result, _ = self.gate({".python-version": "3.42\n"}, [gl.Command("probe", ["python3", "-V"])])
+        self.assertEqual((result["verdict"], result["checks"][-1]["status"]), ("needs_fix", "fail"), result)
+        self.assertIn("commands.yaml.python", result["checks"][-1]["detail"])
+        self.assertIn("interpreter", result["checks"][-1]["detail"])
+
+
 class DetectionTests(GitFixture):
     @classmethod
     def setUpClass(cls):

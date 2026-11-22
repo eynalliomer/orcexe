@@ -1,5 +1,32 @@
 ## Unreleased
 
+### T52a — gate environment: declared interpreter (F5), runner summary (P3-1), L1 copy secrets (P3-3)
+
+- F5: project checks run with the project's declared Python, not whatever `python3` PATH has first.
+  The declaration is read from the main repository / base commit only (never the executor's
+  worktree): main `.orcexe/commands.yaml` top-level `python: "3.9"` (new optional key,
+  `major.minor` string only), else the base `.python-version` (first `major.minor`), else the lower
+  bound of base `requires-python` (pyproject.toml) / `python_requires` (setup.cfg). Resolution
+  probes `python3.X` on the gate PATH, then `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`
+  (`python3.X`, `python3`), running each inside the project sandbox with the existing timeouts and
+  keeping the first whose `sys.version_info[:2]` matches. Commands whose argv[0] is `python3` or
+  `python` (defaults and commands.yaml; gate, standard gate and L0 runs) use the resolved absolute
+  path; other argv[0] are untouched. Declared but not found: `project_checks` is `not_seen` with
+  `interpreter_unavailable: python X.Y` (also when no python command exists), never a pass. An
+  invalid `python:` value is a `commands.yaml.python` config error naming the interpreter. No
+  declaration keeps today's PATH `python3`. `interpreters.log` adds
+  `project python: <path> version <X.Y> source <commands.yaml|.python-version|requires-python|PATH>`.
+  `.python-version` joins the protected command sources.
+- P3-1: `task_l0.runner_summary` no longer takes the last summary blindly. One summary is used as
+  is; with several, the last is trusted only if its count (and skip total, when the earlier ones
+  are known) equals the sum of the earlier ones, as `tests/tools/run_tests.py` prints; otherwise
+  count/skips are not_seen. `skips=N` on that aggregate line is parsed, so skip counts are measured
+  for orcexe's own runner. pytest single-line summaries are unchanged.
+- P3-3: the L1 read-only copy also drops every path the intake secret rule (`intake._secret`)
+  classifies as secret (`.env*`, `secrets*`, `*.pem`, `*.key`, `id_rsa*`, `*.p8`, `*.p12`,
+  `credentials*`, `.npmrc`, `.pypirc`, `.netrc`, and their descendants). The L1 brief labels the
+  gate and L0 blocks `UNTRUSTED GATE RESULTS DATA:` / `UNTRUSTED L0 RESULTS DATA:`.
+
 ### T51 — L1 fallback chain (K17), tree → verdict memory (P2-3), `l1.basis`
 
 - K17 chain from one access snapshot (`task_l1.evaluator_chain`): every eligible evaluator of

@@ -125,8 +125,13 @@ def standard_gate(*, repo_path, worktree, run_result, run_dir, controls_before,
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         cache_dir = Path(tempfile.mkdtemp(dir=str(cache))).resolve()
         checkout = gate_lite._checkout(repo_path, observed['tree'], cache_dir, {}, deadline)
-        status, detail = gate_lite._project(selected, checkout, directory / 'gate',
-                                            command_timeout_s, deadline, cache_dir)
+        try:
+            # F5: python3/python commands run with the base commit's declared interpreter.
+            status, detail = gate_lite._project(selected, checkout, directory / 'gate',
+                                                command_timeout_s, deadline, cache_dir,
+                                                repo_path, worktree.base_commit)
+        except gate_lite._ConfigError as error:
+            status, detail = 'fail', 'invalid ' + str(error)
         check('project_checks', status == 'pass', detail)
         result['verdict'] = 'passed'
     except ValueError:

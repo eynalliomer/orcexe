@@ -70,6 +70,7 @@ class FastL0PolicyTests(PrivateHomes):
                         mock.patch.object(gate_lite, '_checkout', side_effect=checkout), \
                         mock.patch.object(gate_lite, '_blobs', return_value={'old': old.encode(), 'new': new.encode()}), \
                         mock.patch.object(gate_lite, '_collect', return_value=([], [file], [(':100644 100644 old new M', changed, changed)])), \
+                        mock.patch.object(gate_lite, 'project_python', return_value=dict(declared=None, path=None)), \
                         mock.patch.object(task_l0, '_tests', side_effect=observe):
                     result = task_l0.run_l0(repo_path=root, worktree=SimpleNamespace(path=str(root), base_commit='base'),
                         observed=observed, commands=[gate_lite.Command('unittest', ['python3', '-m', 'unittest'])],
