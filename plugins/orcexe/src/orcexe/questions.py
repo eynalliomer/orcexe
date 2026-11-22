@@ -14,7 +14,7 @@ import re
 import sys
 import unicodedata
 
-from orcexe import globs, fsio, gitutil, history, intake, mapping, slop
+from orcexe import globs, fsio, gitutil, history, intake, ledger, mapping, slop
 
 IMPACT = dict(conflict=3, goal_scope=3, unknown=2, risk_confirm=2, do_not_touch_confirm=1)
 IRREVERSIBILITY = dict(data=3, payment=3, migration=3, auth=2, infra=2, other=1, public_api=1)
@@ -249,6 +249,12 @@ def questions_command(args):
             raise ValueError('map_stale')
         failure, step = 'write_failed', 'publish_questions'
         fsio.atomic_write_json(directory / 'form.json', result, mode=0o600)
+        try:
+            ledger.Ledger(ledger.default_path(repo)).append(
+                'questions.form', 'questions',
+                dict(count=len(result['questions']), form_sha256=result['form_id']))
+        except (OSError, ValueError, ledger.LedgerError):
+            pass
     except Exception as error:
         return mapping.report_failure(error, failure, step,
                                       ('map_missing', 'map_stale', 'output_symlink', 'not_a_repository', 'state_corrupt'))

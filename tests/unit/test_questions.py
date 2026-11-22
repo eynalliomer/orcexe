@@ -242,6 +242,18 @@ class QuestionsCLITests(GitFixture):
         (self.directory_state / 'project-map.json').write_text('not JSON')
         self.assertEqual(self.invoke('questions'), (2, '', 'not_seen: questions_invalid\n'))
 
+    def test_questions_command_appends_ledger_form_record(self):
+        from orcexe import ledger
+        form = self.form()
+        path = ledger.default_path(self.main)
+        records = list(ledger.Ledger(path).records(event='questions.form'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['task'], 'questions')
+        self.assertEqual(records[0]['data']['count'], len(form['questions']))
+        self.assertEqual(records[0]['data']['form_sha256'], form['form_id'])
+        self.form()
+        self.assertEqual(len(list(ledger.Ledger(path).records(event='questions.form'))), 2)
+
     def test_round_trip_choices_text_and_decided(self):
         form = self.form()
         self.assertEqual((self.directory_state / 'form.json').stat().st_mode & 0o777, 0o600)

@@ -38,6 +38,7 @@ EVENTS = {
     "task.state": {"from": "running", "to": "accepted", "reason": "checks passed"},
     "lane.escalated": {"from_lane": "fast", "to_lane": "standard", "reason": "scope changed"},
     "question.asked": {"count": 1, "topic": "target choice"},
+    "questions.form": {"count": 2, "form_sha256": "c" * 64},
     "orchestrator.usage": {"input": 9, "output": 1, "source": "measured"},
 }
 
@@ -80,7 +81,7 @@ class LedgerTests(unittest.TestCase):
             fsio.append_jsonl(other, record)
         self.assertEqual(self.path.read_bytes(), other.read_bytes())
         self.assertEqual(list(self.ledger.records()), expected)
-        self.assertEqual(self.ledger.verify(), {"records": 8, "last_seq": 8, "ok": True})
+        self.assertEqual(self.ledger.verify(), {"records": 9, "last_seq": 9, "ok": True})
         previous = "0" * 64
         for number, raw in enumerate(self.path.read_bytes().splitlines(), 1):
             record = json.loads(raw)
@@ -164,6 +165,7 @@ class LedgerTests(unittest.TestCase):
             "task.state": dict.fromkeys(("from", "to", "reason"), text),
             "lane.escalated": {"from_lane": enums, "to_lane": enums, "reason": text},
             "question.asked": {"count": numbers + (None, 0), "topic": text},
+            "questions.form": {"count": numbers + (None,), "form_sha256": text + ("", "a" * 63, "A" * 64)},
             "orchestrator.usage": {"input": numbers, "output": numbers, "source": enums + ("guessed",)},
         }
         self.append("task.state")
@@ -553,7 +555,8 @@ for i in range(200):
     def test_kpi_empty_population_is_not_seen(self):
         self.assertEqual(ledger.kpis(self.ledger), {name: metric() for name in (
             "orchestration_overhead", "time_to_first_dispatch_ms", "questions_per_task",
-            "rounds_per_task", "lane_escalation_rate", "acceptance_rate")})
+            "questions_per_plan", "rounds_per_task", "lane_escalation_rate", "gate_pass_rate",
+            "task_acceptance_rate", "l1_calls")})
 
     def test_kpi_table_even_median_and_per_task(self):
         for task in ("T1", "T2", "T3", "T4"):
@@ -571,14 +574,14 @@ for i in range(200):
         self.append("orchestrator.usage", "T2", {"input": 30, "output": 30, "source": "measured"})
         self.assertEqual(ledger.kpis(self.ledger), {
             "orchestration_overhead": metric(.1, 6), "questions_per_task": metric(1.5, 4),
-            "time_to_first_dispatch_ms": metric(),
+            "questions_per_plan": metric(), "time_to_first_dispatch_ms": metric(),
             "rounds_per_task": metric(1.5, 4), "lane_escalation_rate": metric(.25, 4),
-            "acceptance_rate": metric(.5, 2)})
+            "gate_pass_rate": metric(2 / 3, 3), "task_acceptance_rate": metric(), "l1_calls": metric()})
         self.assertEqual(ledger.kpis(self.ledger, task="T2"), {
             "orchestration_overhead": metric(.6, 1), "questions_per_task": metric(0, 1),
-            "time_to_first_dispatch_ms": metric(),
+            "questions_per_plan": metric(), "time_to_first_dispatch_ms": metric(),
             "rounds_per_task": metric(1, 1), "lane_escalation_rate": metric(0, 1),
-            "acceptance_rate": metric(0, 1)})
+            "gate_pass_rate": metric(.5, 2), "task_acceptance_rate": metric(), "l1_calls": metric()})
         self.assertTrue(all(v["status"] == "not_seen" for v in ledger.kpis(self.ledger, task="absent").values()))
 
     def test_kpi_fast_lane_no_questions_is_measured_zero(self):
@@ -587,7 +590,8 @@ for i in range(200):
         self.assertEqual(result["questions_per_task"], metric(0, 1))
         self.assertEqual(result["rounds_per_task"], metric(0, 1))
         self.assertEqual(result["orchestration_overhead"], metric())
-        self.assertEqual(result["acceptance_rate"], metric())
+        self.assertEqual(result["gate_pass_rate"], metric())
+        self.assertEqual(result["task_acceptance_rate"], metric())
 
     def test_time_to_first_dispatch_uses_first_events_and_two_task_median(self):
         events = ((0, "task.classified", "T1"), (1, "task.classified", "T2"),
@@ -655,9 +659,9 @@ for i in range(200):
         self.assertEqual(self.path.read_bytes(), before)
         result = ledger.kpis(self.ledger)
         self.assertEqual(result["questions_per_task"], metric(0, 1))
-        self.assertEqual(result["acceptance_rate"], metric())
+        self.assertEqual(result["gate_pass_rate"], metric())
         self.append("gate.result", data={"verdict": "accepted"})
-        self.assertEqual(ledger.kpis(self.ledger)["acceptance_rate"], metric(1, 1))
+        self.assertEqual(ledger.kpis(self.ledger)["gate_pass_rate"], metric(1, 1))
 
     def test_attempts_without_classification_are_observed_rounds(self):
         self.append("attempt.ended")

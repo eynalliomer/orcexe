@@ -1,5 +1,21 @@
 ## Unreleased
 
+### T50 — plan-aware ledger KPIs (K7 split) and `questions.form`
+
+- `ledger.kpis` keys tasks by `(plan_id, task)`, attributes `attempt.ended` via
+  matching `attempt.started` `run_id`, and separates **gate_pass_rate** (per gate
+  evaluation: `gate.result`/`gate.passed`/`gate.failed`) from
+  **task_acceptance_rate** (dispatched keys whose last `task.state.to` is
+  `accepted`). Removed misleading **acceptance_rate** (a gate-accepted task could
+  still end `failed`). Added **l1_calls**, **questions_per_plan** (from
+  `questions.form`, deduped by `form_sha256`); lane denominator is
+  classified ∪ dispatched.
+- New ledger event `questions.form` (`count`, `form_sha256`); `orcexe questions`
+  appends one record after publishing `form.json` (ledger write failures do not
+  change command output).
+- Tests: `tests/unit/test_ledger_kpis.py`, updates to `test_ledger.py` and
+  `test_questions.py`.
+
 ### T49 — test hygiene: no repo-root temp dirs, load-tolerant probes, stale slow fixture
 
 - Temp trees: `test_do`, `test_trust`, `test_fake_claude`, `test_fake_agent` (was under

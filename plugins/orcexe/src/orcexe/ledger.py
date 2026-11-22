@@ -12,6 +12,7 @@ Data allow-lists (all listed fields are required, including nullable fields):
 * task.state: from, to, reason (text).
 * lane.escalated: from_lane, to_lane, reason (text).
 * question.asked: count (int >= 1), topic (text, at most 80 chars).
+* questions.form: count (int >= 0, not bool), form_sha256 (64 lowercase hex).
 * orchestrator.usage: input, output (nonnegative int or null), source
   (measured or not_seen).
 All text, including dropped field names and list entries, is redacted before
@@ -84,6 +85,7 @@ _SHAPES = {
     "task.state": {"from": "text", "to": "text", "reason": "text"},
     "lane.escalated": dict(from_lane="lane", to_lane="lane", reason="text"),
     "question.asked": dict(count="positive", topic="topic"),
+    "questions.form": dict(count="counter", form_sha256="sha256"),
     "orchestrator.usage": dict(input="counter?", output="counter?", source="source"),
 }
 
@@ -347,35 +349,82 @@ def _metric(value=None, n=0):
     return {"value": value, "status": "measured" if value is not None else "not_seen", "n": n}
 
 
-def kpis(ledger, task=None):
-    """Aggregate a verified stream, optionally restricted to one task.
+def _task_key(task, data, event, run_starts):
+    if event == "attempt.ended":
+        run_id = data.get("run_id")
+        if isinstance(run_id, str) and run_id in run_starts:
+            return run_starts[run_id]
+        return (None, task)
+    plan_id = data.get("plan_id")
+    return (plan_id if isinstance(plan_id, str) else None, task)
 
-    n is the number of contributing tasks; for overhead it is the number of
-    executor attempts. Overhead is known only with at least one orchestrator
-    sample and attempt, all samples marked measured, both token counters known
-    for every sample/attempt, and positive executor tokens. cached_read,
-    cache_write and reasoning are not added (they may overlap input/output).
-    Questions are total questions / classified tasks; rounds are the median
-    attempts over classified tasks and tasks with attempts (including zero
-    for classified tasks without attempts). Escalations / classified
-    tasks and final accepted gates / tasks with gates are task proportions.
-    Unobserved populations or missing counts/verdicts produce not_seen.
-    Dispatch latency is the first dispatch timestamp minus the first
-    classification timestamp per task, in milliseconds; the aggregate is the
-    median over tasks with both events (n is the number of these tasks).
+
+def kpis(ledger, task=None):
+    """Aggregate a verified stream, optionally restricted to one task id.
+
+    Task key is ``(plan_id, task)``: ``plan_id`` is ``data["plan_id"]`` when the
+    record has it, else ``None``. ``attempt.ended`` has no ``plan_id``: attribute
+    it to the key of the ``attempt.started`` with the same ``run_id``; if none,
+    ``(None, task)``. ``kpis(ledger, task=X)`` filters ledger rows by task id; two
+    plans' ``X`` remain two keys.
+
+    **dispatched** — keys with ``task.dispatched`` or ``attempt.started``.
+
+    **gate_pass_rate** (K7) — (``gate.result`` with verdict ``accepted`` +
+    ``gate.passed``) / (``gate.result`` + ``gate.passed`` + ``gate.failed``). One
+    gate evaluation each; n is the denominator count.
+
+    **task_acceptance_rate** (K7) — dispatched keys whose last ``task.state.to``
+    is ``accepted`` / dispatched keys. Cancelled, ``rejected``, ``exhausted``,
+    ``gate_passed``, ``failed`` and keys with no ``task.state`` stay in the
+    denominator. Never-dispatched keys (e.g. ``blocked``) are excluded.
+
+    **rounds_per_task** — median ``attempt.ended`` count over classified ∪
+    dispatched ∪ keys with ``attempt.ended`` (zero for classified without
+    attempts); n is that population.
+
+    **lane_escalation_rate** — keys in (classified ∪ dispatched) with
+    ``lane.escalated`` / that population.
+
+    **l1_calls** — count of ``l1.started`` records; n is distinct keys with
+    ``l1.started``. Measured when at least one key is dispatched (0 is a
+    measurement), else ``not_seen``.
+
+    **questions_per_plan** — mean ``count`` over distinct ``form_sha256`` of
+    ``questions.form`` (repeated hash counts once with its latest count; a
+    zero-question form is a measurement of 0); n is distinct forms; ``not_seen``
+    when there is none.
+
+    **questions_per_task**, **orchestration_overhead**, **time_to_first_dispatch_ms**
+    — unchanged semantics. Overhead n is executor attempts; dispatch latency is
+    the median of first ``task.dispatched`` minus first ``task.classified`` per
+    key with both (milliseconds).
+
+    A rate with numerator 0 is ``0.0`` ``measured``; an empty population is
+    ``not_seen``, never 0. Plan events besides those above are ignored.
+    Unobserved token samples produce ``not_seen`` for overhead.
     """
-    classified, questions, attempts, escalated, gates = set(), {}, {}, set(), {}
+    classified, dispatched, questions, attempts, escalated = set(), set(), {}, {}, set()
     first_classified, first_dispatched = {}, {}
     unknown_questions = set()
+    run_starts, last_state = {}, {}
+    l1_keys, l1_records = set(), 0
+    plan_forms = {}
+    gate_pass = gate_total = 0
     executor = orchestrator = samples = attempt_count = 0
     complete = True
     for record in ledger.records(task=task):
-        key, event, data = record["task"], record["event"], record["data"]
+        task_id, event, data = record["task"], record["event"], record["data"]
+        key = _task_key(task_id, data, event, run_starts)
         if event == "task.classified":
             classified.add(key)
             first_classified.setdefault(key, record["ts"])
         elif event == "task.dispatched":
+            dispatched.add(key)
             first_dispatched.setdefault(key, record["ts"])
+        elif event == "attempt.started":
+            dispatched.add(key)
+            run_starts[data["run_id"]] = key
         elif event == "question.asked":
             if "count" in data:
                 questions[key] = questions.get(key, 0) + data["count"]
@@ -393,7 +442,22 @@ def kpis(ledger, task=None):
         elif event == "lane.escalated":
             escalated.add(key)
         elif event == "gate.result":
-            gates[key] = data.get("verdict")
+            gate_total += 1
+            if data.get("verdict") == "accepted":
+                gate_pass += 1
+        elif event in ("gate.passed", "gate.failed"):
+            gate_total += 1
+            if event == "gate.passed":
+                gate_pass += 1
+        elif event == "task.state":
+            last_state[key] = data.get("to")
+        elif event == "l1.started":
+            l1_records += 1
+            l1_keys.add(key)
+        elif event == "questions.form":
+            digest = data.get("form_sha256")
+            if isinstance(digest, str):
+                plan_forms[digest] = data.get("count")
         elif event == "orchestrator.usage":
             samples += 1
             values = (data.get("input"), data.get("output"))
@@ -402,17 +466,27 @@ def kpis(ledger, task=None):
             else:
                 complete = False
     count = len(classified)
-    round_tasks = classified.union(attempts)
+    lane_population = classified | dispatched
+    round_tasks = classified | dispatched | set(attempts)
     latencies = [
         (datetime.fromisoformat(first_dispatched[key][:-1])
          - datetime.fromisoformat(first_classified[key][:-1])) // timedelta(milliseconds=1)
         for key in first_classified.keys() & first_dispatched.keys()
     ]
+    accepted = sum(1 for key in dispatched if last_state.get(key) == "accepted")
     return {
         "orchestration_overhead": _metric(orchestrator / executor if complete and samples and executor and attempt_count else None, attempt_count),
         "time_to_first_dispatch_ms": _metric(statistics.median(latencies) if latencies else None, len(latencies)),
         "questions_per_task": _metric(sum(questions.get(key, 0) for key in classified) / count if count and not unknown_questions.intersection(classified) else None, count),
+        "questions_per_plan": _metric(
+            statistics.mean(plan_forms.values()) if plan_forms and all(
+                type(v) is int for v in plan_forms.values()) else None,
+            len(plan_forms)),
         "rounds_per_task": _metric(statistics.median(attempts.get(key, 0) for key in round_tasks) if round_tasks else None, len(round_tasks)),
-        "lane_escalation_rate": _metric(len(escalated.intersection(classified)) / count if count else None, count),
-        "acceptance_rate": _metric(sum(verdict == "accepted" for verdict in gates.values()) / len(gates) if gates and all(verdict is not None for verdict in gates.values()) else None, len(gates)),
+        "lane_escalation_rate": _metric(
+            len(escalated & lane_population) / len(lane_population) if lane_population else None,
+            len(lane_population)),
+        "gate_pass_rate": _metric(gate_pass / gate_total if gate_total else None, gate_total),
+        "task_acceptance_rate": _metric(accepted / len(dispatched) if dispatched else None, len(dispatched)),
+        "l1_calls": _metric(l1_records if dispatched else None, len(l1_keys)),
     }
