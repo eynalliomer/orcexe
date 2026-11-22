@@ -34,7 +34,7 @@ SEEN = Access("codex", "openai", True, "ok", {FIRST: EFFORTS, SECOND: EFFORTS}, 
 
 class RolesTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="route-roles-", dir=str(ROOT))
+        self.temporary = tempfile.TemporaryDirectory(prefix="route-roles-")
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "roles.yaml"
         self.raw = load_path(PLUGIN / "data/experience/roles.yaml")
@@ -361,7 +361,7 @@ class RouteTests(unittest.TestCase):
 
 class GatherAccessTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="route-access-", dir=str(ROOT))
+        self.temporary = tempfile.TemporaryDirectory(prefix="route-access-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.calls = self.directory / "calls.jsonl"

@@ -20,7 +20,7 @@ def header(key, ending=b"\n"):
 
 class TrustTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=str(ROOT), prefix="orcexe-trust-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="orcexe-trust-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "home"

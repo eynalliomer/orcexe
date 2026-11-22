@@ -27,7 +27,7 @@ PII = ("fake-user@example.invalid", "fake-acct", "fake-claude-org-id", "fake-cla
 
 class DoctorTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=str(ROOT), prefix="doctor-test-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="doctor-test-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "home"

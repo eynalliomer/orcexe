@@ -18,6 +18,18 @@ def scaled(seconds):
     return seconds * TIME_SCALE
 
 
+# Bound for a step the test needs to finish rather than time out: a fake
+# --version/auth/models probe, a fake run expected to complete, a gate. Suite
+# load once pushed a fake version probe past a 3 s deadline and detect()
+# reported version None. Such bounds only cost time when something hangs.
+# A test about a deadline still passes its own short value.
+ROOMY_S = 30
+
+
+def roomy(seconds=ROOMY_S):
+    return scaled(seconds)
+
+
 def wait_for(predicate, seconds=15):
     """Wait for state, with a distinct failure from the property under test."""
     deadline = time.monotonic() + scaled(seconds)

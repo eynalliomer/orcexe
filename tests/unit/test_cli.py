@@ -142,7 +142,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("version", result.stdout)
 
     def test_launcher_from_other_cwd(self):
-        with tempfile.TemporaryDirectory(dir=str(ROOT)) as directory:
+        with tempfile.TemporaryDirectory(prefix="orcexe-cli-") as directory:
             command = [str(LAUNCHER), "version"]
             if sys.platform == "win32":
                 command.insert(0, sys.executable)
@@ -151,7 +151,7 @@ class CliTests(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "Symlink launcher test requires POSIX")
     def test_launcher_via_symlink(self):
-        with tempfile.TemporaryDirectory(dir=str(ROOT)) as directory:
+        with tempfile.TemporaryDirectory(prefix="orcexe-cli-") as directory:
             link = Path(directory) / "orcexe"
             link.symlink_to(LAUNCHER)
             result = subprocess.run(
@@ -163,7 +163,7 @@ class CliTests(unittest.TestCase):
 class TrustCliTests(unittest.TestCase):
     def setUp(self):
         from orcexe import trust
-        self.tmp = tempfile.TemporaryDirectory(dir=str(ROOT), prefix="orcexe-trust-cli-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="orcexe-trust-cli-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "home"

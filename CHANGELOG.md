@@ -1,3 +1,29 @@
+## Unreleased
+
+### T49 — test hygiene: no repo-root temp dirs, load-tolerant probes, stale slow fixture
+
+- Temp trees: `test_do`, `test_trust`, `test_fake_claude`, `test_fake_agent` (was under
+  `tests/`), `test_doctor`, `test_cli` (3x), `test_route` (2x) and `test_hosts` created
+  them with `dir=ROOT`, so a cleanup that did not run under load left `orcexe-do-*` and
+  similar directories in the checkout. They now use the default temp location (the
+  runner's per-module `TMPDIR`). No site depended on the repository location: paths that
+  are compared are already `.resolve()`d or derived from the same temp path, nested git
+  repositories have their own `.git`, and every module passes with the macOS
+  `/var/folders` temp (symlinked to `/private/var`) as well as under the runner.
+  `tests/unit/test_test_runner.py` statically rejects any `tempfile` call in the tests
+  that names `ROOT`; only the runner keeps its own directory (which it removes) there.
+- Load-sensitive deadlines: a fake `--version` probe once exceeded `detect_timeout_s=3`
+  under suite load and `detect()` returned version None. Steps a test needs to finish
+  (version/auth/model probes, fake runs expected to complete, the fast-lane gate, hang
+  guards around CLI subprocesses) now use `tests.unit._timing.roomy()` (30 s, scaled)
+  in `test_adapter_contract`, `test_cursor_adapter`, `test_do` and `test_run_fake`. The
+  exact version/path/min_ok assertions are unchanged; the short timeout/stall/kill-grace
+  values that are the behavior under test stay short.
+- `tests/slow/test_mapping.py`: the large-repo fixture's `src/exports.py` was imported
+  by nothing, and since T47 slop skips such modules (dead_code 0). A `src/main.py` now
+  imports it; the `>= 2000` dead_code and 30 KiB brief bounds are unchanged.
+- No product-source change.
+
 ## 0.2.0 — 2026-11-21 (local; not tagged, not published)
 
 Existing projects: `intake`, `slop`, `history`, `map` (one read-only manager call), at most four

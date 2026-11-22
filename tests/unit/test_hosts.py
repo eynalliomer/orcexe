@@ -7,7 +7,6 @@ import unittest
 
 from orcexe import hosts
 
-ROOT = Path(__file__).resolve().parents[2]
 
 
 class HostTests(unittest.TestCase):
@@ -58,7 +57,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(host["capabilities"][0]["evidence"], "declared")
 
     def test_skill_file_measured_only_when_it_exists(self):
-        with tempfile.TemporaryDirectory(dir=str(ROOT)) as directory:
+        with tempfile.TemporaryDirectory(prefix="orcexe-hosts-") as directory:
             path = Path(directory) / "SKILL.md"
             for exists in (False, True):
                 if exists:

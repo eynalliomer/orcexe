@@ -18,7 +18,7 @@ MANIFEST = ROOT / 'plugins/orcexe/adapters/claude.yaml'
 
 class FakeClaudeTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory(prefix='fake-claude-', dir=str(ROOT))
+        tmp = tempfile.TemporaryDirectory(prefix='fake-claude-')
         self.addCleanup(tmp.cleanup)
         self.directory = Path(tmp.name).resolve()
         self.calls = self.directory / 'calls.jsonl'

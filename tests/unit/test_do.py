@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests.unit._timing import scaled
+from tests.unit._timing import roomy, scaled
 from tests.unit._fixtures import GitTemplates, git_environment
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +52,7 @@ class DoFixture(unittest.TestCase):
     def setUp(self):
         self.accepted_verdict = 'accepted' if isolation.backend() != 'none' else 'unverified'
         self.accepted_code = exitcodes.OK if self.accepted_verdict == 'accepted' else exitcodes.FAIL
-        self.tmp = tempfile.TemporaryDirectory(prefix='orcexe-do-', dir=str(ROOT))
+        self.tmp = tempfile.TemporaryDirectory(prefix='orcexe-do-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / 'repo'
@@ -105,32 +105,33 @@ class DoFixture(unittest.TestCase):
 
     def adapter(self):
         return self.factory(env=self.env, allow_extra=tuple(k for k in self.env if k.startswith('ORCEXE_FAKE_')) + ('ORCEXE_FAKE_APPSERVER_SCENARIO',),
-            detect_timeout_s=scaled(3), appserver_timeout_s=scaled(3), auth_timeout_s=scaled(3),
+            # Probes and model listing must finish; see _timing.roomy.
+            detect_timeout_s=roomy(), appserver_timeout_s=roomy(), auth_timeout_s=roomy(),
             kill_grace_s=scaled(.15))
 
 
     def claude_adapter(self):
         return ClaudeCodeAdapter(env=dict(self.env, ORCEXE_FAKE_SCENARIO=self.claude_scenario),
             allow_extra=tuple(k for k in self.env if k.startswith("ORCEXE_FAKE_")),
-            detect_timeout_s=scaled(3), kill_grace_s=scaled(.15))
+            detect_timeout_s=roomy(), kill_grace_s=scaled(.15))
 
 
     def cursor_adapter(self):
         return CursorAdapter(env=dict(self.env, ORCEXE_FAKE_SCENARIO=self.cursor_scenario),
             allow_extra=tuple(k for k in self.env if k.startswith("ORCEXE_FAKE_")),
-            detect_timeout_s=scaled(3), kill_grace_s=scaled(.15))
+            detect_timeout_s=roomy(), kill_grace_s=scaled(.15))
 
 
     def invoke(self, task=FAST, **options):
         # Keep production clocks real; scale every test-supplied deadline.
         def gate(**kwargs):
-            return self.gate(command_timeout_s=scaled(10), total_timeout_s=scaled(20), **kwargs)
+            return self.gate(command_timeout_s=roomy(60), total_timeout_s=roomy(120), **kwargs)
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(do, 'CodexAdapter', side_effect=self.adapter), \
                 mock.patch.object(do, 'ClaudeCodeAdapter', side_effect=self.claude_adapter), \
                 mock.patch.object(do, 'CursorAdapter', side_effect=self.cursor_adapter), \
                 mock.patch.object(do.gate_lite, 'gate', side_effect=gate):
-            return do.run_do(task, self.repo, timeout=scaled(options.pop('timeout', 10)), **options)
+            return do.run_do(task, self.repo, timeout=scaled(options.pop('timeout', 60)), **options)
 
 
     def log(self):
@@ -245,7 +246,7 @@ def run(argv,**kwargs):
 env=dict(os.environ)
 def adapter():
     return CodexAdapter(env=env,allow_extra=tuple(k for k in env if k.startswith('ORCEXE_FAKE_')),
-        detect_timeout_s=10,appserver_timeout_s=10,auth_timeout_s=10,kill_grace_s=.15)
+        detect_timeout_s=30,appserver_timeout_s=30,auth_timeout_s=30,kill_grace_s=.15)
 with mock.patch.object(do,'CodexAdapter',side_effect=adapter),mock.patch.object(proc,'run',side_effect=run):
     print(json.dumps(do.run_do('Add a docstring to src/app.py',sys.argv[1],timeout=60)),flush=True)
 '''

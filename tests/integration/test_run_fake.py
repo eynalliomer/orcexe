@@ -14,7 +14,7 @@ import threading
 import unittest
 from unittest import mock
 
-from tests.unit._timing import scaled, wait_for
+from tests.unit._timing import roomy, scaled, wait_for
 from tests.unit.test_gitutil import GitFixture, ROOT
 from orcexe import cli, fsio, redact, run, trust
 from orcexe.adapters import validate_run_result
@@ -83,7 +83,7 @@ class RunFakeTests(GitFixture):
                     "import runpy\n"
                     "from orcexe import run\n"
                     "run.CursorAdapter = partial(run.CursorAdapter, auth_timeout_s={!r})\n"
-                    "runpy.run_module('orcexe', run_name='__main__')\n").format(scaled(10))
+                    "runpy.run_module('orcexe', run_name='__main__')\n").format(roomy())
         return [sys.executable, "-B", "-c", launcher, *arguments]
 
     def invoke(self, prepared, *extra, human=False):
@@ -95,7 +95,7 @@ class RunFakeTests(GitFixture):
             completed = subprocess.run(self.cli_argv(*args,
                                        *([] if human else ["--json"]), *extra),
                 cwd=str(self.directory), env=env, stdin=subprocess.DEVNULL,
-                capture_output=True, text=True, timeout=scaled(10))
+                capture_output=True, text=True, timeout=roomy(60))
         finally:
             stop.set()
             watcher.join()
@@ -448,7 +448,7 @@ class RunFakeTests(GitFixture):
                           "stdout={!r}; stderr={!r}".format(process.returncode, stdout, stderr))
             child = int(pid.read_text())
             process.send_signal(sig)
-            stdout, stderr = process.communicate(timeout=scaled(10))
+            stdout, stderr = process.communicate(timeout=roomy())
             self.assertEqual(process.returncode, 2, stderr)
             self.assertEqual(stderr, "")
             result = json.loads(stdout)

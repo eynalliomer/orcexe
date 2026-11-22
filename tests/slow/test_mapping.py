@@ -126,6 +126,10 @@ class SlowMappingTests(MappingTests):
     def test_brief_size_on_large_committed_repo(self):
         (self.main / 'src/exports.py').write_text(''.join(
             'def unused_{}():\n    return {}\n\n'.format(n, n) for n in range(2000)))
+        # Since T47 slop reports exports only for reachable modules (imported or
+        # in a package); a module nothing imports is skipped. Import it without
+        # naming any unused_* function, so all 2000 stay unreferenced.
+        (self.main / 'src/main.py').write_text('import exports\n')
         for n in range(30):
             path = self.main / 'docs/adr' / ('{:03d}.md'.format(n))
             path.parent.mkdir(parents=True, exist_ok=True)

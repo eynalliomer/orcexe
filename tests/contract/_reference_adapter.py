@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "plugins" / "orcexe" / "src"))
 
 from orcexe.adapters import Adapter, CodexAdapter, ClaudeCodeAdapter, CursorAdapter
-from tests.unit._timing import scaled
+from tests.unit._timing import roomy
 
 
 class ReferenceAdapter(Adapter):
@@ -51,7 +51,7 @@ class ReferenceAdapter(Adapter):
 # T13 registers the production Codex adapter here; the same inherited test class
 # is instantiated for every registry entry by test_adapter_contract.
 ADAPTERS = {"reference": ReferenceAdapter, "codex": CodexAdapter, "claude-code": ClaudeCodeAdapter, "cursor": CursorAdapter}
-ADAPTER_OPTIONS = {"codex": {"appserver_timeout_s": scaled(5)}}
+ADAPTER_OPTIONS = {"codex": {"appserver_timeout_s": roomy()}}
 
 
 def expected_outcome(adapter, scenario, request):

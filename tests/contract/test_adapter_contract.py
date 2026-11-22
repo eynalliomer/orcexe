@@ -8,7 +8,7 @@ import threading
 from unittest import mock
 
 from tests.contract._reference_adapter import ADAPTERS, ADAPTER_OPTIONS, ROOT, expected_outcome
-from tests.unit._timing import run_when_ready, scaled, wait_for
+from tests.unit._timing import roomy, run_when_ready, scaled, wait_for
 from tests.unit.test_gitutil import GitFixture
 from orcexe import proc
 from orcexe.adapters import Adapter, RunRequest, validate_run_result
@@ -54,14 +54,15 @@ class AdapterContract:
                          "ORCEXE_FAKE_APPSERVER_SCENARIO",
                          "ORCEXE_FAKE_READY_FILE", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
                          "GIT_CONFIG_SYSTEM", "GIT_TERMINAL_PROMPT"),
-            detect_timeout_s=scaled(3), kill_grace_s=scaled(.1),
+            # Probes (version, auth, models) must finish; see _timing.roomy.
+            detect_timeout_s=roomy(), kill_grace_s=scaled(.1),
             **dict(ADAPTER_OPTIONS.get(self.adapter_name, {}), **options))
 
     def request(self, name="run", profile="review", workdir=None):
         return RunRequest(name, "T11", self.manifest.tool,
             "claude-haiku-5-5" if self.cursor else "claude-sonnet-5-5" if self.claude else "gpt-6-luna", "low", profile,
             str(workdir or self.work), str(self.brief),
-            str(self.main / ".orcexe" / "runs" / name), timeout_s=scaled(4), stall_s=scaled(3))
+            str(self.main / ".orcexe" / "runs" / name), timeout_s=roomy(), stall_s=roomy())
 
     def call_log(self):
         if not self.calls.exists():
@@ -271,7 +272,7 @@ class AdapterContract:
         self.assert_result(self.request("spawn-error"), result)
 
     def test_timeout_and_cancel_runner_priority(self):
-        req = replace(self.request("timeout"), timeout_s=scaled(.3), stall_s=scaled(3))
+        req = replace(self.request("timeout"), timeout_s=scaled(.3), stall_s=roomy())
         adapter = self.make_adapter("stall")
         with mock.patch.object(adapter, "_classify", return_value=("completed", [])) as classify:
             result = adapter.run(req)
@@ -280,7 +281,7 @@ class AdapterContract:
         self.assert_result(req, result)
         marker = self.directory / "ready"
         marker.unlink(missing_ok=True)
-        req = replace(self.request("cancel"), timeout_s=scaled(8), stall_s=scaled(5))
+        req = replace(self.request("cancel"), timeout_s=roomy(60), stall_s=roomy())
         result_box, errors = [], []
 
         def running():
@@ -292,12 +293,12 @@ class AdapterContract:
         thread = threading.Thread(target=running)
         thread.start()
         try:
-            wait_for(marker.exists, seconds=5)
+            wait_for(marker.exists, seconds=30)
             self.assertFalse(self.make_adapter().cancel(req.run_id))
             self.assertTrue(adapter.cancel(req.run_id))
         finally:
             adapter.cancel(req.run_id)
-            thread.join(timeout=scaled(10))
+            thread.join(timeout=roomy())
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(result_box[0]["status"], "cancelled")

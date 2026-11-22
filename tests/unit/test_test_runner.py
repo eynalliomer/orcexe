@@ -1,5 +1,6 @@
 """Exercise runner isolation, discovery, failures, deadlines and scheduling."""
 
+import ast
 from contextlib import redirect_stdout
 import io
 import json
@@ -10,6 +11,45 @@ import unittest
 from unittest import mock
 
 from tests.tools import run_tests as runner
+
+
+TEMPORARY = {'TemporaryDirectory', 'mkdtemp', 'mkstemp', 'NamedTemporaryFile',
+             'TemporaryFile', 'SpooledTemporaryFile'}
+
+
+def repository_temporaries(source):
+    """tempfile calls whose arguments name ROOT (this repository) at all."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, 'attr', getattr(node.func, 'id', None))
+        values = node.args + [keyword.value for keyword in node.keywords]
+        if name in TEMPORARY and any(isinstance(inner, ast.Name) and inner.id == 'ROOT'
+                                     for value in values for inner in ast.walk(value)):
+            found.append(node.lineno)
+    return found
+
+
+def source_files(tests):
+    """The repository's own test sources under `tests`, in sorted order.
+
+    Dot-directories (the runner's live `.runner-*` temp, caches) and fixtures
+    are pruned: other modules create and delete files there while this runs.
+    """
+    found = []
+    for directory, names, files in os.walk(str(tests)):
+        names[:] = sorted(name for name in names
+                          if not name.startswith('.') and name not in ('fixtures', '__pycache__'))
+        found.extend(Path(directory) / name for name in files if name.endswith('.py'))
+    return sorted(found)
+
+
+def scan(tests):
+    exempt = {tests / 'tools' / 'run_tests.py'}
+    return ['{}:{}'.format(path.relative_to(tests).as_posix(), line)
+            for path in source_files(tests) if path not in exempt
+            for line in repository_temporaries(path.read_text(encoding='utf-8'))]
 
 
 class RunnerTests(unittest.TestCase):
@@ -123,6 +163,44 @@ class Tests(unittest.TestCase):
         summary = output.getvalue()
         self.assertLess(summary.index('alpha: tests='), summary.index('beta: tests='))
         self.assertLess(summary.index('beta: tests='), summary.index('gamma: tests='))
+
+
+class RepositoryTemporaryTests(unittest.TestCase):
+    """Tests use the default temp location (the runner's per-module TMPDIR).
+
+    A temp tree under the repository root survives as an untracked directory
+    whenever its cleanup does not run (T49). Only the runner itself places its
+    own directory there, and removes it.
+    """
+
+    def test_no_test_creates_temporary_paths_under_the_repository(self):
+        self.assertEqual(scan(Path(runner.ROOT) / 'tests'), [])
+
+    def test_scan_skips_runner_temp_and_fixtures_but_not_test_files(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        tests = Path(temporary.name) / 'tests'
+        bad = 'import tempfile\ntempfile.TemporaryDirectory(dir=str(ROOT))\n'
+        for name in ('.runner-abc/module-x/tmp/copy/test_copy.py', 'fixtures/fake.py',
+                     'unit/__pycache__/cached.py', 'tools/run_tests.py', 'unit/test_bad.py',
+                     'test_top.py'):
+            (tests / name).parent.mkdir(parents=True, exist_ok=True)
+            (tests / name).write_text(bad, encoding='utf-8')
+        (tests / 'unit/test_clean.py').write_text('import tempfile\n', encoding='utf-8')
+        self.assertEqual(scan(tests), ['test_top.py:2', 'unit/test_bad.py:2'])
+        self.assertNotIn(tests / '.runner-abc/module-x/tmp/copy/test_copy.py', source_files(tests))
+
+    def test_detector_on_source_snippets(self):
+        for source in ("tempfile.TemporaryDirectory(dir=str(ROOT))",
+                       "tempfile.TemporaryDirectory(prefix='x-', dir=str(ROOT / 'tests'))",
+                       "tempfile.mkdtemp('', 'x', ROOT)", "NamedTemporaryFile(dir=ROOT)"):
+            with self.subTest(source=source):
+                self.assertEqual(repository_temporaries(source), [1])
+        for source in ("tempfile.TemporaryDirectory(prefix='x-')",
+                       "tempfile.TemporaryDirectory(dir=self.directory)",
+                       "shutil.copytree(str(ROOT / 'a'), str(target))"):
+            with self.subTest(source=source):
+                self.assertEqual(repository_temporaries(source), [])
 
 
 if __name__ == '__main__':

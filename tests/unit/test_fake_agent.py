@@ -16,7 +16,7 @@ FIXTURES = FAKE.parent / 'cursor'
 
 class FakeAgentTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=str(ROOT / 'tests'))
+        self.tmp = tempfile.TemporaryDirectory(prefix='fake-agent-')
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)
         self.home = self.directory / 'home'

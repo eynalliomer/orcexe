@@ -7,7 +7,7 @@ import sys
 from unittest import mock
 
 from tests.unit.test_gitutil import GitFixture, ROOT
-from tests.unit._timing import run_when_ready, scaled
+from tests.unit._timing import roomy, run_when_ready, scaled
 from orcexe import fsio, proc
 from orcexe.adapters import CursorAdapter, RunRequest, validate_run_result
 from orcexe.manifest import Manifest, ManifestError
@@ -33,11 +33,12 @@ class CursorAdapterTests(GitFixture):
     def adapter(self, scenario='success', manifest=None, **env):
         current = dict(self.env, ORCEXE_FAKE_SCENARIO=scenario, **env)
         return CursorAdapter(manifest, env=current, allow_extra=tuple(current),
-            detect_timeout_s=scaled(3), kill_grace_s=scaled(.1))
+            # Version/auth/models probes must finish; see _timing.roomy.
+            detect_timeout_s=roomy(), kill_grace_s=scaled(.1))
 
     def request(self, name='run', profile='review', model='composer-2.5', effort='medium'):
         return RunRequest(name, 'T14', 'cursor', model, effort, profile, str(self.work),
-            str(self.brief), str(self.directory / name), timeout_s=scaled(4), stall_s=scaled(3))
+            str(self.brief), str(self.directory / name), timeout_s=roomy(), stall_s=roomy())
 
     def log(self):
         return [json.loads(c) for c in self.calls.read_text().splitlines()] if self.calls.exists() else []
@@ -166,8 +167,8 @@ class CursorAdapterTests(GitFixture):
                 ready = self.directory / ('ready-' + outcome)
                 adapter = self.adapter('quota-suspected' if outcome == 'failed' else 'stall',
                     ORCEXE_FAKE_READY_FILE=str(ready))
-                req = replace(self.request(outcome), timeout_s=scaled(.3) if outcome == 'timeout' else scaled(4),
-                              stall_s=scaled(.3) if outcome == 'stalled' else scaled(3))
+                req = replace(self.request(outcome), timeout_s=scaled(.3) if outcome == 'timeout' else roomy(),
+                              stall_s=scaled(.3) if outcome == 'stalled' else roomy())
                 runner = proc.run
                 def injected(argv, **options):
                     if '-p' not in argv or outcome == 'failed':
