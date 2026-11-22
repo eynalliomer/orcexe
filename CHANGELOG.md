@@ -1,5 +1,24 @@
 ## Unreleased
 
+### T55 — `answer --choice` takes a label or an index; scanned Python parses without warnings
+
+- `answer --choice QID=VALUE` accepts an option label or a zero-based index. A value of digits
+  that is in range is always read as an index, even when it equals another option's label; an
+  out-of-range digit string is matched as a label. Any other value is invalid: exit 2, stderr
+  `not_seen: answer_invalid`, then `valid choices for QID:` and one `  <index>: <label>` line per
+  option, and nothing is appended to `decisions.jsonl`. Other `answer_invalid` cases (unknown
+  question, empty `--text`, repeated or already decided id) keep the bare reason line.
+- `gate_lite.parse_python` wraps `ast.parse` with `SyntaxWarning` and `DeprecationWarning`
+  ignored inside the call only. Slop, the gate (`gate_lite._python_code`) and L0
+  (`task_l0._python_tests`) parse scanned Python through it, so an invalid escape such as `"\d"`
+  in scanned source no longer prints a warning. Trees and findings are identical to those for
+  warning-free source, and a real `SyntaxError` is still raised and handled as before.
+- Tests: `test_questions` label/index record equality, numeric-looking labels preferring the
+  in-range index, and the `valid choices for QID:` hint after the reason for `Nope`, `first`,
+  `9`, `-1` and an empty value; `test_ast_warnings` for empty stderr at every call site,
+  results matching warning-free source, tree equality with a plain parse, `SyntaxError` still
+  raised, and the filter staying scoped to the parse call.
+
 ### T54c — no deprecated ast nodes on 3.12; docs-only diffs pass L0 red-first
 
 - `slop._constant` checked `ast.Num` / `ast.Str` / `ast.NameConstant` alongside `ast.Constant`;
