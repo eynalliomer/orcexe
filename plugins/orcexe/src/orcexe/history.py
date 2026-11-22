@@ -303,11 +303,12 @@ def scan(repo, issues=False):
 
 def run_history(repo, issues=False):
     main, result = scan(repo, issues)
+    intake.require_output_root(main)
     directory = main / '.orcexe' / 'intake'
-    for parent in (main / '.orcexe', directory):
-        if parent.is_symlink():
-            raise intake.IntakeError('output_symlink')
-        parent.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink():
+        raise intake.IntakeError('output_symlink')
+    (main / '.orcexe').mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700, exist_ok=True)
     directory.chmod(0o700)
     for name, doc in result.items():
         fsio.atomic_write_json(directory / (name + '.json'), doc, mode=0o600)

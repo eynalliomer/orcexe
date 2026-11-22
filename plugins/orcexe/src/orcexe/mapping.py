@@ -704,10 +704,11 @@ def map_command(args):
 def repository_context(path):
     root = intake.repository_root(path)
     repo = intake.repository_root(gitutil.main_worktree(root))
-    directory = repo / '.orcexe'
-    if directory.is_symlink():
-        raise ValueError('output_symlink')
-    return repo, directory, gitutil.head(repo)
+    try:
+        fsio.require_main_orcexe(repo)
+    except fsio.OrcexeDirError as error:
+        raise ValueError('orcexe_invalid') from error
+    return repo, repo / '.orcexe', gitutil.head(repo)
 
 
 def _map_command(args):
@@ -725,8 +726,11 @@ def _map_command(args):
         invalid_original = None
         if previous is None and (directory / 'project-map.json').exists():
             invalid_original = published.contents(directory / 'project-map.json')
-        if (main / '.orcexe').is_symlink():
-            raise ValueError('output_symlink')
+        # Re-check before the first write: the state reads above may race a swap.
+        try:
+            fsio.require_main_orcexe(main)
+        except fsio.OrcexeDirError as error:
+            raise ValueError('orcexe_invalid') from error
         failure, step = 'write_failed', 'cleanup'
         cleanup_map_artifacts(main / '.orcexe', '.map-transaction-')
         failure, step = 'internal_error', 'observe'
@@ -838,7 +842,7 @@ def _map_command(args):
         published.report(kept + current_state.write(repo))
     except Exception as error:
         return report_failure(error, failure, step,
-                              ('manager_tool_not_read_only', 'not_a_repository', 'output_symlink',
+                              ('manager_tool_not_read_only', 'not_a_repository', 'output_symlink', 'orcexe_invalid',
                                'gitlink_tree', 'head_moved', 'manager_unavailable', 'state_dir_in_repository'))
     print(json.dumps(result, ensure_ascii=False) if args.json else 'Wrote .orcexe/project-map.json and project-map.md')
     return 0

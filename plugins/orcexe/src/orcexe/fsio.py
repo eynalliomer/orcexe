@@ -14,6 +14,31 @@ import tempfile
 _MISSING = object()  # Sentinel: distinguish "no default" from an explicit None default.
 
 
+class OrcexeDirError(ValueError):
+    """`.orcexe` exists but must not be used for project state (symlink or non-directory)."""
+
+
+def require_main_orcexe(main):
+    """Reject an unsafe main-worktree `.orcexe` before any lock, ledger, or mkdir.
+
+    Writer commands (`do`, `task`, `plan --run`, `run`, `trust`, `map`, `plan`,
+    `questions`, `answer`, `intake`, `slop`, `history`) call this first. Absent
+    `.orcexe` is allowed; nothing is created here.
+    """
+    path = Path(main) / ".orcexe"
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink():
+        raise OrcexeDirError(
+            ".orcexe is a symlink; remove or rename it at the repository root and retry.")
+    if path.is_file():
+        raise OrcexeDirError(
+            ".orcexe is a file, not a directory; remove or rename it at the repository root and retry.")
+    if not path.is_dir():
+        raise OrcexeDirError(
+            ".orcexe is not a directory; remove or rename it at the repository root and retry.")
+
+
 def _make_parents(directory, dir_mode):
     """Create missing ancestors of directory, each with dir_mode before umask."""
     # Path.mkdir(parents=True) does not apply mode to intermediate parents.

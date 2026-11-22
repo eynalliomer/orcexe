@@ -39,6 +39,17 @@ def _git(path, *args, nul=False, allow_failure=False):
     return result, output
 
 
+def resolve_repo_path(path):
+    """Resolve a repository path for `--repo`; missing paths are not repositories."""
+    root = Path(path)
+    if not root.exists():
+        raise GitError("not a repository")
+    try:
+        return root.resolve()
+    except OSError as error:
+        raise GitError("not a repository") from error
+
+
 def is_repo(path):
     result, text = _git(path, "rev-parse", "--is-inside-work-tree", allow_failure=True)
     if result.returncode:

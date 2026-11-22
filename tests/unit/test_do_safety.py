@@ -291,13 +291,45 @@ class DoSafetyTests(DoFixture):
         elsewhere.mkdir()
         pointer = self.repo / '.orcexe'
         for target in (elsewhere, self.root / 'missing'):
-            pointer.symlink_to(target)
-            result = self.invoke()
-            self.assertEqual(result['exit_code'], exitcodes.FAIL, result)
-            self.assertIn('symlink', result['message'])
-            self.assert_no_executor()
-            self.assertEqual(list(elsewhere.iterdir()), [])
-            pointer.unlink()
+            with self.subTest(target=target):
+                pointer.symlink_to(target, target_is_directory=True)
+                result = self.invoke()
+                self.assertEqual(result['exit_code'], exitcodes.USAGE, result)
+                self.assertIn('.orcexe', result['message'])
+                self.assertIn('symlink', result['message'])
+                self.assert_no_executor()
+                self.assertEqual(list(elsewhere.iterdir()), [])
+                self.assertFalse((self.repo / '.orcexe' / 'ledger.jsonl').exists())
+                pointer.unlink()
+
+
+    def test_l2_orcexe_file_is_refused(self):
+        (self.repo / '.orcexe').write_text('not a directory\n')
+        result = self.invoke()
+        self.assertEqual(result['exit_code'], exitcodes.USAGE, result)
+        self.assertIn('.orcexe', result['message'])
+        self.assert_no_executor()
+        self.assertFalse((self.repo / '.orcexe' / 'ledger.jsonl').exists())
+
+
+    def test_l2_nonexistent_repo_is_usage(self):
+        missing = self.root / 'missing-repo'
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            result = do.run_do(FAST, missing, timeout=scaled(60))
+        self.assertEqual(result['exit_code'], exitcodes.USAGE, result)
+        self.assertIn('repository', result['message'].lower())
+        self.assert_no_executor()
+        self.assertFalse((self.repo / '.orcexe').exists())
+
+
+    def test_l2_surrogate_task_is_usage_without_ledger(self):
+        result = self.invoke(task='\ud800')
+        self.assertEqual(result['exit_code'], exitcodes.USAGE, result)
+        self.assertIn('surrogates not allowed', result['message'])
+        self.assert_no_executor()
+        if (self.repo / '.orcexe' / 'ledger.jsonl').exists():
+            self.assertEqual(list(self.log().records(event='task.classified')), [])
+            self.assertEqual(list(self.log().records(event='task.state')), [])
 
 
     def test_l2_d1_fresh_dead_lock_reclaimed_with_abandoned_state(self):

@@ -725,13 +725,22 @@ def scan(repo):
     return main, report
 
 
+def require_output_root(main):
+    """Shared `.orcexe` pre-check for intake/history/slop; keeps their `output_symlink` reason."""
+    try:
+        fsio.require_main_orcexe(main)
+    except fsio.OrcexeDirError as error:
+        raise IntakeError('output_symlink') from error
+
+
 def run_intake(repo):
     main, report = scan(repo)
+    require_output_root(main)
     directory = main / '.orcexe' / 'intake'
-    for parent in (main / '.orcexe', directory):
-        if parent.is_symlink():
-            raise IntakeError('output_symlink')
-        parent.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink():
+        raise IntakeError('output_symlink')
+    (main / '.orcexe').mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700, exist_ok=True)
     directory.chmod(0o700)
     fsio.atomic_write_json(directory / 'u1.json', report, mode=0o600)
     return report

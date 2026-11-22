@@ -1,5 +1,23 @@
 ## Unreleased
 
+### T52b — `.orcexe` pre-check, usage exits for bad repo/task text, L0 test-command docs
+
+- Shared `fsio.require_main_orcexe` runs before any lock, ledger write, worktree or branch
+  in every writer (`do`, `task`, `plan --run`/`status`, `run`, `trust`, `map`, `plan`,
+  `questions`, `answer`, `intake`, `slop`, `history`). A symlink, dangling link or regular
+  file at `.orcexe` exits 2 with a remove/rename message; nothing is created. The check is
+  additive: `run` still refuses symlinks at `.orcexe/runs` and the run directory, `intake`/
+  `history` at `.orcexe/intake`, and `map` re-checks `.orcexe` before its first write.
+- Reasons: `do` reports it as a usage message; `map`, `plan`, `questions`, `task`,
+  `plan --run` and `status` report `orcexe_invalid` (replacing `output_symlink` for this
+  case; `planrun`/`status` no longer emit `output_symlink`); `intake`/`history`/`slop`
+  keep `output_symlink` (exit 2); `trust` names `.orcexe` in its exit-2 message.
+- `do`: a `--repo` path that does not exist exits 2 (was 70); an existing directory that
+  is not a repository keeps the everyday-mode exit 7. Task text that is not encodable
+  UTF-8 (lone surrogates) exits 2 before any ledger write (was 70 with an orphan
+  `task.state`). `task`/`plan --run` map a missing `--repo` to `not_a_repository` (2).
+- README and SKILL document the L0 test-command id/argv rule and `orcexe_invalid`.
+
 ### T52a — gate environment: declared interpreter (F5), runner summary (P3-1), L1 copy secrets (P3-3)
 
 - F5: project checks run with the project's declared Python, not whatever `python3` PATH has first.

@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import sys
 
-from orcexe import exitcodes
+from orcexe import exitcodes, fsio
 
 
 def _timeout(value):
@@ -36,9 +36,19 @@ def _trust_command(args):
             return False
 
     try:
-        main = Path(gitutil.main_worktree(args.repo or Path.cwd()))
-        if (main / ".orcexe").is_symlink():
-            raise trust.TrustError("Refusing symlink at main .orcexe")
+        repo = args.repo
+        explicit = repo is not None
+        try:
+            repo_path = gitutil.resolve_repo_path(repo) if explicit else Path.cwd().resolve()
+            if not gitutil.is_repo(repo_path):
+                raise gitutil.GitError("not a repository")
+            main = Path(gitutil.main_worktree(repo_path))
+        except gitutil.GitError as error:
+            raise trust.TrustError("not a repository") from error
+        try:
+            fsio.require_main_orcexe(main)
+        except fsio.OrcexeDirError as error:
+            raise trust.TrustError(str(error)) from error
         ledger_path = main / ".orcexe" / "trust-ledger.json"
         if args.trust_command == "list":
             result = {"entries": trust.list_entries(ledger_path, args.codex_home)}

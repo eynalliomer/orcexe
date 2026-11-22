@@ -24,7 +24,7 @@ import traceback
 
 from orcexe.adapters.base import safe_write_text
 
-from orcexe import classify, exitcodes, gate_lite, gitutil, isolation, ledger, redact, route, trust, worktree
+from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, isolation, ledger, redact, route, trust, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
@@ -58,6 +58,23 @@ class _Cancelled(BaseException):
 
 class _DoFailure(RuntimeError):
     pass
+
+
+def _validate_task_text(task):
+    if not isinstance(task, str):
+        raise ValueError("invalid task")
+    try:
+        task.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("surrogates not allowed") from error
+
+
+def _repo_usage(message):
+    return _report(dict(verdict="blocked", exit_code=exitcodes.USAGE, message=message))
+
+
+def _orcexe_usage(error):
+    return _report(dict(verdict="blocked", exit_code=exitcodes.USAGE, message=str(error)))
 
 
 def _lock_data(path):
@@ -365,14 +382,25 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
                                 message="Invalid --model-constraint: " + str(error)))
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and positive")
-        repo = Path.cwd() if repo is None else Path(repo).resolve()
-        if not gitutil.is_repo(repo):
-            return _report(dict(verdict="blocked", mode="everyday", exit_code=exitcodes.UNSUPPORTED,
-                message="v0.1 only handles code repositories; everyday tasks arrive in v0.4"))
-        main = Path(gitutil.main_worktree(repo))
-        if (main / ".orcexe").is_symlink():
-            return _report(dict(verdict="failed", exit_code=exitcodes.FAIL,
-                                message="Refusing symlink at main .orcexe"))
+        try:
+            _validate_task_text(task)
+        except ValueError as error:
+            return _report(dict(verdict="blocked", exit_code=exitcodes.USAGE, message=str(error)))
+        explicit_repo = repo is not None
+        try:
+            repo_path = gitutil.resolve_repo_path(repo) if explicit_repo else Path.cwd().resolve()
+            if not gitutil.is_repo(repo_path):
+                # An existing directory that is not a repository is everyday work
+                # (unsupported until v0.4); only a missing --repo path is usage.
+                return _report(dict(verdict="blocked", mode="everyday", exit_code=exitcodes.UNSUPPORTED,
+                    message="v0.1 only handles code repositories; everyday tasks arrive in v0.4"))
+            main = Path(gitutil.main_worktree(repo_path))
+        except gitutil.GitError:
+            return _repo_usage("The path is not a supported Git repository.")
+        try:
+            fsio.require_main_orcexe(main)
+        except fsio.OrcexeDirError as error:
+            return _orcexe_usage(error)
         task_id = "do-{}-{}".format(_utc().strftime("%Y%m%dT%H%M%S"), secrets.token_hex(2))
         run_id = task_id + "-r1"
         if not dry_run:

@@ -307,6 +307,20 @@ class PlanRunTests(TaskFixture):
         self.assertEqual(len(list(self.log().records(event='contract.frozen'))), 1)
 
 
+    def test_orcexe_symlink_at_repo_root_blocks_plan_run(self):
+        import shutil
+        self.saved = self.save()
+        target = self.directory / 'elsewhere'
+        target.mkdir()
+        shutil.rmtree(self.main / '.orcexe')
+        (self.main / '.orcexe').symlink_to(target, target_is_directory=True)
+        code, result, error = self.invoke_plan()
+        self.assertEqual((code, result.get('reason')), (2, 'orcexe_invalid'), result)
+        self.assertIn('not_seen: orcexe_invalid', error)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(list(target.iterdir()), [])
+
+
     def test_plan_preconditions_dispatch_nothing(self):
         for reason in ('plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered', 'no_route', 'output_symlink'):
             with self.subTest(reason=reason):

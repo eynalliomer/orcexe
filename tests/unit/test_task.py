@@ -180,6 +180,16 @@ class TaskTests(TaskFixture):
                 self.assertEqual((code, result['reason']), (2, 'plan_tampered'))
         self.assertFalse(self.counter.exists())
 
+    def test_orcexe_file_at_root_blocks_task(self):
+        import shutil
+        self.saved = self.save()
+        shutil.rmtree(self.main / '.orcexe')
+        (self.main / '.orcexe').write_text('not a directory\n')
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['reason']), (2, 'orcexe_invalid'))
+        self.assertEqual(self.requests, [])
+
+
     def test_real_plan_publication_and_approval_are_consumable(self):
         value = project(self.head)
         state = self.main / '.orcexe'

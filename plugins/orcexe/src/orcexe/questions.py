@@ -257,7 +257,8 @@ def questions_command(args):
             pass
     except Exception as error:
         return mapping.report_failure(error, failure, step,
-                                      ('map_missing', 'map_stale', 'output_symlink', 'not_a_repository', 'state_corrupt'))
+                                      ('map_missing', 'map_stale', 'output_symlink', 'orcexe_invalid', 'not_a_repository',
+                                       'state_corrupt'))
     print(json.dumps(result, ensure_ascii=False) if args.json else render(result))
     return 0
 

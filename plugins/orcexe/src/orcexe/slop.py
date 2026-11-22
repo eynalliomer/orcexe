@@ -1466,9 +1466,8 @@ def _markdown(report):
 
 def run_slop(repo):
     main, report = scan(repo)
+    intake.require_output_root(main)
     directory = main / '.orcexe'
-    if directory.is_symlink():
-        raise intake.IntakeError('output_symlink')
     directory.mkdir(mode=0o700, exist_ok=True)
     fsio.atomic_write_json(directory / 'slop.json', report, mode=0o600)
     from orcexe import published

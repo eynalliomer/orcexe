@@ -110,6 +110,13 @@ object (`tools`, `deny_models`, `exclude_families`, or `force` with tool/model/e
 `--dry-run` classifies and probes access/routes without a model call or any project
 write: no lock, ledger event, worktree, or brief.
 
+Before any lock or ledger write, `do` requires `.orcexe` to be absent or a real
+directory at the main worktree root. A symlink, dangling link or regular file
+there is a usage error (exit 2) naming `.orcexe` and asking to remove or rename
+it; nothing is created. A `--repo` path that does not exist exits 2; an
+existing directory that is not a Git repository keeps the everyday-mode exit 7. Task text must be encodable UTF-8; lone surrogates are
+rejected with `surrogates not allowed` before any ledger event.
+
 Reports and executor evidence live in `.orcexe/runs/<run-id>/`; the runs directory
 is private (0700) and `.orcexe/` is git-excluded. Reports redact task previews;
 `brief-src.md` and the adapter's `brief.md` (under `brief/` for Claude/Cursor) deliberately contain the verbatim task
@@ -371,9 +378,9 @@ the latter with `stalled`, `timeout`, `auth`, `quota`, `no_route`, or `failed`
 when an observed run/selection reason is available,
 preserving any existing map/history/direction files. Discovery refreshes and run
 receipts may still be written on failure. The disposable manager copy is removed.
-Non-repositories, gitlink-containing HEAD trees and a symlinked `.orcexe` report
-`not_seen: not_a_repository`, `not_seen: gitlink_tree` and `not_seen: output_symlink`,
-respectively. SIGINT/SIGTERM/SIGHUP/SIGQUIT stop the manager process group, remove its copy and
+Non-repositories, gitlink-containing HEAD trees and a `.orcexe` that is a symlink,
+dangling link or regular file report `not_seen: not_a_repository`,
+`not_seen: gitlink_tree` and `not_seen: orcexe_invalid`, respectively. SIGINT/SIGTERM/SIGHUP/SIGQUIT stop the manager process group, remove its copy and
 return the conventional `128 + signal` exit code.
 
 ## `plan`: tasks and one approval form
@@ -494,6 +501,7 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 | `map_stale` | 2 | Refresh the map at the current HEAD. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
 | `plan_not_proposed` | 2 | Only a proposed plan can be approved. |
@@ -567,7 +575,7 @@ zero attempts. Failed preconditions print `not_seen: <reason>` on stderr.
 | `lane_not_supported` | 1 | This entry point cannot execute the selected lane. |
 | `no_route` | 2 | The task has no eligible saved executor route. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
-| `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `partial` | 1 | At least one task was not accepted. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
@@ -668,7 +676,13 @@ calls in `.test.*`/`.spec.*` files. Added skip/focus markers, `SkipTest`,
 `pytest.skip`/`xfail`/`importorskip`, expected-failure decorators, hollow tests
 (no check, or an immediate `return`) and increased runtime skipped/xfailed/
 expected-failure counts fail `skip_added`. New or changed tests without assertions
-fail `assertion_missing`. L0 shares slop's check detector: Python `assert`, calls
+fail `assertion_missing`. **L0 test commands:** project checks in `commands.yaml`
+count as test commands when the command `id` and `argv` together match
+`test`, `tests`, `pytest`, or `unittest` at word boundaries (regex
+`(?:^|[-_/ .])(?:test|tests|pytest|unittest)(?:$|[-_/ .])` over
+`id + ' ' + joined argv`). Only those commands supply red-first and
+`test_count_dropped` runtime evidence; name checks accordingly (for example
+`id: unit-tests` with `argv: [python3, -m, pytest]`). L0 shares slop's check detector: Python `assert`, calls
 starting with `assert`/`expect`/`should`/`verify` on any receiver, `fail` calls,
 exception-check contexts, and `raise`/`throw` in the test body count as checks.
 This includes Deno std assertions, XCTest `XCTAssert*`/`XCTFail` and Swift
@@ -728,6 +742,7 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `observation_unavailable` | 1 | Required safety evidence could not be observed. |
 | `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `outside_allow` | 1 | A changed path is outside the frozen allowed scope. |
 | `pipes_held` | 1 | An escaped process may still hold the executor pipes. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
@@ -898,6 +913,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `manager_unavailable: timeout` | 2 | Manager failed: timeout. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /map-exit-reasons -->
@@ -913,6 +929,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `map_stale` | 2 | Refresh the map at the current HEAD. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `questions_invalid` | 2 | The map, goal or question data is invalid. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
 | `write_failed` | 2 | Publishing private state failed. |
@@ -978,7 +995,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | Reason | Code | Meaning |
 | --- | --- | --- |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
-| `output_symlink` | 2 | An output path is an unexpected symlink. |
+| `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_missing` | 2 | No saved plan exists. |
 | `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |

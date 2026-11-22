@@ -157,12 +157,18 @@ def write_status(main, plan, log):
 
 
 def _main(repo):
-    repo = Path.cwd() if repo is None else Path(repo).resolve()
-    if not gitutil.is_repo(repo):
-        raise ValueError('not_a_repository')
-    main = Path(gitutil.main_worktree(repo))
-    if (main / '.orcexe').is_symlink():
-        raise ValueError('output_symlink')
+    explicit_repo = repo is not None
+    try:
+        repo_path = gitutil.resolve_repo_path(repo) if explicit_repo else Path.cwd().resolve()
+        if not gitutil.is_repo(repo_path):
+            raise ValueError('not_a_repository')
+        main = Path(gitutil.main_worktree(repo_path))
+    except gitutil.GitError as error:
+        raise ValueError('not_a_repository') from error
+    try:
+        fsio.require_main_orcexe(main)
+    except fsio.OrcexeDirError as error:
+        raise ValueError('orcexe_invalid') from error
     return main
 
 

@@ -31,7 +31,7 @@ EXIT_REASONS = {
     **{reason: 2 for reason in (
         'plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered',
         'task_unknown', 'dependency_pending', 'lane_not_supported', 'no_route',
-        'not_a_repository', 'state_corrupt', 'output_symlink')},
+        'not_a_repository', 'state_corrupt', 'output_symlink', 'orcexe_invalid')},
 }
 
 
@@ -355,12 +355,18 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
     try:
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError('invalid_timeout')
-        repo = Path.cwd() if repo is None else Path(repo).resolve()
-        if not gitutil.is_repo(repo):
+        explicit_repo = repo is not None
+        try:
+            repo_path = gitutil.resolve_repo_path(repo) if explicit_repo else Path.cwd().resolve()
+            if not gitutil.is_repo(repo_path):
+                return finish('blocked', 'not_a_repository')
+            main = Path(gitutil.main_worktree(repo_path))
+        except gitutil.GitError:
             return finish('blocked', 'not_a_repository')
-        main = Path(gitutil.main_worktree(repo))
-        if (main / '.orcexe').is_symlink():
-            return finish('blocked', 'output_symlink')
+        try:
+            fsio.require_main_orcexe(main)
+        except fsio.OrcexeDirError:
+            return finish('blocked', 'orcexe_invalid')
         log = ledger.Ledger(ledger.default_path(main))
         dispatch_id = 'task-' + secrets.token_hex(8)
         if _context is None:

@@ -28,8 +28,8 @@ EXIT_REASONS = {
         'plan_missing', 'plan_mismatch', 'plan_stale', 'plan_not_proposed', 'plan_tampered', 'state_corrupt',
         'manager_unavailable: no_route', 'manager_unavailable: stalled', 'manager_unavailable: timeout',
         'manager_unavailable: auth', 'manager_unavailable: quota', 'manager_unavailable: failed',
-        'not_a_repository', 'output_symlink', 'gitlink_tree', 'head_moved', 'questions_invalid', 'write_failed',
-        'lane_not_supported', 'state_dir_in_repository')},
+        'not_a_repository', 'output_symlink', 'orcexe_invalid', 'gitlink_tree', 'head_moved', 'questions_invalid',
+        'write_failed', 'lane_not_supported', 'state_dir_in_repository')},
 }
 CONTRACT = dict(schema='orcexe.manager.plan.v1', tasks=[dict(
     id='T<n>', goal='str', files=dict(allow=['glob']), done=['str'], depends_on=['T<n>'],
@@ -489,8 +489,10 @@ def _plan_command(args):
             latest = {d['question_id']: d for d in decisions if d['question_id'] in used}
             brief = build_brief(form['goal'], project, form, [latest[k] for k in sorted(latest)])
             main = Path(gitutil.main_worktree(repo))
-            if (main / '.orcexe').is_symlink():
-                raise ValueError('output_symlink')
+            try:
+                fsio.require_main_orcexe(main)
+            except fsio.OrcexeDirError as error:
+                raise ValueError('orcexe_invalid') from error
             for root in (repo, main):
                 brief = brief.replace(str(root), '[REDACTED:repository]')
             adapters = {a.manifest.tool: a for a in (ClaudeCodeAdapter(), CodexAdapter(), CursorAdapter())}

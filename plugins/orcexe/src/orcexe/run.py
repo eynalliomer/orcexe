@@ -10,7 +10,7 @@ import threading
 
 from orcexe.adapters.base import (safe_write_text, safe_write_json)
 
-from orcexe import exitcodes, gitutil, redact, trust
+from orcexe import exitcodes, fsio, gitutil, redact, trust
 from orcexe.adapters import (ClaudeCodeAdapter, CodexAdapter, CursorAdapter,
                              RunRequest, validate_run_result)
 
@@ -86,7 +86,11 @@ def run_command(args):
         if not gitutil.is_repo(workdir):
             raise ValueError("orcexe run needs a git repository in v0.1; non-code work arrives "
                              "with the everyday mode in v0.4")
-        main = Path(gitutil.main_worktree(workdir))
+        try:
+            main = Path(gitutil.main_worktree(workdir))
+        except gitutil.GitError as error:
+            raise ValueError("The path is not a supported Git repository.") from error
+        fsio.require_main_orcexe(main)
         run_id = args.run_id if args.run_id is not None else "run-{}-{}".format(
             datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"), secrets.token_hex(2))
         # Validate the id and all request fields before creating any state.

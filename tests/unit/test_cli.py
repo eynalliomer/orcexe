@@ -3,6 +3,7 @@
 import json
 import io
 import os
+import shutil
 from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
@@ -15,6 +16,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "plugins" / "orcexe"
 LAUNCHER = PLUGIN / "bin" / "orcexe"
+
+from orcexe import exitcodes, gitutil
 
 
 class CliTests(unittest.TestCase):
@@ -177,6 +180,9 @@ class TrustCliTests(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         trust.record(self.ledger, frozenset(), frozenset({self.key}), "run", self.config)
+        patch = mock.patch("orcexe.gitutil.is_repo", return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
         patch = mock.patch("orcexe.gitutil.main_worktree", return_value=str(self.root))
         self.main_worktree = patch.start()
         self.addCleanup(patch.stop)
@@ -192,7 +198,7 @@ class TrustCliTests(unittest.TestCase):
         code, output = self.invoke("list", "--repo", str(self.root), "--codex-home", str(self.codex), "--json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output)["entries"][0]["key"], self.key)
-        self.main_worktree.assert_called_with(str(self.root))
+        self.main_worktree.assert_called_with(self.root.resolve())
         self.assertIn("present " + self.key, self.invoke("list")[1])
 
     def test_dry_run_refusal_apply_and_noop_exit_codes(self):
@@ -257,3 +263,55 @@ class TrustCliTests(unittest.TestCase):
             with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
                 cli.main(arguments)
             self.assertEqual(error.exception.code, 2)
+
+
+@unittest.skipIf(sys.platform == "win32", "Symlink guards require POSIX")
+class RunSymlinkGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="orcexe-run-symlink-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.main = self.root / "repo"
+        self.main.mkdir()
+        self.work = self.main
+        self.brief = self.main / "brief.md"
+        self.brief.write_text("brief\n", encoding="utf-8")
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+        (self.main / ".orcexe").mkdir(mode=0o700)
+        patches = (
+            mock.patch.object(gitutil, "is_repo", return_value=True),
+            mock.patch.object(gitutil, "main_worktree", return_value=str(self.main)),
+            mock.patch.object(gitutil, "_git", return_value=(0, ".git")),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _args(self, **overrides):
+        from argparse import Namespace
+        values = dict(tool="codex", model="m", effort="low", profile="review", run_id=None,
+                      timeout_min=30, stall_min=5, json=False,
+                      workdir=str(self.work), brief=str(self.brief))
+        values.update(overrides)
+        return Namespace(**values)
+
+    def _invoke(self, **overrides):
+        from orcexe import run
+        with mock.patch("orcexe.run.CodexAdapter", side_effect=AssertionError("adapter")):
+            return run.run_command(self._args(**overrides))
+
+    def test_symlinked_runs_directory_refused(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        (self.main / ".orcexe" / "runs").symlink_to(self.outside, target_is_directory=True)
+        self.assertEqual(self._invoke(), exitcodes.USAGE)
+        self.assertEqual(list(self.outside.iterdir()), [])
+
+    def test_symlinked_run_id_directory_refused(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        runs = self.main / ".orcexe" / "runs"
+        runs.mkdir(mode=0o700)
+        (runs / "manual-run").symlink_to(self.outside, target_is_directory=True)
+        self.assertEqual(self._invoke(run_id="manual-run"), exitcodes.USAGE)
+        self.assertEqual(list(self.outside.iterdir()), [])

@@ -721,7 +721,7 @@ class MappingTests(MappingFixture):
         destination.mkdir()
         (self.main / '.orcexe').symlink_to(destination, target_is_directory=True)
         code, out, err = self.invoke()
-        self.assertEqual((code, out, err.strip()), (2, '', 'not_seen: output_symlink'))
+        self.assertEqual((code, out, err.strip()), (2, '', 'not_seen: orcexe_invalid'))
         self.assertEqual(list(destination.iterdir()), [])
 
 
