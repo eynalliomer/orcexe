@@ -17,21 +17,82 @@ CRITERIA_CAP = 8
 OUTPUT_CAP = mapping.OUTPUT_CAP
 
 
-def select_evaluator(executor, adapters):
-    """Prefer another family, then another model, from exactly one access view."""
+# K17 step 2 (C16): Cursor may review read-only only after its review profile is
+# measured on the real tool. Unmeasured today, so this explicit switch stays off and
+# is the only way Cursor can enter the L1 chain.
+CURSOR_REVIEW_VERIFIED = False
+BASES = ('cross_family', 'cursor_read_only', 'same_family')
+RUNNABLE_TOOLS = ('claude-code', 'codex')
+
+
+def executor_models(executor):
+    """The executor's own model names: never an L1 for its own work."""
+    models = []
+    for model in (executor.get('model'), executor.get('model_actual')):
+        if isinstance(model, str) and model and model not in models:
+            models.append(model)
+    return models
+
+
+def executor_families(executor, access, roles):
+    """Families the executor's work may come from: its tool's, plus every model family.
+
+    A tool can serve another vendor's models (Cursor can run Claude or GPT models), so the
+    tool family alone is not enough: a model name that a Claude Code or Codex view lists
+    (live or in the priors) also counts as that tool's family.
+    """
+    by_tool = {a.tool: a.family for a in access if a.tool and a.family}
+    families = set()
+    tool_family = by_tool.get(executor['tool']) or executor.get('family')
+    if tool_family:
+        families.add(tool_family)
+    models = set(executor_models(executor))
+    for item in access:
+        if item.family and item.models is not None and models & set(item.models):
+            families.add(item.family)
+    for lanes in roles.stages.values():
+        for candidates in lanes.values():
+            for candidate in candidates:
+                if candidate.model in models and by_tool.get(candidate.tool):
+                    families.add(by_tool[candidate.tool])
+    return sorted(families)
+
+
+def evaluator_chain(executor, adapters):
+    """K17 order from exactly one access view: other family, Cursor (switch), same family.
+
+    Each entry is a route selection plus ``l1_basis``. The executor's model is denied
+    in every step; a family that cannot be told apart is never called cross_family.
+    """
     access = route.gather_access(list(adapters.values()))
     roles = route.load_roles()
-    family = next((a.family for a in access if a.tool == executor['tool']), None)
-    denied = [executor['model']]
-    if executor.get('model_actual') and executor['model_actual'] not in denied:
-        denied.append(executor['model_actual'])
-    constraints = dict(tools=['claude-code', 'codex'], deny_models=denied)
-    if family:
-        preferred = route.route('evaluator', 'standard', access, roles,
-                                constraints=dict(constraints, exclude_families=[family]))
-        if preferred['tool'] is not None:
-            return preferred
-    return route.route('evaluator', 'standard', access, roles, constraints=constraints)
+    families = executor_families(executor, access, roles)
+    denied = executor_models(executor)
+    others = sorted({a.family for a in access if a.family and a.family not in families})
+    steps = []
+    if families:
+        steps.append(('cross_family', ['claude-code', 'codex'], families))
+    if CURSOR_REVIEW_VERIFIED:
+        steps.append(('cursor_read_only', ['cursor'], families))
+    steps.append(('same_family', ['claude-code', 'codex'], others if families else []))
+    chain, tried = [], []
+    for basis, tools, excluded in steps:
+        while True:
+            constraints = dict(tools=tools, deny_models=denied + tried)
+            if excluded:
+                constraints['exclude_families'] = excluded
+            selection = route.route('evaluator', 'standard', access, roles, constraints=constraints)
+            if selection['tool'] is None:
+                break
+            tried.append(selection['model'])
+            chain.append(dict(selection, l1_basis=basis))
+    return chain
+
+
+def select_evaluator(executor, adapters):
+    """First K17 candidate, or a selection without a tool."""
+    chain = evaluator_chain(executor, adapters)
+    return chain[0] if chain else dict(tool=None, model=None, effort=None, l1_basis=None)
 
 
 def parse_rubric(text, done):
@@ -86,12 +147,17 @@ def build_brief(contract, diff, gate, l0):
             'diff <=65536 characters. Inspect copied files if the diff is truncated.\n')
 
 
+def call_name(call):
+    """Output folder and run-id suffix of the n-th evaluator call in one attempt."""
+    return 'l1' if call == 1 else 'l1-' + str(call)
+
+
 def evaluate(*, repo_path, tree, contract, gate, l0, selection, adapter, run_dir, run_id,
-             activate=None, timeout_s=mapping.MANAGER_TIMEOUT_S):
+             activate=None, timeout_s=mapping.MANAGER_TIMEOUT_S, call=1):
     """Run once with manager budgets; malformed output never consumes another attempt."""
-    if selection.get('tool') not in ('claude-code', 'codex'):
+    if selection.get('tool') not in RUNNABLE_TOOLS:
         return dict(reason='l1_unavailable', rubric=None)
-    directory = Path(run_dir) / 'l1'
+    directory = Path(run_dir) / call_name(call)
     deadline = time.monotonic() + 30
     try:
         _, diff = gate_lite._git(repo_path, 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
@@ -111,7 +177,7 @@ def evaluate(*, repo_path, tree, contract, gate, l0, selection, adapter, run_dir
                         path.unlink()
             gate_lite._git(copy, 'init', '--quiet', '--template=', deadline=time.monotonic() + 10)
             profile = 'manager' if selection['tool'] == 'claude-code' else 'review'
-            req = RunRequest(run_id + '-l1', contract['task_id'], selection['tool'], selection['model'],
+            req = RunRequest(run_id + '-' + call_name(call), contract['task_id'], selection['tool'], selection['model'],
                              selection['effort'], profile, str(copy), str(directory / 'brief-source.md'),
                              str(directory), timeout_s=min(timeout_s, mapping.MANAGER_TIMEOUT_S),
                              stall_s=min(timeout_s, mapping.MANAGER_STALL_S))

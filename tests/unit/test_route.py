@@ -47,14 +47,14 @@ class RolesTests(unittest.TestCase):
     def test_shipped_pack_and_immutable_priors(self):
         roles = load_roles()
         self.assertEqual(roles.version, 1)
-        self.assertEqual(roles.as_of, "2026-11-17")
+        self.assertEqual(roles.as_of, "2026-11-22")
         self.assertEqual(roles.evidence,
                          "VARSAYIM — karar 104; v0.6 değerlendirme programında ölçülecek")
         expected = {
             "manager": {"any": [("claude-opus-5-5", "high")]},
             "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium"), ("composer-2.5", "medium")],
                          "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high"), ("composer-2.5", "medium")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high"), ("composer-2.5", "medium")]},
-            "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}
+            "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium"), ("claude-opus-5-5", "medium"), ("gpt-6-sol", "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}
         self.assertEqual({stage: {lane: [(c.model, c.effort) for c in candidates]
                                  for lane, candidates in lanes.items()}
                           for stage, lanes in roles.stages.items()}, expected)
@@ -133,7 +133,7 @@ class RolesTests(unittest.TestCase):
 
     def test_default_path_is_package_relative(self):
         with mock.patch("pathlib.Path.cwd", side_effect=AssertionError("must not use cwd")):
-            self.assertEqual(load_roles().as_of, "2026-11-17")
+            self.assertEqual(load_roles().as_of, "2026-11-22")
 
 
 class RouteTests(unittest.TestCase):
@@ -150,7 +150,7 @@ class RouteTests(unittest.TestCase):
             "schema": "orcexe.route.v1", "stage": "executor", "lane": "fast", "tool": "codex",
             "family": "openai", "model": FIRST, "effort": "medium", "confidence": "normal",
             "basis": ["prior:roles.yaml#executor.fast[0]", "access:live", "quota:ok(61%)"],
-            "skipped": [], "roles_as_of": "2026-11-17"})
+            "skipped": [], "roles_as_of": "2026-11-22"})
 
     def test_live_model_absent_selects_second_prior(self):
         result = self.choose(replace(SEEN, models={SECOND: EFFORTS}))

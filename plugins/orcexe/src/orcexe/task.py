@@ -237,11 +237,62 @@ def _land(main, wt, tree, dispatch_id, identity):
     return ref
 
 
+def _remembered_rubric(directory, data, done):
+    """The stored rubric of a ledger verdict, or ledger-only criteria if it is unreadable."""
+    path = (directory / ('attempt-' + str(data['attempt'])) / task_l1.call_name(data.get('call') or 1)
+            / 'rubric.json')
+    marks = list(data['criteria'])
+    try:
+        if not path.is_symlink():
+            rubric = task_l1.parse_rubric(path.read_text(encoding='utf-8'), done)
+            if _marks(rubric) == marks:
+                return rubric
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+    criteria = []
+    for mark in marks:
+        identifier, _, verdict = mark.rpartition(':')
+        criteria.append({'id': identifier, 'pass': verdict == 'pass',
+                         'reason': 'An earlier L1 verdict (' + data['run_id'] + ') judged this same tree.'})
+    return dict(schema='orcexe.rubric.v1', criteria=criteria,
+                overall_pass=all(c['pass'] for c in criteria))
+
+
+def _l1_memory(log, task_id, plan_id, digest, directory, done):
+    """P2-3: rebuild tree -> rejections from this contract's own ledger records.
+
+    Only rejections come back from the ledger: a remembered rejection can only cost
+    budget, while a remembered pass would accept without asking L1, so a pass is asked
+    again. Records whose criteria are not exactly d1..dN for the contract are ignored.
+    """
+    expected = ['d' + str(i) for i in range(1, len(done) + 1)]
+    memory, scoped = {}, False
+    for record in log.records(task=task_id):
+        event, data = record['event'], record['data']
+        if event == 'contract.frozen':
+            scoped = data.get('plan_id') == plan_id and data.get('contract_sha256') == digest
+            memory = {}
+        elif (scoped and event == 'l1.verdict' and data.get('plan_id') == plan_id
+                and data.get('reason') is None and data['criteria'] and isinstance(data.get('tree'), str)
+                and data.get('basis') in task_l1.BASES and data.get('reused_from') is None
+                and data['tree'] not in memory
+                and [m.rpartition(':')[0] for m in data['criteria']] == expected
+                and all(m.rpartition(':')[2] in ('pass', 'fail') for m in data['criteria'])
+                and any(m.endswith(':fail') for m in data['criteria'])):
+            memory[data['tree']] = dict(model=data['model'], basis=data['basis'], run_id=data['run_id'],
+                                        rubric=_remembered_rubric(directory, data, done))
+    return memory
+
+
+def _marks(rubric):
+    return [] if rubric is None else [c['id'] + (':pass' if c['pass'] else ':fail') for c in rubric['criteria']]
+
+
 def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False):
     """Return a task.v1 summary plus an internal exit_code; never land or print."""
     summary = dict(schema='orcexe.task.v1', task_id=task_id, plan_id=plan_id,
                    state='blocked', reason=None, attempts=0, contract_sha256=None,
-                   escalation=None, land=None, exit_code=2)
+                   escalation=None, land=None, l1=None, exit_code=2)
     log = lock_path = lock_info = contract_path = directory = None
     adapter = run_id = active_run_id = current_request = None
     frozen = attempt_open = False
@@ -262,7 +313,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
             except ValueError:
                 final, reason = 'rejected', 'contract_tampered'
         if final not in ('accepted', 'gate_passed'):
-            summary['land'] = None
+            summary['land'] = summary['l1'] = None
         if log is not None and frozen:
             try:
                 if attempt_open:
@@ -281,10 +332,10 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                     data['commit'] = accepted_commit
                 log.append('task.state', task_id, data)
                 if final == 'accepted':
-                    summary['land'] = planrun.land(main, plan)
+                    summary['land'] = planrun.land(main, plan, log)
             except (OSError, ValueError, ledger.LedgerError):
                 final, reason = 'rejected', 'state_tampered' if reason == 'state_tampered' else 'internal_error'
-                summary['land'] = None
+                summary['land'] = summary['l1'] = None
         state = final
         summary.update(state=final, reason=reason,
                        exit_code=130 if received is not None else EXIT_REASONS.get(reason or final, 1))
@@ -334,6 +385,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
         directory = main / '.orcexe/runs' / dispatch_id
         contract_path = directory / 'contract.lite.json'
         start = 0
+        l1_memory = {}
         if _resume and prior['state'] in planrun.UNFINISHED and prior['contract'] is not None:
             saved = prior['contract']
             contract_path = main / saved['path']
@@ -347,6 +399,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
             if (contract['plan_id'] != plan_id or contract['task_id'] != task_id
                     or contract['head'] != base):
                 raise ValueError('contract_tampered')
+            l1_memory = _l1_memory(log, task_id, plan_id, digest, directory, contract['done'])
         else:
             contract = dict(schema='orcexe.contract.lite.v1', task_id=task_id, plan_id=plan_id,
                             goal=task['goal'], files=task['files'], done=task['done'],
@@ -381,7 +434,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
         adapter = {'codex': CodexAdapter, 'claude-code': ClaudeCodeAdapter,
                    'cursor': CursorAdapter}[selection['tool']]()
         executor_adapter = adapter
-        evaluator_adapters = evaluator_selection = None
+        evaluator_adapters = evaluator_chain = None
         feedback = None
 
         def activate(evaluator, identifier):
@@ -505,37 +558,71 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 gate['checks'].extend(l0['checks'])
                 passed = l0['passed']
                 if passed:
-                    if evaluator_adapters is None:
-                        evaluator_adapters = {'codex': executor_adapter if selection['tool'] == 'codex' else CodexAdapter(),
-                            'claude-code': executor_adapter if selection['tool'] == 'claude-code' else ClaudeCodeAdapter()}
-                        try:
-                            evaluator_selection = task_l1.select_evaluator(dict(selection, model_actual=result['model_actual']), evaluator_adapters)
-                        except Exception:
-                            evaluator_selection = {'tool': None}
-                    if evaluator_selection['tool'] is None:
-                        l1_reason = 'l1_unavailable'
-                    else:
-                        log.append('l1.started', task_id, dict(plan_id=plan_id, run_id=run_id,
-                            attempt=attempt, tool=evaluator_selection['tool'], model=evaluator_selection['model']))
-                        evaluation = task_l1.evaluate(repo_path=main, tree=observed['tree'], contract=contract,
-                            gate=gate, l0=l0, selection=evaluator_selection,
-                            adapter=evaluator_adapters[evaluator_selection['tool']], run_dir=attempt_dir,
-                            run_id=run_id, activate=activate, timeout_s=timeout)
-                        read_contract(contract_path, digest)
-                        if received is not None:
-                            raise do._Cancelled()
-                        l1_reason = evaluation['reason']
-                        rubric = evaluation['rubric']
+                    tree = observed['tree']
+                    own = task_l1.executor_models(dict(selection, model_actual=result['model_actual']))
+                    remembered = l1_memory.get(tree)
+                    rubric, verdict = None, None
+                    if remembered is not None and remembered['model'] not in own:
+                        # P2-3: a rubric verdict for this tree is final; reuse, never re-ask.
+                        rubric, verdict, l1_reason = remembered['rubric'], remembered, None
                         log.append('l1.verdict', task_id, dict(plan_id=plan_id, run_id=run_id,
-                            attempt=attempt, model=evaluator_selection['model'], reason=l1_reason,
-                            criteria=[] if rubric is None else [c['id'] + (':pass' if c['pass'] else ':fail')
-                                                               for c in rubric['criteria']]))
-                        if rubric is not None:
-                            passed = all(c['pass'] for c in rubric['criteria'])
-                            l1_accepted = passed
-                            if not passed:
-                                gate['checks'].extend(dict(id=c['id'], status='fail', detail=c['reason'])
-                                                      for c in rubric['criteria'] if not c['pass'])
+                            attempt=attempt, model=remembered['model'], reason=None, criteria=_marks(rubric),
+                            basis=remembered['basis'], tree=tree, reused_from=remembered['run_id']))
+                    else:
+                        if evaluator_adapters is None:
+                            evaluator_adapters = {'codex': executor_adapter if selection['tool'] == 'codex' else CodexAdapter(),
+                                'claude-code': executor_adapter if selection['tool'] == 'claude-code' else ClaudeCodeAdapter()}
+                            if task_l1.CURSOR_REVIEW_VERIFIED:
+                                evaluator_adapters['cursor'] = (executor_adapter if selection['tool'] == 'cursor'
+                                                                else CursorAdapter())
+                            try:
+                                family = getattr(executor_adapter.manifest, 'family', None)
+                            except Exception:
+                                family = None
+                            try:
+                                evaluator_chain = task_l1.evaluator_chain(dict(selection, family=family,
+                                    model_actual=result['model_actual']), evaluator_adapters)
+                            except Exception:
+                                evaluator_chain = []
+                        l1_reason = 'l1_unavailable'
+                        call = 0
+                        # K17 at run time: an unavailable evaluator yields to the next
+                        # candidate of the same access snapshot, each once per attempt.
+                        for candidate in evaluator_chain:
+                            if candidate['model'] in own or candidate['tool'] not in task_l1.RUNNABLE_TOOLS:
+                                continue
+                            call += 1
+                            log.append('l1.started', task_id, dict(plan_id=plan_id, run_id=run_id,
+                                attempt=attempt, tool=candidate['tool'], model=candidate['model'],
+                                basis=candidate['l1_basis'], call=call))
+                            evaluation = task_l1.evaluate(repo_path=main, tree=tree, contract=contract,
+                                gate=gate, l0=l0, selection=candidate,
+                                adapter=evaluator_adapters[candidate['tool']], run_dir=attempt_dir,
+                                run_id=run_id, activate=activate, timeout_s=timeout, call=call)
+                            read_contract(contract_path, digest)
+                            if received is not None:
+                                raise do._Cancelled()
+                            l1_reason = evaluation['reason']
+                            rubric = evaluation['rubric']
+                            log.append('l1.verdict', task_id, dict(plan_id=plan_id, run_id=run_id,
+                                attempt=attempt, model=candidate['model'], reason=l1_reason,
+                                criteria=_marks(rubric), basis=candidate['l1_basis'], tree=tree, call=call))
+                            if rubric is not None:
+                                verdict = dict(model=candidate['model'], basis=candidate['l1_basis'],
+                                               run_id=run_id, rubric=rubric)
+                                l1_memory[tree] = verdict
+                            # Malformed output is a verdict on this evaluator, not availability.
+                            if l1_reason != 'l1_unavailable':
+                                break
+                    if rubric is not None:
+                        passed = all(c['pass'] for c in rubric['criteria'])
+                        l1_accepted = passed
+                        if passed:
+                            summary['l1'] = dict(basis=verdict['basis'], model=verdict['model'],
+                                                 reused=verdict is remembered)
+                        else:
+                            gate['checks'].extend(dict(id=c['id'], status='fail', detail=c['reason'])
+                                                  for c in rubric['criteria'] if not c['pass'])
                 if gate_lite.snapshot_controls(main, wt) != controls:
                     return finish('rejected', 'git_controls_changed')
             # The gate receipt binds immutable objects. As with do, a later
@@ -562,7 +649,10 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 _, head = do._git(main, 'rev-parse', '--verify', 'HEAD')
                 action = 'merge --ff-only ' if head.decode().strip() == wt.base_commit else 'cherry-pick '
                 summary['land'] = dict(ref=ref, command='git -C ' + shlex.quote(str(main))
-                                       + ' ' + action + shlex.quote(ref))
+                                       + ' ' + action + shlex.quote(ref),
+                                       # This ref sits on the chain tip: earlier tasks ride along.
+                                       l1_basis=planrun.l1_basis(plan, planrun.task_records(plan, log),
+                                           (task_id, summary['l1']['basis'] if summary['l1'] else 'none')))
                 return finish('accepted' if isolated != 'none' and (contract['lane'] == 'fast' or l1_accepted) else 'gate_passed', l1_reason)
             feedback = _feedback(attempt, gate['checks'])
         return finish('exhausted', 'exhausted')
@@ -604,8 +694,12 @@ def task_command(args):
             print('not_seen: ' + clean['reason'])
         if clean['escalation']:
             print('Escalation: ' + json.dumps(clean['escalation'], ensure_ascii=False))
+        if clean['l1']:
+            print('L1 basis: ' + clean['l1']['basis'])
         if clean['land']:
             print('Human landing command (review the frozen commit):\n' + clean['land']['command'])
+            for line in planrun._basis_lines(clean['land'])[1:]:
+                print(line)
     if code == exitcodes.USAGE and clean['reason']:
         print('not_seen: ' + clean['reason'], file=sys.stderr)
     return code

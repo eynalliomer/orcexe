@@ -1,5 +1,44 @@
 ## Unreleased
 
+### T51 — L1 fallback chain (K17), tree → verdict memory (P2-3), `l1.basis`
+
+- K17 chain from one access snapshot (`task_l1.evaluator_chain`): every eligible evaluator of
+  another family, then Cursor read-only, then another model of the executor's family. The
+  executor's `model` and `model_actual` are never candidates. Cursor sits behind
+  `task_l1.CURSOR_REVIEW_VERIFIED = False` (C16: its review profile is not measured on the real
+  tool); a test pins it off, and the Cursor review run itself is not built.
+- Run-time fallback: an evaluator run that ends unavailable (quota, auth, timeout, stall,
+  non-zero exit, `pipes_held`, `model_mismatch`) hands over to the next candidate in the same
+  attempt, each at most once, without re-probing; every call writes its own `l1.started` and
+  `l1.verdict` (later calls use `attempt-N/l1-K/`). Malformed output (`l1_invalid`) stays
+  terminal. No candidate left still ends `gate_passed` + `l1_unavailable`.
+- `l1.started` / `l1.verdict` carry `basis` (`cross_family` | `cursor_read_only` |
+  `same_family`) and `call`; `l1.verdict` also carries the evaluated `tree`. The task summary has
+  `l1: {basis, model, reused}` for the passing verdict (null otherwise) and the text form prints
+  `L1 basis: …`. All new ledger fields are optional; old ledgers still read.
+- P2-3: within one frozen contract (also after `--resume`, rebuilt from the ledger), a rubric
+  verdict for a tree is final. A later attempt with the same tree reuses it without calling L1
+  (`l1.verdict` with `reused_from`; a remembered rejection gives the same feedback, read back
+  from the stored rubric). `l1_unavailable` / `l1_invalid` are not remembered; the project gate
+  and L0 always run again.
+- L2 r2 (P2-1): the land ref can carry several tasks' commits, so the basis is derived per accepted
+  task from the ledger (`planrun.task_records` → `l1_basis`, the passing `l1.verdict` of the
+  accepting attempt, asked or reused). `land.l1_basis` is `{tasks: [{task_id, basis}], weakest}`
+  (order cross_family > cursor_read_only > same_family > unknown > none; `unknown` = a pre-T51
+  passing verdict without basis, `none` = accepted without L1, e.g. fast lane). `plan --run` JSON
+  tasks carry `l1_basis`; `status.md` has an `L1 basis` column and a weakest-basis line.
+- L2 r2 (P2-2): memory rebuilt from the ledger on `--resume` keeps only rejections whose criteria
+  are exactly `d1..dN` for the contract; a remembered pass is never reused from the ledger (the
+  same tree is asked again). Within one run both stay remembered.
+- L2 r2 (P3-1): the executor's family set is its tool family plus the family of every tool that
+  lists its `model`/`model_actual` (live or in the priors), so a Cursor executor running a Claude or
+  GPT model is not `cross_family` against that vendor. `cursor.yaml` says `family: cursor`, which is
+  right for Cursor's own `composer-2.5`.
+- L2 r2 (P3-5): `roles.yaml` `as_of` is 2026-11-22 (pins in `tests/unit/test_route.py` updated).
+- Changed assertions: `tests/unit/test_task.py` summary key set now includes `l1`;
+  `tests/unit/test_route.py` `as_of` / `roles_as_of` pins 2026-11-17 → 2026-11-22.
+- Shipped `roles.yaml` evaluator list gains same-family alternates (`claude-opus-5-5`, `gpt-6-sol`) after the cross-family pair, so K17 step 3 is reachable with shipped data (main session).
+
 ### T50 — plan-aware ledger KPIs (K7 split) and `questions.form`
 
 - `ledger.kpis` keys tasks by `(plan_id, task)`, attributes `attempt.ended` via

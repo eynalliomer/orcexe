@@ -227,7 +227,7 @@ class TaskTests(TaskFixture):
         self.assertEqual((self.main / 'src/app.py').read_text(), APP)
         self.assertTrue(self.log().verify()['ok'])
         self.assertEqual(set(result), {'schema', 'task_id', 'plan_id', 'state', 'reason',
-                                      'attempts', 'contract_sha256', 'escalation', 'land'})
+                                      'attempts', 'contract_sha256', 'escalation', 'land', 'l1'})
 
     def test_fast_success_is_accepted(self):
         self.saved = self.save([plan_task()])

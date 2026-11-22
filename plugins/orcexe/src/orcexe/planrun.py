@@ -22,7 +22,7 @@ def task_records(plan, log):
     """Project CLI records only, scoped to this plan and latest frozen contract."""
     identifier = plan['plan_id']
     result = {t['id']: dict(task_id=t['id'], state='pending', reason=None,
-                           attempts=0, contract=None) for t in plan['tasks']}
+                           attempts=0, contract=None, l1_basis=None, l1_pass=None) for t in plan['tasks']}
     owners = {}
     for record in log.records():
         key, event, data = record['task'], record['event'], record['data']
@@ -32,12 +32,34 @@ def task_records(plan, log):
             continue
         item = result[key]
         if event == 'contract.frozen':
-            item.update(state='contract.frozen', reason=None, attempts=0, contract=data)
+            item.update(state='contract.frozen', reason=None, attempts=0, contract=data,
+                        l1_basis=None, l1_pass=None)
         elif event == 'attempt.started':
-            item.update(state='running', reason=None, attempts=data['attempt'])
+            item.update(state='running', reason=None, attempts=data['attempt'], l1_pass=None)
+        elif event == 'l1.verdict':
+            # The passing verdict (asked or reused) of the attempt that is accepted next.
+            passed = (data.get('reason') is None and data['criteria']
+                      and all(c.endswith(':pass') for c in data['criteria']))
+            item['l1_pass'] = (data.get('basis') if data.get('basis') in L1_BASES[:3] else 'unknown') if passed else None
         elif event == 'task.state':
-            item.update(state=data['to'], reason=data['reason'])
+            item.update(state=data['to'], reason=data['reason'],
+                        l1_basis=(item['l1_pass'] or 'none') if data['to'] == 'accepted' else None)
     return result
+
+
+# Strongest first. 'unknown': a passing verdict recorded before T51 (no basis);
+# 'none': accepted without any L1 verdict (fast lane). Neither is ever cross_family.
+L1_BASES = ('cross_family', 'cursor_read_only', 'same_family', 'unknown', 'none')
+
+
+def l1_basis(plan, records, extra=None):
+    """Per accepted task basis behind the chain, and the weakest of them."""
+    tasks = [dict(task_id=t['id'], basis=records[t['id']]['l1_basis']) for t in plan['tasks']
+             if records[t['id']]['state'] == 'accepted']
+    if extra is not None:
+        tasks.append(dict(task_id=extra[0], basis=extra[1] if extra[1] in L1_BASES else 'none'))
+    weakest = max((t['basis'] for t in tasks), key=L1_BASES.index, default=None)
+    return dict(tasks=tasks, weakest=weakest)
 
 
 def chain_ref(plan):
@@ -77,17 +99,18 @@ def advance(main, plan, commit, base):
     do._git(main, 'update-ref', chain_ref(plan), commit, base)
 
 
-def land(main, plan):
+def land(main, plan, log):
     tip = chain_tip(main, plan)
     if tip is None or tip == plan['head']:
         return None
     action = 'merge --ff-only ' if gitutil.head(main) == plan['head'] else 'cherry-pick '
     ref = chain_ref(plan)
-    return dict(ref=ref, command='git -C ' + shlex.quote(str(main)) + ' ' + action + shlex.quote(ref))
+    return dict(ref=ref, command='git -C ' + shlex.quote(str(main)) + ' ' + action + shlex.quote(ref),
+                l1_basis=l1_basis(plan, task_records(plan, log)))
 
 
 def public_tasks(records):
-    return [{k: item[k] for k in ('task_id', 'state', 'reason', 'attempts')}
+    return [{k: item[k] for k in ('task_id', 'state', 'reason', 'attempts', 'l1_basis')}
             for item in records.values()]
 
 
@@ -101,19 +124,29 @@ def run_state(records):
 def status(main, plan, log):
     records = task_records(plan, log)
     return dict(schema='orcexe.status.v1', plan_id=plan['plan_id'],
-                plan_status=plan['status'], tasks=public_tasks(records), land=land(main, plan))
+                plan_status=plan['status'], tasks=public_tasks(records), land=land(main, plan, log))
 
 
 def render(plan, result):
     lines = ['# Plan ' + plan['plan_id'], '', 'Status: ' + result['plan_status'], '',
-             '| ID | Lane | State | Attempts | Reason |', '| --- | --- | --- | --- | --- |']
+             '| ID | Lane | State | Attempts | Reason | L1 basis |', '| --- | --- | --- | --- | --- | --- |']
     lanes = {t['id']: t['lane'] for t in plan['tasks']}
     for item in result['tasks']:
-        values = (item['task_id'], lanes[item['task_id']], item['state'], item['attempts'], item['reason'] or '-')
+        values = (item['task_id'], lanes[item['task_id']], item['state'], item['attempts'], item['reason'] or '-',
+                  item.get('l1_basis') or '-')
         lines.append('| ' + ' | '.join(str(v).replace('|', '&#124;').replace('\n', ' ') for v in values) + ' |')
     if result['land']:
         lines += ['', 'Human landing command (review the integration chain):', '', result['land']['command']]
+        lines += _basis_lines(result['land'])
     return '\n'.join(lines) + '\n'
+
+
+def _basis_lines(land_form):
+    basis = (land_form or {}).get('l1_basis')
+    if not basis or not basis['tasks']:
+        return []
+    return ['', 'L1 basis behind this ref (weakest: ' + str(basis['weakest']) + '): '
+            + ', '.join(t['task_id'] + '=' + str(t['basis']) for t in basis['tasks'])]
 
 
 def write_status(main, plan, log):
@@ -173,7 +206,7 @@ def run_plan(identifier, repo=None, *, resume=False):
         # The same approval/hash/HEAD/tamper checks as task, once under the lock.
         plan = task._read_plan(main, identifier, None, log)
         records = task_records(plan, log)
-        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan))
+        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
         if any(t['state'] in UNFINISHED for t in records.values()) and not resume:
             raise ValueError('run_interrupted')
         ensure_chain(main, plan, log)
@@ -206,12 +239,12 @@ def run_plan(identifier, repo=None, *, resume=False):
                     raise do._Cancelled()
             write_status(main, plan, log)
         records = task_records(plan, log)
-        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan))
+        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
         write_status(main, plan, log)
         return result, 0 if result['state'] == 'completed' else 1
     except (KeyboardInterrupt, do._Cancelled):
         if plan is not None:
-            result.update(tasks=public_tasks(task_records(plan, log)), land=land(main, plan))
+            result.update(tasks=public_tasks(task_records(plan, log)), land=land(main, plan, log))
             write_status(main, plan, log)
         result['state'] = 'interrupted'
         return result, 130
@@ -239,6 +272,8 @@ def _print(result, code, json_output):
             print('{}: {} ({} attempts) {}'.format(item['task_id'], item['state'], item['attempts'], item['reason'] or ''))
         if clean['land']:
             print('Human landing command:\n' + clean['land']['command'])
+            for line in _basis_lines(clean['land'])[1:]:
+                print(line)
     if clean.get('reason'):
         print('not_seen: ' + clean['reason'], file=sys.stderr)
     return code

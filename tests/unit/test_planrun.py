@@ -15,7 +15,7 @@ from tests.unit.test_task import TaskFixture, APP, TEST, ROOT
 from tests.unit import test_task_l1
 from tests.unit.test_task_l1 import rubric
 from tests.unit.test_planning import task as plan_task
-from orcexe import cli, do, fsio, isolation, planrun, proc, task, worktree
+from orcexe import cli, do, fsio, isolation, planrun, proc, route, task, task_l1, worktree
 from orcexe.adapters import CodexAdapter
 
 
@@ -190,6 +190,70 @@ class PlanRunTests(TaskFixture):
         self.assertEqual([r['data']['to'] for r in self.log().records(task='T2', event='task.state')],
                          ['interrupted', 'accepted'])
         self.assertEqual(self.status()['tasks'], resumed['tasks'])
+
+    def test_land_form_lists_each_task_basis_and_the_weakest(self):
+        claude = test_task_l1.EvaluatorTests.evaluator(self, [rubric()])
+        codex = test_task_l1.codex_reviewer(self, [rubric()])
+        standard = dict(lane='standard', files={'allow': ['src/*.py', 'tests/**']})
+        self.saved = self.save([plan_task('T1', done=['app returns 2'], **standard),
+                                plan_task('T2', done=['app returns 3'], depends_on=['T1'], **standard)])
+        self.actions.write_text(json.dumps([
+            {'src/app.py': APP.replace('1', '2'), 'tests/test_app.py': TEST.replace('1', '2')},
+            {'src/app.py': APP.replace('1', '3'), 'tests/test_app.py': TEST.replace('1', '3')}]))
+        roles = test_task_l1._roles(('claude-code', 'claude-sonnet-5-5'), ('codex', 'gpt-6.1-terra'))
+        real = task_l1.evaluator_chain
+        calls = []
+        def chain(executor, adapters):
+            value = real(executor, adapters)
+            calls.append(executor)
+            # T1: the other family is unavailable, so only the same-family model is left.
+            return [c for c in value if c['l1_basis'] == 'same_family'] if len(calls) == 1 else value
+        with mock.patch.object(route, 'load_roles', return_value=roles), \
+                mock.patch.object(task_l1, 'evaluator_chain', side_effect=chain):
+            code, result, _ = self.invoke_plan()
+        self.assertEqual((code, result['state']), (0, 'completed'), result)
+        self.assertEqual((claude.read_text(), codex.read_text()), ('1', '1'))
+        expected = dict(tasks=[dict(task_id='T1', basis='same_family'), dict(task_id='T2', basis='cross_family')],
+                        weakest='same_family')
+        self.assertEqual(result['land']['l1_basis'], expected)
+        self.assertEqual([(t['task_id'], t['l1_basis']) for t in result['tasks']],
+                         [('T1', 'same_family'), ('T2', 'cross_family')])
+        self.assertEqual(self.status()['land'], result['land'])
+        text = (self.main / '.orcexe/status.md').read_text()
+        self.assertIn('| T1 | standard | accepted | 1 | accepted | same_family |', text)
+        self.assertIn('| T2 | standard | accepted | 1 | accepted | cross_family |', text)
+        self.assertIn('weakest: same_family): T1=same_family, T2=cross_family', text)
+
+    def test_fast_lane_acceptance_has_no_l1_basis(self):
+        self.docs([plan_task()])
+        code, result, _ = self.invoke_plan()
+        self.assertEqual((code, result['tasks'][0]['l1_basis']), (0, 'none'), result)
+        self.assertEqual(result['land']['l1_basis'], dict(tasks=[dict(task_id='T1', basis='none')], weakest='none'))
+
+    def test_resume_rebuilds_l1_tree_memory_from_ledger(self):
+        reviews = test_task_l1.EvaluatorTests.evaluator(self, [rubric(False), rubric()])
+        same = {'src/app.py': APP.replace('1', '2'), 'tests/test_app.py': TEST.replace('1', '2')}
+        self.actions.write_text(json.dumps([same, same]))
+        def interrupt(req):
+            if req.run_id.endswith('-r2'):
+                os.kill(os.getpid(), signal.SIGTERM)
+        code, result, _ = self.invoke_plan(before=interrupt)
+        self.assertEqual((code, result['tasks'][0]['state']), (130, 'interrupted'), result)
+        self.assertEqual(reviews.read_text(), '1')
+        with mock.patch.object(task, '_feedback', wraps=task._feedback) as feedback:
+            code, resumed, _ = self.invoke_plan(resume=True)
+        self.assertEqual((code, resumed['tasks'][0]['state'], resumed['tasks'][0]['attempts']),
+                         (1, 'exhausted', 3), resumed)
+        self.assertEqual(reviews.read_text(), '1')   # the resumed attempt did not ask L1 again
+        self.assertEqual(len(list(self.log().records(event='l1.started'))), 1)
+        verdicts = [r['data'] for r in self.log().records(event='l1.verdict')]
+        self.assertEqual([(v['attempt'], v['criteria'], v.get('reused_from')) for v in verdicts],
+                         [(1, ['d1:fail'], None), (3, ['d1:fail'], verdicts[0]['run_id'])])
+        self.assertEqual(verdicts[0]['tree'], verdicts[1]['tree'])
+        # The remembered rejection carries the same feedback, read back from the stored rubric.
+        checks = feedback.call_args[0][1]
+        self.assertIn(dict(id='d1', status='fail', detail='missing edge case'), checks)
+        self.assertTrue(self.log().verify()['ok'])
 
     def test_resume_never_replenishes_attempt_budget(self):
         self.docs([plan_task()])
