@@ -1,5 +1,22 @@
 ## Unreleased
 
+### T52c — runner summary trusts orcexe's own aggregate line (T52a regression)
+
+- Real run A lost every attempt to L0 `test_count_dropped` / `runner_count_not_seen`: T52a
+  trusted a last summary only when it equalled the sum of the earlier ones, but
+  `tests/tools/run_tests.py` prints only some module unittest blocks before its aggregate
+  (17 visible blocks summing to 354 vs. `Ran 991 tests in 62 modules ...`).
+- `task_l0.runner_summary`: when the text holds exactly one orcexe runner aggregate line
+  (`Ran N tests in M modules in Xs; failures=F errors=E skips=K; failed modules=D`) and no
+  summary of any format follows it, the aggregate is authoritative (count N, skips K, all
+  counted as `skipped`); module blocks before it are ignored for counting. Two or more
+  aggregate lines (including one a test prints early), or any summary after the aggregate,
+  give count/skips `None` (not_seen). Without an aggregate line T52a's rule is unchanged;
+  pytest single-line summaries are unchanged.
+- Tests: tails of the three real run A logs (gate 991/19, L0 base 988/19, L0 red 991/19 with
+  failures=3) as fixtures under `tests/fixtures/runner-summary/`, plus forged trailing
+  summaries, forged second/early aggregates, plain unittest and pytest cases.
+
 ### T52b — `.orcexe` pre-check, usage exits for bad repo/task text, L0 test-command docs
 
 - Shared `fsio.require_main_orcexe` runs before any lock, ledger write, worktree or branch

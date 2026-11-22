@@ -82,12 +82,48 @@ class CountTests(unittest.TestCase):
         # An atexit handler printing a bigger total after the real aggregate is not trusted.
         forged = blocks + aggregate + 'Ran 999 tests in 0.001s\n\nOK\n'
         self.assertEqual(task_l0.runner_summary(forged), unseen)
-        # A forged aggregate that does not add up, or hides skips, is not trusted.
-        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('Ran 5', 'Ran 7')), unseen)
-        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('skips=1', 'skips=0')), unseen)
+        # T52c: the runner prints only some module blocks, so a sole aggregate
+        # line is authoritative even when the visible blocks do not add up to it.
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('Ran 5', 'Ran 7')),
+                         dict(expected, count=7))
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate.replace('skips=1', 'skips=0')),
+                         dict(count=5, skips=0, skip_counts=dict(skipped=0, xfailed=0, expected_failures=0)))
+        # A plain summary of any format after the aggregate is not trusted.
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate + '== 999 passed in 0.01s ==\n'), unseen)
+        # A second aggregate after the real one, or one printed early by a test, is not trusted.
+        self.assertEqual(task_l0.runner_summary(blocks + aggregate + aggregate.replace('Ran 5', 'Ran 999')), unseen)
+        early = aggregate.replace('Ran 5', 'Ran 999')
+        self.assertEqual(task_l0.runner_summary(early + blocks + aggregate), unseen)
+        self.assertEqual(task_l0.runner_summary(blocks.replace('..s\n', '..s\n' + early, 1) + aggregate), unseen)
         # pytest single-line summaries keep working.
         self.assertEqual(task_l0.runner_summary('== 4 passed, 1 skipped in 0.20s =='),
                          dict(count=5, skips=1, skip_counts=dict(skipped=1, xfailed=0, expected_failures=0)))
+
+    def test_real_orcexe_runner_logs_trust_the_aggregate_line(self):
+        # T52c: tails of real run A logs (gate, L0 base, L0 red); the visible module
+        # blocks sum to far less than the aggregate, which must still be trusted.
+        directory = Path(__file__).resolve().parents[1] / 'fixtures' / 'runner-summary'
+        for name, count, skips in [('gate.log', 991, 19), ('base.log', 988, 19), ('red.log', 991, 19)]:
+            with self.subTest(name=name):
+                text = (directory / name).read_text(encoding='utf-8')
+                self.assertEqual(task_l0.runner_summary(text), dict(
+                    count=count, skips=skips, skip_counts=dict(skipped=skips, xfailed=0, expected_failures=0)))
+        self.assertIn('failures=3', (directory / 'red.log').read_text(encoding='utf-8'))
+        text = (directory / 'gate.log').read_text(encoding='utf-8')
+        unseen = dict(count=None, skips=None, skip_counts=None)
+        self.assertEqual(task_l0.runner_summary(text + 'Ran 5000 tests in 0.001s\n\nOK\n'), unseen)
+        self.assertEqual(task_l0.runner_summary(text + text.splitlines()[-1].replace('991', '5000') + '\n'), unseen)
+
+    def test_plain_unittest_and_pytest_without_aggregate_keep_t52a_rule(self):
+        unseen = dict(count=None, skips=None, skip_counts=None)
+        zero = dict(skipped=0, xfailed=0, expected_failures=0)
+        self.assertEqual(task_l0.runner_summary('Ran 4 tests in 0.1s\n\nOK\n'), dict(count=4, skips=0, skip_counts=zero))
+        two = 'Ran 1 test in 0.01s\nOK\nRan 2 tests in 0.02s\nOK (skipped=1)\n'
+        self.assertEqual(task_l0.runner_summary(two), unseen)
+        self.assertEqual(task_l0.runner_summary(two + 'Ran 3 tests in 0.03s\nOK (skipped=1)\n'),
+                         dict(count=3, skips=1, skip_counts=dict(zero, skipped=1)))
+        self.assertEqual(task_l0.runner_summary('==== 3 passed, 1 failed, 2 skipped in 1.5s ===='),
+                         dict(count=6, skips=2, skip_counts=dict(zero, skipped=2)))
 
     def test_l0_runs_declared_interpreter_and_missing_one_is_not_seen(self):
         import sys, tempfile, time

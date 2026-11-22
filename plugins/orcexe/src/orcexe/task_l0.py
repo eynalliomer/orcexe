@@ -20,14 +20,22 @@ from orcexe.redact import redact_text
 CHECK_IDS = ('test_count_dropped', 'skip_added', 'tests_missing', 'red_first_missing', 'assertion_missing')
 
 
+_RUNNER_AGGREGATE = re.compile(
+    r'(?m)^Ran (\d+) tests? in \d+ modules? in \d+(?:\.\d+)?s; failures=\d+ errors=\d+ '
+    r'skips=(\d+); failed modules=\d+[ \t]*$')
+
+
 def runner_summary(text):
     """Trusted runner totals; text printed after the real summary cannot inflate them.
 
-    One summary is used as is. With several, the last is trusted only as an
-    aggregate: its count (and skip total, when every earlier one is known)
-    must equal the sum of the earlier summaries, as tests/tools/run_tests.py
-    prints per-module unittest blocks then `Ran N tests in M modules ...
-    skips=K`. Anything else is not_seen (count/skips None).
+    tests/tools/run_tests.py prints only some per-module unittest blocks, then
+    one aggregate `Ran N tests in M modules in Xs; failures=F errors=E skips=K;
+    failed modules=D`. When exactly one such aggregate appears and no summary of
+    any format follows it, it is authoritative (count N, skips K) and the module
+    blocks before it are ignored. Two aggregates, or any summary after it, are
+    not_seen (count/skips None). Without an aggregate, one summary is used as
+    is; with several, the last is trusted only if its count (and skip total,
+    when every earlier one is known) equals the sum of the earlier ones.
     """
     summaries = []
     unittest_runs = list(re.finditer(r'(?m)^Ran\s+(\d+)\s+tests?\s+in\s+[^\n]+$', text))
@@ -51,6 +59,13 @@ def runner_summary(text):
                               dict(skipped=sum(int(n) for n, k in parts if k == 'skipped'),
                                    xfailed=sum(int(n) for n, k in parts if k == 'xfailed'), expected_failures=0)))
     unseen = dict(count=None, skips=None, skip_counts=None)
+    aggregates = list(_RUNNER_AGGREGATE.finditer(text))
+    if aggregates:
+        if len(aggregates) > 1 or any(start > aggregates[0].start() for start, _, _ in summaries):
+            return unseen
+        skips = int(aggregates[0][2])
+        return dict(count=int(aggregates[0][1]), skips=skips,
+                    skip_counts=dict(skipped=skips, xfailed=0, expected_failures=0))
     if not summaries:
         return unseen
     summaries.sort(key=lambda v: v[0])

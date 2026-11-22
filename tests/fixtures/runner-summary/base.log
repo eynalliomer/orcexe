@@ -1,0 +1,122 @@
+---------------------------
+Ran 27 tests in 92.213s
+
+OK
+tests.unit.test_planrun: tests=14 failures=0 errors=0 skips=0 duration=69.87s
+..............
+----------------------------------------------------------------------
+Ran 14 tests in 68.727s
+
+OK
+tests.unit.test_proc: tests=35 failures=0 errors=0 skips=2 duration=15.12s
+.......................s.......s...
+----------------------------------------------------------------------
+Ran 35 tests in 14.349s
+
+OK (skipped=2)
+tests.unit.test_questions: tests=17 failures=0 errors=0 skips=0 duration=13.96s
+.................
+----------------------------------------------------------------------
+Ran 17 tests in 12.578s
+
+OK
+tests.unit.test_redact: tests=36 failures=0 errors=0 skips=2 duration=31.42s
+.s.......s..........................
+----------------------------------------------------------------------
+Ran 36 tests in 30.552s
+
+OK (skipped=2)
+adjacent_idempotence sampled=3250 total=65000 violations=0
+detector_scan_checks=3656 max_work_per_byte=22.89 bound=64
+must_redact sampled=3445 total=59898 leaks=0
+must_keep_sources=3850 changed=0
+idempotence sampled=1000 total=20000 violations=0
+1MiB memory sampled=1 total=7 tracemalloc_peak=25.69MiB
+devlog_lines=433 changed=3 over_redaction=0.693%
+must_keep_streams=28 changed=0
+must_keep_usage=4180 changed=0
+tests.unit.test_risk_areas: tests=4 failures=0 errors=0 skips=0 duration=3.92s
+....
+----------------------------------------------------------------------
+Ran 4 tests in 2.514s
+
+OK
+tests.unit.test_route: tests=29 failures=0 errors=0 skips=0 duration=3.14s
+.............................
+----------------------------------------------------------------------
+Ran 29 tests in 1.844s
+
+OK
+tests.unit.test_run_result: tests=5 failures=0 errors=0 skips=0 duration=0.83s
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.048s
+
+OK
+tests.unit.test_slop: tests=39 failures=0 errors=0 skips=0 duration=18.43s
+.......................................
+----------------------------------------------------------------------
+Ran 39 tests in 17.342s
+
+OK
+tests.unit.test_stdlib_only: tests=3 failures=0 errors=0 skips=0 duration=3.05s
+...
+----------------------------------------------------------------------
+Ran 3 tests in 2.257s
+
+OK
+tests.unit.test_t22_review: tests=13 failures=0 errors=0 skips=0 duration=30.59s
+.............
+----------------------------------------------------------------------
+Ran 13 tests in 29.537s
+
+OK
+tests.unit.test_task: tests=29 failures=0 errors=0 skips=0 duration=78.14s
+.............................
+----------------------------------------------------------------------
+Ran 29 tests in 75.988s
+
+OK
+tests.unit.test_task_l0: tests=21 failures=0 errors=0 skips=0 duration=70.92s
+.....................
+----------------------------------------------------------------------
+Ran 21 tests in 68.600s
+
+OK
+tests.unit.test_task_l1: tests=41 failures=0 errors=0 skips=0 duration=111.79s
+.........................................
+----------------------------------------------------------------------
+Ran 41 tests in 110.288s
+
+OK
+tests.unit.test_test_runner: tests=9 failures=0 errors=0 skips=0 duration=6.18s
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 5.382s
+
+OK
+tests.unit.test_trust: tests=19 failures=0 errors=0 skips=0 duration=4.61s
+...................
+----------------------------------------------------------------------
+Ran 19 tests in 3.665s
+
+OK
+tests.unit.test_worktree: tests=10 failures=0 errors=0 skips=0 duration=14.19s
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 13.111s
+
+OK
+10 slowest modules:
+  111.79s tests.unit.test_task_l1
+  93.13s tests.unit.test_planning
+  78.14s tests.unit.test_task
+  75.24s tests.unit.test_do
+  70.92s tests.unit.test_task_l0
+  69.87s tests.unit.test_planrun
+  60.98s tests.unit.test_mapping
+  51.21s tests.unit.test_gate_lite
+  51.05s tests.unit.test_do_safety
+  46.33s tests.unit.test_map_incremental
+Ran 988 tests in 62 modules in 200.54s; failures=0 errors=0 skips=19; failed modules=0
+; write outside checkout denied
