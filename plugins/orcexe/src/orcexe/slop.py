@@ -19,7 +19,7 @@ import tokenize
 from types import FunctionType
 
 from orcexe import fsio, gitutil, intake
-from orcexe.gate_lite import _python_code, _tokens
+from orcexe.gate_lite import _python_code, _tokens, parse_python
 
 CLASSES = ('fake_test', 'skipped_test', 'suppression', 'stub', 'dead_code',
            'dependency', 'missing_checks')
@@ -270,7 +270,7 @@ class _PythonAssertions:
     def unit(self, path, tree=None):
         if path not in self.units:
             try:
-                tree = tree if tree is not None else ast.parse(self.texts[path])
+                tree = tree if tree is not None else parse_python(self.texts[path])
                 parents = {child: parent for parent in ast.walk(tree)
                            for child in ast.iter_child_nodes(parent)}
                 imports, bindings = {}, {}

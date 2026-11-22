@@ -44,6 +44,7 @@ import subprocess
 import tempfile
 import time
 import sys
+import warnings
 
 from orcexe.adapters.base import (_write_parent, safe_write_text, safe_write_json, safe_write_bytes)
 
@@ -573,8 +574,16 @@ _CLIKE = frozenset(('.c .h .cc .cpp .hpp .cs .java .kt .swift .go .rs .js .mjs '
                     '.cjs .jsx .ts .tsx').split())
 
 
+def parse_python(text):
+    """ast.parse scanned user source without leaking its SyntaxWarning/DeprecationWarning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', SyntaxWarning)
+        warnings.simplefilter('ignore', DeprecationWarning)
+        return ast.parse(text)
+
+
 def _python_code(text):
-    tree = ast.parse(text)
+    tree = parse_python(text)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             if (node.body and isinstance(node.body[0], ast.Expr)

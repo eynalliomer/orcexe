@@ -88,7 +88,7 @@ def test_count(text):
 
 
 def _python_tests(path, text, tree=None):
-    tree = tree if tree is not None else ast.parse(text)
+    tree = tree if tree is not None else gate_lite.parse_python(text)
     units = []
     def visit(body, prefix='', eligible=True):
         for node in body:
