@@ -1,6 +1,6 @@
 ## Unreleased
 
-### T55 — `answer --choice` takes a label or an index; scanned Python parses without warnings
+### T54 (real run A, plan tasks T1–T2) — `answer --choice` takes a label or an index; scanned Python parses without warnings
 
 - `answer --choice QID=VALUE` accepts an option label or a zero-based index. A value of digits
   that is in range is always read as an index, even when it equals another option's label; an
