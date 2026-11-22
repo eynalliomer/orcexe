@@ -272,6 +272,61 @@ class QuestionsCLITests(GitFixture):
         self.assertEqual(next_form['questions'], [])
         self.assertEqual({a['reason'] for a in next_form['assumptions']}, {'decided'})
 
+    def test_choice_accepts_label_and_matches_the_index_record(self):
+        form = self.form()
+        a, b = [q['id'] for q in form['questions']]
+        labels = [o['label'] for o in form['questions'][0]['options']]
+        ledger = self.directory_state / 'decisions.jsonl'
+        self.assertEqual(self.invoke('answer', '--form', form['form_id'], '--choice', a + '=' + labels[1])[0], 0)
+        by_label = fsio.read_jsonl(ledger)[0]
+        ledger.unlink()
+        self.assertEqual(self.invoke('answer', '--form', form['form_id'], '--choice', a + '=1')[0], 0)
+        by_index = fsio.read_jsonl(ledger)[0]
+        for record in (by_label, by_index):
+            record.pop('at')
+        self.assertEqual(by_label, by_index)
+        self.assertEqual((by_label['answer'], by_label['kind']), (labels[1], 'choice'))
+
+    def test_numeric_looking_labels_prefer_the_index_when_in_range(self):
+        self.value['unknowns'] = [unknown('Which approach?', ['1', '0', '7'])]
+        self.write_map()
+        form = self.form()
+        qid = form['questions'][0]['id']
+        labels = [o['label'] for o in form['questions'][0]['options']]
+        self.assertEqual(sorted(labels), ['0', '1', '7'])
+        ledger = self.directory_state / 'decisions.jsonl'
+        # In-range digits are indexes even when they equal another option's label;
+        # '7' is out of range as an index, so it resolves as the label.
+        for value, expected in (('0', labels[0]), ('1', labels[1]), ('7', '7')):
+            if ledger.exists():
+                ledger.unlink()
+            code, out, err = self.invoke('answer', '--form', form['form_id'], '--choice', qid + '=' + value)
+            self.assertEqual((code, err), (0, ''))
+            self.assertEqual(fsio.read_jsonl(ledger)[0]['answer'], expected)
+        self.assertTrue(any(label != str(i) for i, label in enumerate(labels)))
+        ledger.unlink()
+        self.assertEqual(self.invoke('answer', '--form', form['form_id'], '--choice', qid + '=3')[0], 2)
+        self.assertFalse(ledger.exists())
+
+    def test_invalid_choice_lists_valid_values_after_the_reason(self):
+        form = self.form()
+        qid = form['questions'][0]['id']
+        labels = [o['label'] for o in form['questions'][0]['options']]
+        ledger = self.directory_state / 'decisions.jsonl'
+        for value in ('Nope', 'first', '9', '-1', ''):
+            code, out, err = self.invoke('answer', '--form', form['form_id'], '--choice', qid + '=' + value)
+            self.assertEqual((code, out), (2, ''))
+            lines = err.splitlines()
+            self.assertEqual(lines[0], 'not_seen: answer_invalid')
+            self.assertEqual(lines[1:], ['valid choices for {}:'.format(qid)] +
+                             ['  {}: {}'.format(i, label) for i, label in enumerate(labels)])
+            self.assertFalse(ledger.exists())
+        for arguments in (['--form', form['form_id'], '--choice', 'q-bad=0'],
+                          ['--form', form['form_id'], '--text', qid + '='],
+                          ['--form', form['form_id'], '--choice', qid + '=0', '--text', qid + '=again']):
+            self.assertEqual(self.invoke('answer', *arguments), (2, '', 'not_seen: answer_invalid\n'))
+        self.assertFalse(ledger.exists())
+
     def test_invalid_batches_append_nothing(self):
         form = self.form()
         qid = form['questions'][0]['id']

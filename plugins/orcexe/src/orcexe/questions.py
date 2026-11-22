@@ -275,6 +275,7 @@ def render(form):
 
 
 def answer_command(args):
+    hint = None
     try:
         repo, directory, head = context(args)
         form = fsio.read_json(directory / 'form.json')
@@ -293,9 +294,14 @@ def answer_command(args):
                 seen.add(qid)
                 question = questions[qid]
                 if kind == 'choice':
-                    if not re.fullmatch(r'[0-9]+', answer) or int(answer) >= len(question['options']):
+                    options = question['options']
+                    if re.fullmatch(r'[0-9]+', answer) and int(answer) < len(options):
+                        answer = options[int(answer)]['label']
+                    elif answer not in [option['label'] for option in options]:
+                        hint = ['valid choices for {}:'.format(qid)]
+                        hint.extend('  {}: {}'.format(i, intake.prose(history._clean(option['label'], []))[:mapping.TEXT_CAP])
+                                    for i, option in enumerate(options))
                         raise ValueError('answer_invalid')
-                    answer = question['options'][int(answer)]['label']
                 answer = intake.prose(history._clean(answer, []))[:mapping.TEXT_CAP]
                 if not answer.strip():
                     raise ValueError('answer_invalid')
@@ -315,6 +321,8 @@ def answer_command(args):
     except (OSError, ValueError, gitutil.GitError, KeyError, TypeError, AttributeError, RecursionError) as error:
         reason = str(error) if type(error) is ValueError and str(error) in ('form_tampered', 'state_corrupt') else 'answer_invalid'
         print('not_seen: ' + reason, file=sys.stderr)
+        if hint and reason == 'answer_invalid':
+            print('\n'.join(hint), file=sys.stderr)
         return 2
     print(json.dumps(records, ensure_ascii=False) if args.json else 'Recorded {} answer(s).'.format(len(records)))
     return 0
