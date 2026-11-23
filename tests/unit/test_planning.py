@@ -471,6 +471,8 @@ class PlanCLI(GitFixture):
             task(), task('T2', lane='risky'), task('T3', depends_on=['T2'])])))
         return self.proposed()
 
+    # T60: risky is runnable (K18 a); this T59 test keeps lane_not_supported via the K18 (b) fallback.
+    @mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
     def test_unsupported_lane_is_marked_in_json_and_markdown(self):
         result = self.unsupported_plan()
         self.assertEqual([t['lane'] for t in result['tasks']], ['fast', 'risky', 'fast'])
@@ -501,6 +503,8 @@ class PlanCLI(GitFixture):
         self.assertNotIn('lane_note', plain_plan['tasks'][0])
         self.assertNotIn('lane_not_supported', (self.state / 'plan.md').read_text())
 
+    # T60: risky is runnable (K18 a); this T59 test keeps lane_not_supported via the K18 (b) fallback.
+    @mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
     def test_approve_defers_unsupported_lane_and_refuses_only_when_nothing_runs(self):
         # T59 (was: approval refused the whole plan with lane_not_supported).
         from orcexe import ledger, task as task_module
@@ -536,6 +540,8 @@ class PlanCLI(GitFixture):
         self.assertIn('not_seen: plan_not_approved', error)
         self.assertEqual(self.snapshot(), before)
 
+    # T60: risky is runnable (K18 a); this T59 test keeps lane_not_supported via the K18 (b) fallback.
+    @mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
     def test_lane_note_is_bound_and_legacy_unmarked_plans_still_refuse(self):
         original = self.unsupported_plan()
         for change, expected in [(lambda p: p['tasks'][0].update(lane_note='lane_not_supported'), 'plan_tampered'),

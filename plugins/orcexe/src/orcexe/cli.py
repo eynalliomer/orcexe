@@ -214,8 +214,13 @@ def main(argv=None):
     status_parser.add_argument("--repo", default=None)
     status_parser.add_argument("--json", action="store_true")
     task_parser = subcommands.add_parser("task", help="Dispatch one task from an approved plan")
-    task_parser.add_argument("--plan", required=True, metavar="PLAN_ID")
-    task_parser.add_argument("--task", required=True, metavar="TASK_ID")
+    task_parser.add_argument("--plan", metavar="PLAN_ID")
+    task_parser.add_argument("--task", metavar="TASK_ID")
+    # T60: only the user types this (a host agent never proposes or runs it).
+    task_parser.add_argument("--approve-contract", nargs=3, metavar=("PLAN_ID", "TASK_ID", "APPROVAL_SHA256"),
+                             help="Approve the current contract proposal of one risky task")
+    task_parser.add_argument("--constraint", action="append", metavar="TEXT",
+                             help="Risky task, before approval: add a human constraint (<=5) to the proposal")
     task_parser.add_argument("--repo", default=None)
     task_parser.add_argument("--json", action="store_true")
     task_parser.add_argument("--timeout-min", type=_timeout, default=30)
@@ -333,6 +338,11 @@ def main(argv=None):
         return plan_command(args)
 
     if args.command == "task":
+        if args.approve_contract:
+            if args.plan or args.task or args.constraint:
+                parser.error("--approve-contract takes PLAN_ID TASK_ID APPROVAL_SHA256 only")
+        elif not args.plan or not args.task:
+            parser.error("the following arguments are required: --plan, --task")
         from orcexe.task import task_command
         return task_command(args)
 

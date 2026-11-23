@@ -343,6 +343,8 @@ def _valid(value, spec):
         return type(value) is int and (1 if spec == "positive" else 0) <= value <= _MAX_INT
     if spec == "exit_code":
         return type(value) is int and -255 <= value <= 255
+    if spec == "bool":
+        return type(value) is bool
     if spec == "list":
         return (isinstance(value, list)
                 and all(isinstance(item, str) and len(item) <= 200 for item in value))
@@ -385,6 +387,11 @@ def _sanitize(data, shape, path="data"):
             extras[key] = _sanitize(value, spec, field)
         elif spec.endswith("?") and value is None:
             extras[key] = None
+        elif spec == "bool":
+            # T60: a recorded flag (same_model_as_l1); never coerced from text or numbers.
+            if type(value) is not bool:
+                raise ValueError("invalid " + field)
+            extras[key] = value
         elif spec == "list":
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise ValueError("invalid " + field)

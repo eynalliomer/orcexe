@@ -427,9 +427,9 @@ class FallbackAndMemoryTests(EvaluatorTests):
         self.evaluator([rubric()])
         seen = []
         real = task_l1.evaluator_chain
-        def chain(executor, adapters):
+        def chain(executor, adapters, *view):  # T60: the dispatch passes its one access snapshot
             seen.append(sorted(adapters))
-            return real(executor, adapters)
+            return real(executor, adapters, *view)
         with mock.patch.object(task_l1, 'evaluator_chain', side_effect=chain):
             code, text, _ = self.invoke(json_output=False)
         self.assertEqual(seen, [['claude-code', 'codex']])   # no Cursor adapter while the switch is off

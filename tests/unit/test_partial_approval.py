@@ -19,6 +19,14 @@ from tests.unit.test_task import TaskFixture
 from orcexe import classify, cli, fsio, ledger, planning, planrun
 
 
+def k18b(test):
+    """T60 made risky runnable (K18 a). These T59 tests keep exercising the lane_not_supported
+    deferral mechanics through the K18 (b) fallback, where risky is again not runnable."""
+    patcher = mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 def doc(identifier, **changes):
     """A fast documentation task the fake executor can finish (README.md)."""
     return plan_task(identifier, **changes)
@@ -28,6 +36,7 @@ class PartialApprovalTests(TaskFixture):
     invoke_plan = test_planrun.PlanRunTests.invoke_plan
 
     def setUp(self):
+        k18b(self)
         super().setUp()
         self.state = self.main / '.orcexe'
         fsio.atomic_write_json(self.state / 'project-map.json', project(self.head))
@@ -557,6 +566,10 @@ class PartialApprovalTests(TaskFixture):
 
 
 class DeferralUnitTests(TaskFixture):
+    def setUp(self):
+        k18b(self)
+        super().setUp()
+
     def test_deferral_is_a_fixed_point_of_its_own_held_set(self):
         tasks = [plan_task('T1', route={'tool': None, 'reason': 'no_eligible_candidate'}),
                  plan_task('T2', depends_on=['T1']), plan_task('T3', lane='risky'),

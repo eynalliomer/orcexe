@@ -15,7 +15,7 @@ from tests.unit.test_task import TaskFixture, APP, TEST, ROOT
 from tests.unit import test_task_l1
 from tests.unit.test_task_l1 import rubric
 from tests.unit.test_planning import task as plan_task
-from orcexe import cli, do, fsio, isolation, planrun, proc, route, task, task_l1, worktree
+from orcexe import cli, do, fsio, isolation, planning, planrun, proc, route, task, task_l1, worktree
 from orcexe.adapters import CodexAdapter
 
 
@@ -135,6 +135,8 @@ class PlanRunTests(TaskFixture):
         self.assertEqual(self.git_run(self.main, 'rev-parse', 'HEAD').strip(), self.head)
 
 
+    # T60: risky is runnable (K18 a); this T59 test keeps lane_not_supported via the K18 (b) fallback.
+    @mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
     def test_failure_blocks_only_transitive_dependents_and_risky_lanes(self):
         self.docs([plan_task('T3', depends_on=['T2']), plan_task('T1'),
                    plan_task('T2', depends_on=['T1']), plan_task('T4'),
@@ -206,8 +208,8 @@ class PlanRunTests(TaskFixture):
         roles = test_task_l1._roles(('claude-code', 'claude-sonnet-5-5'), ('codex', 'gpt-6.1-terra'))
         real = task_l1.evaluator_chain
         calls = []
-        def chain(executor, adapters):
-            value = real(executor, adapters)
+        def chain(executor, adapters, *view):  # T60: the dispatch passes its one access snapshot
+            value = real(executor, adapters, *view)
             calls.append(executor)
             # T1: the other family is unavailable, so only the same-family model is left.
             return [c for c in value if c['l1_basis'] == 'same_family'] if len(calls) == 1 else value

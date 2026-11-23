@@ -17,7 +17,8 @@ from orcexe.adapters import ClaudeCodeAdapter, CodexAdapter, CursorAdapter
 
 LANES = ('fast', 'standard', 'risky')
 # Lanes this version can dispatch; task/plan --run block the others at dispatch.
-SUPPORTED_LANES = ('fast', 'standard')
+# T60 (K18 a): risky runs behind a per-task contract approval and a cross-family auditor.
+SUPPORTED_LANES = ('fast', 'standard', 'risky')
 LANE_NOTE = 'lane_not_supported'
 VIOLATION_CODES = ('empty_goal', 'empty_allow', 'empty_done', 'duplicate_id', 'unknown_dependency', 'cycle', 'size_l',
                    'too_many_tasks', 'no_tasks', 'parallel_overlap', 'invalid_glob', 'no_test_path')
@@ -34,9 +35,13 @@ EXIT_REASONS = {
         'plan_not_approved', 'task_running', 'state_tampered', 'ledger_corrupt', 'ledger_head_mismatch')},
 }
 # T59: why a task is deferred at a decision (frozen into approval_sha256; never a run reason).
-# no_auditor joins with the risky lane (T60).
-DEFER_REASONS = (LANE_NOTE, 'no_route', 'deferred_by_human', 'dependency_deferred')
+# T60: no_auditor (a risky task without an eligible cross-family auditor at the decision).
+DEFER_REASONS = (LANE_NOTE, 'no_route', 'no_auditor', 'deferred_by_human', 'dependency_deferred')
+# Reasons a later decision carries over as they were (human holds and live, unrecomputable ones).
+HELD_REASONS = ('deferred_by_human', 'dependency_deferred', 'no_auditor')
 DECISION_KINDS = ('plan_approval', 'plan_open')
+# T60 (T57 §3.2): a per-task contract approval; anchored like a plan decision, never a plan decision.
+CONTRACT_KIND = 'contract_approval'
 CONTRACT = dict(schema='orcexe.manager.plan.v1', tasks=[dict(
     id='T<n>', goal='str', files=dict(allow=['glob']), done=['str'], depends_on=['T<n>'],
     lane='fast|standard|risky', size='S|M|L', parallel=True, notes='optional str')])
@@ -241,16 +246,19 @@ def _order(tasks):
     return ordered
 
 
-def deferral(tasks, held=()):
+def deferral(tasks, held=(), no_auditor=None):
     """T59 runnability, computed from the plan only and frozen at each decision.
 
-    Derived reasons first (lane, then the plan's route), then a deferred dependency
+    Derived reasons first (lane, then the plan's route), then a risky task without an
+    eligible auditor (T60: ``no_auditor`` maps id -> evidence observed at this decision;
+    a held ``no_auditor`` entry keeps its evidence, it is never recomputed), then a deferred dependency
     (``cause`` is the first deferred one in ``depends_on`` order), then ``held``: the
     tasks a decision keeps deferred, as ids (human ``--defer``) or as ``{id: entry}`` of an
     earlier decision. A held ``dependency_deferred`` entry whose cause was opened without
     it keeps its reason and cause (``not opened with`` evidence). Returns plan order.
     """
     held = held if isinstance(held, dict) else {key: None for key in held}
+    no_auditor = no_auditor or {}
     deferred = {}
     for task in _order(tasks):
         selection = task['route']
@@ -261,6 +269,10 @@ def deferral(tasks, held=()):
         elif selection.get('tool') is None:
             entry = ('no_route', None, 'route: none' + (' (' + selection['reason'] + ')'
                                                          if isinstance(selection.get('reason'), str) else ''))
+        elif task['id'] in no_auditor:
+            entry = ('no_auditor', None, no_auditor[task['id']])
+        elif (held.get(task['id']) or {}).get('reason') == 'no_auditor':
+            entry = ('no_auditor', None, held[task['id']].get('evidence'))
         elif causes:
             entry = ('dependency_deferred', causes[0], 'depends on ' + causes[0])
         elif task['id'] in held:
@@ -360,7 +372,7 @@ def check_approval(plan, directory, log):
         # Plan-derived reasons recomputed (no_auditor/quota are live and never recomputed).
         if any(d.get('reason') not in DEFER_REASONS for d in deferred):
             raise ValueError('plan_tampered')
-        held = {d['id']: d for d in deferred if d['reason'] in ('deferred_by_human', 'dependency_deferred')}
+        held = {d['id']: d for d in deferred if d['reason'] in HELD_REASONS}
         if deferral(plan['tasks'], held) != [{k: d.get(k) for k in ('id', 'reason', 'cause', 'evidence')}
                                              for d in deferred] or any(set(d) - {'id', 'reason', 'cause', 'evidence'}
                                                                        for d in deferred):
@@ -419,7 +431,9 @@ def ledger_view(identifier, log):
             continue
         if item['event'] == 'decision.recorded':
             view['anchors'].setdefault(data['decision_id'], {})[data['record_sha256']] = item['seq']
-            view['latest'] = item['seq']
+            # T60: a contract approval is anchored the same way but is not a plan decision.
+            if data.get('kind') != CONTRACT_KIND:
+                view['latest'] = item['seq']
         elif item['event'] == REVOKED:
             view['revoked_at'] = item['seq']
         elif item['event'] == 'task.state' and data.get('from') == 'deferred' and data.get('to') == 'pending':
@@ -566,7 +580,8 @@ def approval_lines(plan):
             if not isinstance(entry, dict):
                 continue
             lane = lanes.get(entry.get('id'))
-            label = mapping.escape(str(entry.get('id'))) + (' (' + lane + ')' if lane not in SUPPORTED_LANES else '')
+            label = mapping.escape(str(entry.get('id'))) + (' (' + lane + ')' if lane not in SUPPORTED_LANES
+                                                              or lane == 'risky' else '')
             cause = entry.get('cause')
             lines.append('- ' + label + ': ' + str(entry.get('reason')) +
                          (' (depends on ' + mapping.escape(str(cause)) + ')' if cause else
@@ -601,7 +616,7 @@ def openable(tasks, deferred):
         return result
     for task in ordered:
         entry = entries.get(task['id'])
-        if entry is None or entry.get('reason') not in ('deferred_by_human', 'dependency_deferred'):
+        if entry is None or entry.get('reason') not in HELD_REASONS:
             continue
         if all(dep not in entries or dep in result for dep in task['depends_on']):
             result.add(task['id'])
@@ -759,10 +774,10 @@ def _record(plan, kind, approval, opened, at):
                 at=at)
 
 
-def _decide(directory, repo, head, plan, kind, held, opened, log):
+def _decide(directory, repo, head, plan, kind, held, opened, log, no_auditor=None):
     """Freeze runnability, then anchor before publishing: ledger, decisions.jsonl + plan, rows."""
     at = datetime.now(timezone.utc).isoformat()
-    deferred = deferral(plan['tasks'], held)
+    deferred = deferral(plan['tasks'], held, no_auditor)
     names = {d['id'] for d in deferred}
     approved = [t['id'] for t in plan['tasks'] if t['id'] not in names]
     if not approved:
@@ -811,6 +826,10 @@ def approve(directory, repo, head, identifier, defer=None, log=None):
     questions.read_decisions(directory)
     _digest(plan)
     check_classifier(plan)
+    if 'risky' in SUPPORTED_LANES and any(isinstance(t, dict) and t.get('lane') == 'risky'
+                                          and t.get('lane_note') == LANE_NOTE for t in plan.get('tasks') or []):
+        # Proposed when this lane was not runnable (before T60): propose again.
+        raise stale('lanes_changed')
     validate_approval(plan, directory, repo, head)
     if again and defer is None:
         # P2-5: never silently drop the earlier human deferrals; the human restates them.
@@ -823,12 +842,22 @@ def approve(directory, repo, head, identifier, defer=None, log=None):
     unknown = [i for i in defer if i not in {t['id'] for t in plan['tasks']}]
     if unknown:
         raise Refused([(i, 'task_unknown', 'not in this plan') for i in unknown], 'refused')
-    return _decide(directory, repo, head, plan, 'plan_approval', set(defer), [], log)
+    # T60 (T57 §2.1): a risky task without an eligible cross-family auditor now is deferred.
+    from orcexe import risky
+    return _decide(directory, repo, head, plan, 'plan_approval', set(defer), [], log,
+                   risky.auditor_gaps(plan['tasks']))
 
 
 def open_tasks(directory, repo, head, identifier, opening, log):
     """--open: the dispatch gate's checks, then runnability recomputed now (T57 §2.4)."""
-    from orcexe import task
+    from orcexe import risky, task
+    gaps = {}
+
+    def risky_gaps(item):
+        if item['id'] not in gaps:
+            gaps[item['id']] = risky.auditor_gaps([item])
+        return gaps[item['id']]
+
     plan = _load(directory, identifier)
     if plan.get('status') == 'revoked':
         raise not_approved(detail='approval_revoked')
@@ -850,14 +879,17 @@ def open_tasks(directory, repo, head, identifier, opening, log):
             refused.append((key, LANE_NOTE, deferred[key]['evidence']))
         elif item['route'].get('tool') is None:
             refused.append((key, 'no_route', deferred[key]['evidence']))
+        elif item['lane'] == 'risky' and risky_gaps(item):
+            # Every risky task being opened (also a human-deferred one): recomputed now (§2.4, L2 P3-2).
+            # Live reason, recomputed at this decision (T57 §2.4).
+            refused.append((key, 'no_auditor', risky_gaps(item)[key]))
         else:
             missing = [dep for dep in item['depends_on'] if dep not in allowed]
             if missing:
                 refused.append((key, 'dependency_deferred', 'depends on ' + missing[0]))
     if refused:
         raise Refused(refused, 'refused')
-    held = {k: d for k, d in deferred.items()
-            if d['reason'] in ('deferred_by_human', 'dependency_deferred') and k not in opening}
+    held = {k: d for k, d in deferred.items() if d['reason'] in HELD_REASONS and k not in opening}
     return _decide(directory, repo, head, plan, 'plan_open', held, list(opening), log)
 
 
@@ -941,7 +973,8 @@ def _plan_command(args):
             if not clean(args.goal).strip():
                 raise ValueError('questions_invalid')
             decisions = [d for d in questions.read_decisions(directory)
-                         if d.get('schema') == 'orcexe.decision.v1' and d.get('kind') not in DECISION_KINDS]
+                         if d.get('schema') == 'orcexe.decision.v1'
+                         and d.get('kind') not in DECISION_KINDS + (CONTRACT_KIND,)]
             step = 'select_questions'
             form = questions.select(project, head, args.goal, decisions, resolver.resolve, clean,
                                     tracked_paths=resolver.entries)

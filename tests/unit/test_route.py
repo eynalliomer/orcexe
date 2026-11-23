@@ -54,7 +54,7 @@ class RolesTests(unittest.TestCase):
             "manager": {"any": [("claude-opus-5-5", "high")]},
             "executor": {"fast": [(FIRST, "medium"), (SECOND, "medium"), ("claude-sonnet-5-5", "medium"), ("composer-2.5", "medium")],
                          "standard": [(FIRST, "high"), (SECOND, "high"), ("claude-sonnet-5-5", "high"), ("composer-2.5", "medium")], "risky": [(FIRST, "high"), ("claude-opus-5-5", "high"), ("composer-2.5", "medium")]},
-            "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium"), ("claude-opus-5-5", "medium"), ("gpt-6-sol", "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high")]}}
+            "evaluator": {"any": [("claude-sonnet-5-5", "medium"), (FIRST, "medium"), ("claude-opus-5-5", "medium"), ("gpt-6-sol", "medium")]}, "auditor": {"any": [("claude-opus-5-5", "high"), (FIRST, "high"), ("claude-sonnet-5-5", "high"), ("gpt-6-sol", "high")]}}
         self.assertEqual({stage: {lane: [(c.model, c.effort) for c in candidates]
                                  for lane, candidates in lanes.items()}
                           for stage, lanes in roles.stages.items()}, expected)

@@ -102,7 +102,7 @@ orcexe do "src/app.py'ye docstring ekle" --dry-run --json
 isolated worktree, checks it with the gate, and records the result in the project
 ledger. It never asks questions. Only `accepted` prints human landing commands;
 review and commit pending worktree edits before using them. Nothing is merged,
-and the worktree is always kept. Standard tasks use an approved `plan` and the `task` command; risky tasks are deferred. Each tool uses your existing login; `do` does not log in or install tools.
+and the worktree is always kept. Standard and risky tasks use an approved `plan` and the `task` command (risky ones behind a per-task contract approval). Each tool uses your existing login; `do` does not log in or install tools.
 
 Options: `--repo` defaults to cwd; `--timeout` defaults to 1800 seconds; `--json`
 prints one redacted summary. `--model-constraint` accepts a JSON route constraint
@@ -482,9 +482,11 @@ Success publishes private (0600) `.orcexe/plan.json` (`orcexe.plan.v1`) and
 `plan.md` together, preserving the map. The single form shows the goal,
 assumptions, each task's allowed files, size, parallel flag, lane, tool/model, dependencies and done criteria, and the
 approval command. A plan starts as `proposed` and records HEAD and decision IDs.
-This version runs only `fast` and `standard` tasks. A task whose final lane is
-anything else (`risky`) gets `"lane_note": "lane_not_supported"` in `plan.json`,
-and its lane cell in `plan.md` reads `risky (lane_not_supported)`. The form ends
+This version runs `fast`, `standard` and (T60) `risky` tasks. A task whose final
+lane this version cannot run would get `"lane_note": "lane_not_supported"` in
+`plan.json` and a `<lane> (lane_not_supported)` lane cell in `plan.md` (only under
+the K18 (b) fallback; a plan proposed before risky became runnable is `plan_stale`
+with `detail: lanes_changed` at approval: propose again). The form ends
 with "Will run after approval" and "Will be deferred" sections, so the operator
 sees before approving what an approval would run and what it would park.
 
@@ -652,9 +654,13 @@ rule. Tasks run sequentially in topological order, choosing plan order among
 ready tasks. It reuses `task` for the contract, attempts, L0 and L1 gates.
 Only ledger state `accepted` satisfies a dependency. An `exhausted`, `rejected`
 or `gate_passed` task blocks all transitive dependents with `dependency_failed`;
-independent tasks continue. Deferred tasks (risky ones among them) and their
+independent tasks continue. Deferred tasks and their
 dependants are never dispatched: they stay `deferred` with their frozen reason
-and the run ends `partial`.
+and the run ends `partial`. A risky task waiting for its contract approval
+(`awaiting_approval`) is parked: its dependants stay `pending` (never
+`dependency_failed`), the other tasks continue, the run ends `partial`, and both
+the run output and `orcexe status` print the exact `orcexe task --approve-contract`
+command for the user.
 
 The CLI keeps one integration chain at `refs/orcexe/plans/<plan-id>`, starting
 at the approved plan head. Every task, including a single `orcexe task`, starts
@@ -780,6 +786,101 @@ warning. A lock that parses as an object without a valid owner pid (`{}`,
 warning names it for manual removal. A lock of a dead local process is reclaimed as
 before, and live, remote or fresh locks still block.
 
+## Risky lane (T60): contract approval, cross-family auditor, `diagnosing`
+
+```sh
+orcexe plan --approve PLAN_ID          # risky tasks run if an eligible auditor exists now, else no_auditor
+orcexe task --plan PLAN_ID --task T3   # first time: writes the proposal, exits 2 contract_unapproved
+orcexe task --plan PLAN_ID --task T3 --constraint "Keep the public signature."   # optional, <=5, re-proposes
+orcexe task --approve-contract PLAN_ID T3 APPROVAL_SHA256    # the user, after reading the proposal
+orcexe task --plan PLAN_ID --task T3   # (or plan --run) freezes contract.v1 and runs it
+```
+
+**Only the user types `--approve-contract` and `plan --approve … --open`.** A host
+agent (Claude Code, Codex, …) never proposes, suggests running or runs these two
+commands on the user's behalf. This is a documentation rule: orcexe cannot verify
+who typed a command.
+
+- **Approval.** `plan --approve` defers a risky task as `no_auditor` (evidence
+  `auditor: none (executor families: …)`) when no cross-family auditor route exists
+  at that moment; `--open` recomputes it then. The first `task`/`plan --run` on an
+  approved risky task writes `.orcexe/contracts/<plan>/<task>/contract.proposed.json`
+  and ledger `contract.proposed {approval_sha256}`, moves the task to
+  `awaiting_approval` and exits 2 `contract_unapproved` (a plan run continues with
+  the other tasks and ends `partial`). The approval hash covers plan/task IDs,
+  goal, files, done, `notes_sha256`, `risk` (`signals`, `areas`), `forbidden_paths`,
+  `executor`, `auditor` (an upper bound, not a guarantee), `human_constraints`,
+  `budget` and the plan head; the freezing base is outside it.
+  `task --approve-contract` writes `decision.v1 {kind: contract_approval}` to
+  `decisions.jsonl`, its anchor `decision.recorded` and `contract.approved` to the
+  ledger. A hash that is not the current proposal's is `contract_unapproved`
+  (`detail: proposal_changed`, not a tamper alarm). The next dispatch freezes
+  `orcexe.contract.v1` (`contract.frozen {approval_sha256, base}`) only under an
+  anchored approval of exactly the current proposal made after the last freeze;
+  an approval line without its ledger anchor is `state_tampered`
+  (`detail: contract_unanchored`) and revokes the plan approval.
+- **Order per attempt:** executor → gate → L0 → L1 → auditor. L1 must be
+  `cross_family` (`same_family`/`cursor_read_only` give `l1_basis_insufficient`).
+  The auditor (`roles.yaml` stage `auditor`) is a second, separate read-only call in
+  its own throwaway copy. Its family excludes every family of the executor, computed
+  at run time from the tool and the actual model of **every attempt** behind the
+  cumulative tree (recorded as `attempt.ended.model_actual`, re-read on `--resume`;
+  the L1 chain is recomputed each attempt). Vendor tokens anywhere in a model id name
+  its family (`claude`/`sonnet`/`opus`/`haiku`/`fable`/`anthropic` → Anthropic,
+  `gpt`/`openai`/`codex`/`o3` → OpenAI, `gemini` → Google, `grok` → xAI, …). A
+  multi-vendor tool (Cursor) whose actual model is missing, `auto`, `default` or any
+  unrecognised slug (other than its own `composer-*`) has an **unknown** family: no L1
+  is ever labelled `cross_family` for it (standard lane included) and it has no auditor
+  (risky: `l1_basis_insufficient` / `auditor_unavailable`). The auditor
+  model differs from the L1 model whenever another eligible cross-family model
+  exists; otherwise the L1 model is used, recorded as `same_model_as_l1: true`
+  (ledger `audit.started`, `task --json` `auditor`, land form `same_model_as_l1`) and
+  shown on its own line `Auditor same model as L1: same_model_as_l1 (…)` in `task`,
+  `plan --run`, `status` and `status.md`.
+- **Output** is exactly `{"schema":"orcexe.audit.v1","verdict":"pass|fail","findings":[{"id","severity":"P0|P1|P2|P3","path","reason"}]}`,
+  parsed strictly (one bare object or one json fence; prose only before it; a block
+  quoted from the diff is never a verdict), ≤16 findings, reasons ≤1200 characters,
+  ≤256 KiB; `path` (relative, `/`, ≤160) and `reason` are single-line printable text
+  (control characters, newlines or separators make the reply invalid), and every
+  human-facing print of untrusted text escapes non-printable characters.
+  `pass` is valid only without P0/P1/P2 findings. An invalid reply is asked
+  once more without spending an attempt; a second one is `gate_passed`/`audit_invalid`.
+  `fail` spends the attempt and its findings reach the next brief as untrusted
+  feedback. The auditor writing to its copy is `rejected`/`auditor_wrote`; ledger,
+  `runs/`, decisions, contracts or plan writes during its call are `state_tampered`
+  or `main_repository_changed`. Ledger: `audit.started {tool, model, basis, call,
+  same_model_as_l1}`, `audit.verdict {model, basis, verdict, findings, tree, call}`
+  (findings as `id|severity|path`, no reason text). Only `fail` verdicts are
+  remembered per tree; a `pass` is asked again on `--resume`.
+- **Budget:** 3 attempts and at most 3 auditor calls. The same failure class
+  (stage, check id, hash of the normalized message: paths, numbers and durations
+  masked, first 20 lines), recorded as `stage:<32 hex>` (the check id is shown as a
+  separate label). Environmental outcomes are decided from structured results only
+  (never from words in details or findings) and never get a class: an executor
+  `run_status` failure whose run status is quota/timeout/stalled/auth (or warning
+  `quota_suspected`/`executor_error`), a check whose detail is exactly a `*_unavailable`
+  code, and `l1_unavailable`/`audit_invalid`/`auditor_unavailable` (no failed check); such an attempt
+  is spent, but the task goes on to its next attempt. An unavailable auditor call is
+  retried (next candidate, then again) within the 3 auditor calls before
+  `auditor_unavailable`. The same class
+  twice ends `diagnosing` (`same_failure`, `task.state {class, attempts}`): no third
+  attempt, not landable; the next step is yours.
+- **Accepted** only when L1 passed `cross_family`, the auditor passed `cross_family`,
+  `l1.verdict.tree == audit.verdict.tree ==` the landed tree, and isolation evidence
+  exists. The accepted record (chain advance + `task.state accepted`) is written first
+  and only then `refs/orcexe/accepted/*`, so a failed record never leaves a ref; the
+  landing command is printed only for `accepted`;
+  `gate_passed` (any reason), `diagnosing`, `rejected` and `exhausted` produce neither.
+- **`--resume`** re-checks the frozen contract's approval like a fresh dispatch
+  (anchored, before the freeze, after the latest proposal/revocation); otherwise the task
+  is proposed again. `--constraint` with a resume is refused (`contract_unapproved`,
+  `detail: constraint_on_resume`). `--open` recomputes the auditor for every risky task it
+  opens, also a human-deferred one. The shipped `auditor` stage lists a second model per
+  family (`claude-sonnet-5-5`, `gpt-6-sol`), so an auditor other than the L1 model is used
+  whenever one is in access.
+- **Threat model:** a same-user process outside the sandbox that rewrites `.orcexe/`,
+  the ledger and the refs consistently is outside the v0.3 threat model.
+
 ## `task`: execute one approved task
 
 ```sh
@@ -790,8 +891,8 @@ orcexe task --plan PLAN_ID --task T1 --repo /path/to/repo --json --timeout-min 3
 against its approval decision before creating a worktree or dispatching a tool.
 Dependencies must have ledger state `accepted`. It uses the
 approved task's tool/model/effort route. Only a task in the latest decision's
-`approved` list is dispatched; a deferred task (risky lanes and unassigned
-routes are deferred at approval) stops with `task_deferred`.
+`approved` list is dispatched; a deferred task (unassigned routes and risky tasks
+without an eligible auditor are deferred at approval) stops with `task_deferred`.
 
 The CLI freezes `orcexe.contract.lite.v1` as a private (0600) file at
 `.orcexe/runs/<dispatch-id>/contract.lite.json`, outside the executor checkout.
@@ -816,7 +917,8 @@ intermediate versions) against the shared risk areas: built-in paths, local
 `risk-map.yaml`, project-map auth/payment/data/migration entries and
 `do_not_touch`. A match is terminal `rejected` with `risk_path_touched`, exit 1,
 `gate.failed` and a risky `lane.escalated` suggestion listing the matching paths.
-It is never retried or accepted. Already-risky plans remain `lane_not_supported`.
+It is never retried or accepted. On the risky lane only the contract's frozen
+`forbidden_paths` give `risk_path_touched` (see below).
 Other gate failures give feedback and retry, up to three
 attempts, then end as `exhausted`. Escaped processes (`pipes_held`) and changed
 controls/main repository stop the run.
@@ -934,8 +1036,12 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | Reason | Code | Meaning |
 | --- | --- | --- |
 | `accepted` | 0 | The CLI accepted the frozen candidate. |
+| `audit_invalid` | 0 | Risky lane: the auditor reply was invalid twice (strict `orcexe.audit.v1`); not landable. |
+| `auditor_unavailable` | 0 | Risky lane: no eligible cross-family auditor (run-time family), it failed, or its call budget is spent; no ref, no landing command. |
+| `auditor_wrote` | 1 | Risky lane: the read-only auditor changed its own throwaway copy. |
 | `cancelled` | 130 | Task execution was interrupted. |
 | `contract_tampered` | 1 | The frozen contract changed after dispatch. |
+| `contract_unapproved` | 2 | Risky lane: the contract proposal awaits the user's `task --approve-contract` (or the hash is not the current proposal's, `detail: proposal_changed`). |
 | `dependency_pending` | 2 | A dependency has not been accepted. |
 | `exhausted` | 1 | All three attempts were consumed. |
 | `gate_passed` | 0 | Mechanical gates passed; full acceptance is unverified. |
@@ -943,6 +1049,7 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `git_identity_missing` | 1 | Configure Git author and committer identity. |
 | `internal_error` | 70 | Internal computation failed; inspect the reported step. |
 | `isolation_unavailable` | 0 | No usable OS sandbox; acceptance is withheld. |
+| `l1_basis_insufficient` | 0 | Risky lane: only a same-family or Cursor read-only L1 was available; `cross_family` is required. |
 | `l1_invalid` | 0 | The evaluator rubric was invalid. |
 | `l1_unavailable` | 0 | An independent evaluator could not complete. |
 | `lane_not_supported` | 2 | This entry point cannot execute the selected lane. |
@@ -952,8 +1059,8 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `no_route` | 2 | The task has no eligible saved executor route. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `observation_unavailable` | 1 | Required safety evidence could not be observed. |
-| `output_symlink` | 2 | An output path is an unexpected symlink. |
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
+| `output_symlink` | 2 | An output path is an unexpected symlink. |
 | `outside_allow` | 1 | A changed path is outside the frozen allowed scope. |
 | `pipes_held` | 1 | An escaped process may still hold the executor pipes. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
@@ -963,10 +1070,11 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `risk_path_touched` | 1 | A changed path matches a protected risk area. |
 | `run_interrupted` | 2 | Use --resume to continue an unfinished plan. |
+| `same_failure` | 1 | Risky lane: the same failure class twice; task is `diagnosing`, no third attempt, not landable. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
 | `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
-| `task_running` | 1 | Another dispatch holds the repository lock. |
 | `task_deferred` | 2 | The task is deferred by the latest plan decision; open it with `plan --approve PLAN_ID --open`. |
+| `task_running` | 1 | Another dispatch holds the repository lock. |
 | `task_unknown` | 2 | The task ID is absent from the approved plan. |
 <!-- /task-exit-reasons -->
 

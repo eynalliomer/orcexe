@@ -26,12 +26,72 @@ RUNNABLE_TOOLS = ('claude-code', 'codex')
 
 
 def executor_models(executor):
-    """The executor's own model names: never an L1 for its own work."""
+    """The executor's own model names: never an L1 for its own work.
+
+    ``models_actual`` (T60) lists the actual model of every attempt that contributed to the
+    cumulative tree; all of them, plus the routed and the latest actual model, count.
+    """
     models = []
-    for model in (executor.get('model'), executor.get('model_actual')):
+    for model in [executor.get('model'), executor.get('model_actual')] + list(executor.get('models_actual') or []):
         if isinstance(model, str) and model and model not in models:
             models.append(model)
     return models
+
+
+# T60: a multi-vendor tool (Cursor) reports another vendor's model id that no live list
+# need carry (``claude-opus-5-thinking-high``, ``sonnet-4.5-thinking``, ``anthropic/claude-…``,
+# ``gpt5``). Vendor tokens anywhere in the lowercased id name the family; an id with no
+# known token stays unknown (``model_family`` returns None) and is never guessed.
+VENDOR_TOKENS = (
+    (r'claude|sonnet|opus|haiku|fable|anthropic', 'anthropic'),
+    (r'gpt|openai|codex|chatgpt|davinci|(?<![a-z0-9])o[1-9](?![a-z])', 'openai'),
+    (r'gemini|gemma|google|bard', 'google'),
+    (r'grok|xai', 'xai'),
+    (r'deepseek', 'deepseek'),
+    (r'kimi|moonshot', 'moonshot'),
+    (r'llama|meta-', 'meta'),
+    (r'mistral|mixtral|codestral|devstral', 'mistral'),
+    (r'qwen|alibaba', 'alibaba'),
+)
+# Tools whose served model may come from any vendor, and the ids of their own models.
+MULTI_VENDOR_TOOLS = ('cursor',)
+OWN_MODEL_PREFIXES = {'cursor': ('composer-', 'cursor-')}
+
+
+def model_family(model):
+    """The vendor family a model id names, or None when no vendor token is recognised."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    name = model.strip().lower()
+    found = {family for pattern, family in VENDOR_TOKENS if re.search(pattern, name)}
+    # Two vendors in one id (e.g. a proxy alias) cannot be told apart: unknown.
+    return found.pop() if len(found) == 1 else None
+
+
+def _known(tool, model):
+    if not isinstance(model, str) or not model.strip():
+        return False
+    name = model.strip().lower()
+    return model_family(name) is not None or name.startswith(OWN_MODEL_PREFIXES.get(tool, ()))
+
+
+def families_known(executor):
+    """Whether every model behind the executor's work has a known family (fail closed).
+
+    A single-vendor tool's models are its own family. A multi-vendor tool (Cursor) needs
+    every attempt's actual model (``models_actual``, else ``model_actual``) to be either
+    a recognised vendor id or one of the tool's own models; ``None``, ``auto``, ``default``
+    or any unrecognised slug makes the whole set unknown.
+    """
+    tool = executor.get('tool')
+    if tool not in MULTI_VENDOR_TOOLS:
+        return True
+    actuals = list(executor.get('models_actual') or [])
+    if not actuals:
+        # At run time model_actual is always present (None when unreported: unknown); a view
+        # without it at all (approval time) judges the routed model.
+        actuals = [executor.get('model_actual') if 'model_actual' in executor else executor.get('model')]
+    return all(_known(tool, model) for model in actuals)
 
 
 def executor_families(executor, access, roles):
@@ -47,6 +107,7 @@ def executor_families(executor, access, roles):
     if tool_family:
         families.add(tool_family)
     models = set(executor_models(executor))
+    families.update(f for f in map(model_family, models) if f)
     for item in access:
         if item.family and item.models is not None and models & set(item.models):
             families.add(item.family)
@@ -58,23 +119,25 @@ def executor_families(executor, access, roles):
     return sorted(families)
 
 
-def evaluator_chain(executor, adapters):
+def evaluator_chain(executor, adapters, view=None):
     """K17 order from exactly one access view: other family, Cursor (switch), same family.
 
     Each entry is a route selection plus ``l1_basis``. The executor's model is denied
     in every step; a family that cannot be told apart is never called cross_family.
     """
-    access = route.gather_access(list(adapters.values()))
-    roles = route.load_roles()
+    # ``view`` = (access, roles): one access snapshot reused for every attempt of a dispatch.
+    access, roles = view if view is not None else (route.gather_access(list(adapters.values())), route.load_roles())
     families = executor_families(executor, access, roles)
     denied = executor_models(executor)
     others = sorted({a.family for a in access if a.family and a.family not in families})
+    known = bool(families) and families_known(executor)
     steps = []
-    if families:
+    if known:
         steps.append(('cross_family', ['claude-code', 'codex'], families))
-    if CURSOR_REVIEW_VERIFIED:
+    if CURSOR_REVIEW_VERIFIED and known:
         steps.append(('cursor_read_only', ['cursor'], families))
-    steps.append(('same_family', ['claude-code', 'codex'], others if families else []))
+    # An unknown family is never cross_family: every remaining evaluator is labelled same_family.
+    steps.append(('same_family', ['claude-code', 'codex'], others if known else []))
     chain, tried = [], []
     for basis, tools, excluded in steps:
         while True:

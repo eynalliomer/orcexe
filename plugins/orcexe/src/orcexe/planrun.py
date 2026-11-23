@@ -11,8 +11,10 @@ import threading
 from orcexe import do, fsio, gitutil, intake, isolation, ledger, redact, runguard
 
 
-FINAL = frozenset(('accepted', 'exhausted', 'rejected', 'gate_passed', 'blocked'))
+FINAL = frozenset(('accepted', 'exhausted', 'rejected', 'gate_passed', 'blocked', 'diagnosing'))
 UNFINISHED = frozenset(('interrupted', 'running', 'contract.frozen'))
+# T60 (T57 §3.6): parked, not final: a risky task waiting for the user's contract approval.
+PARKED = frozenset(('awaiting_approval',))
 EXIT_REASONS = {'completed': 0, 'partial': 1, 'interrupted': 130,
                 'dependency_failed': 1, 'lane_not_supported': 1,
                 'run_interrupted': 2, 'task_running': 2, 'internal_error': 70,
@@ -23,7 +25,8 @@ def task_records(plan, log):
     """Project CLI records only, scoped to this plan and latest frozen contract."""
     identifier = plan['plan_id']
     result = {t['id']: dict(task_id=t['id'], state='pending', reason=None,
-                           attempts=0, contract=None, l1_basis=None, l1_pass=None) for t in plan['tasks']}
+                           attempts=0, contract=None, l1_basis=None, l1_pass=None,
+                           proposal=None, audit_pass=None, auditor=None) for t in plan['tasks']}
     owners = {}
     for record in log.records():
         key, event, data = record['task'], record['event'], record['data']
@@ -34,9 +37,16 @@ def task_records(plan, log):
         item = result[key]
         if event == 'contract.frozen':
             item.update(state='contract.frozen', reason=None, attempts=0, contract=data,
-                        l1_basis=None, l1_pass=None)
+                        l1_basis=None, l1_pass=None, proposal=None, auditor=None)
+        elif event == 'contract.proposed':
+            item['proposal'] = data['approval_sha256']
         elif event == 'attempt.started':
-            item.update(state='running', reason=None, attempts=data['attempt'], l1_pass=None)
+            item.update(state='running', reason=None, attempts=data['attempt'], l1_pass=None, audit_pass=None)
+        elif event == 'audit.started':
+            item['audit_pass'] = dict(model=data['model'], same_model_as_l1=data.get('same_model_as_l1') is True)
+        elif event == 'audit.verdict':
+            if data.get('verdict') != 'pass':
+                item['audit_pass'] = None
         elif event == 'l1.verdict':
             # The passing verdict (asked or reused) of the attempt that is accepted next.
             passed = (data.get('reason') is None and data['criteria']
@@ -44,7 +54,8 @@ def task_records(plan, log):
             item['l1_pass'] = (data.get('basis') if data.get('basis') in L1_BASES[:3] else 'unknown') if passed else None
         elif event == 'task.state':
             item.update(state=data['to'], reason=data['reason'],
-                        l1_basis=(item['l1_pass'] or 'none') if data['to'] == 'accepted' else None)
+                        l1_basis=(item['l1_pass'] or 'none') if data['to'] == 'accepted' else None,
+                        auditor=item['audit_pass'] if data['to'] == 'accepted' else None)
     # T59: the latest decision, not the ledger, says which tasks are deferred.
     for key, entry in deferred_tasks(plan).items():
         if key in result and result[key]['state'] == 'pending':
@@ -123,6 +134,12 @@ def land(main, plan, log):
     ref = chain_ref(plan)
     form = dict(ref=ref, command='git -C ' + shlex.quote(str(main)) + ' ' + action + shlex.quote(ref),
                 l1_basis=l1_basis(plan, task_records(plan, log)))
+    records = task_records(plan, log)
+    same = [key + ' (' + item['auditor']['model'] + ')' for key, item in records.items()
+            if item['state'] == 'accepted' and item['auditor'] and item['auditor']['same_model_as_l1']]
+    if same:
+        # Decision 027 Ş3: no other eligible cross-family model, so the auditor was the L1 model.
+        form['same_model_as_l1'] = same
     parked = deferred_tasks(plan)
     deferred = [t['id'] for t in plan['tasks'] if t['id'] in parked]
     if deferred:
@@ -143,14 +160,34 @@ def run_state(records):
     return 'completed' if all(s == 'accepted' for s in states) else 'partial'
 
 
+def contract_approvals(plan, records):
+    """T57 §3.2 item 4: the exact command the user types for each parked risky task."""
+    from orcexe import risky
+    return [dict(task_id=key, approval_sha256=item['proposal'],
+                 command=risky.approve_command(plan['plan_id'], key, item['proposal']))
+            for key, item in records.items() if item['state'] in PARKED and item['proposal']]
+
+
 def status(main, plan, log):
     from orcexe import planning
     records = task_records(plan, log)
     # P3-2: the ledger's approval.revoked wins over a plan file that still says approved.
     revoked = plan.get('status') == 'approved' and planning.revoked(plan['plan_id'], log)
-    return dict(schema='orcexe.status.v1', plan_id=plan['plan_id'],
-                plan_status='revoked' if revoked else plan['status'], tasks=public_tasks(records),
-                land=land(main, plan, log))
+    result = dict(schema='orcexe.status.v1', plan_id=plan['plan_id'],
+                  plan_status='revoked' if revoked else plan['status'], tasks=public_tasks(records),
+                  land=land(main, plan, log))
+    approvals = contract_approvals(plan, records)
+    if approvals:
+        result['contract_approvals'] = approvals
+    return result
+
+
+def _approval_lines(result):
+    lines = []
+    for item in result.get('contract_approvals') or []:
+        lines.append('Awaiting your contract approval (' + item['task_id'] + '; only you run this, never a host '
+                     'agent): ' + item['command'])
+    return lines
 
 
 def render(plan, result):
@@ -161,6 +198,9 @@ def render(plan, result):
         values = (item['task_id'], lanes[item['task_id']], item['state'], item['attempts'], item['reason'] or '-',
                   item.get('l1_basis') or '-')
         lines.append('| ' + ' | '.join(str(v).replace('|', '&#124;').replace('\n', ' ') for v in values) + ' |')
+    approvals = _approval_lines(result)
+    if approvals:
+        lines += [''] + approvals
     if result['land']:
         lines += ['', 'Human landing command (review the integration chain):', '', result['land']['command']]
         lines += _basis_lines(result['land'])
@@ -173,6 +213,10 @@ def _basis_lines(land_form):
     if basis and basis['tasks']:
         lines += ['', 'L1 basis behind this ref (weakest: ' + str(basis['weakest']) + '): '
                   + ', '.join(t['task_id'] + '=' + str(t['basis']) for t in basis['tasks'])]
+    same = (land_form or {}).get('same_model_as_l1')
+    if same:
+        lines += ['', 'Auditor same model as L1: same_model_as_l1 (' + ', '.join(same)
+                  + '; no other eligible cross-family model)']
     deferred = (land_form or {}).get('deferred')
     if deferred:
         lines += ['', deferred_warning(deferred)]
@@ -266,10 +310,13 @@ def run_plan(identifier, repo=None, *, resume=False):
             key = item['id']
             if records[key]['state'] in FINAL or key not in plan['approval']['approved']:
                 continue  # T59: a deferred task is never dispatched; the run ends partial.
-            if any(records[dep]['state'] != 'accepted' for dep in item['depends_on']):
+            states = [records[dep]['state'] for dep in item['depends_on']]
+            if any(s in FINAL and s != 'accepted' for s in states):
                 reason = 'dependency_failed'
-            elif item['lane'] == 'risky':
-                reason = 'lane_not_supported'
+            elif any(s in PARKED or s == 'pending' for s in states):
+                continue  # T60: behind a contract awaiting approval: stays pending, never blocked.
+            elif any(s != 'accepted' for s in states):
+                reason = 'dependency_failed'
             else:
                 reason = None
             if reason:
@@ -293,6 +340,9 @@ def run_plan(identifier, repo=None, *, resume=False):
             write_status(main, plan, log)
         records = task_records(plan, log)
         result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
+        approvals = contract_approvals(plan, records)
+        if approvals:
+            result['contract_approvals'] = approvals
         write_status(main, plan, log)
         return result, 0 if result['state'] == 'completed' else 1
     except (KeyboardInterrupt, do._Cancelled):
@@ -324,8 +374,12 @@ def _print(result, code, json_output):
     else:
         print('Plan: ' + str(clean['plan_id']))
         print('Status: ' + clean.get('state', clean.get('plan_status', 'unknown')))
+        from orcexe.risky import one_line
         for item in clean['tasks']:
-            print('{}: {} ({} attempts) {}'.format(item['task_id'], item['state'], item['attempts'], item['reason'] or ''))
+            print(one_line('{}: {} ({} attempts) {}'.format(item['task_id'], item['state'], item['attempts'],
+                                                            item['reason'] or '')))
+        for line in _approval_lines(clean):
+            print(one_line(line))
         if clean['land']:
             print('Human landing command:\n' + clean['land']['command'])
             for line in _basis_lines(clean['land'])[1:]:

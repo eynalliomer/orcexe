@@ -29,6 +29,7 @@ from orcexe.manifest import GLOBAL_FORBIDDEN_ARGV
 SPAWN_SITES = {
     'intake': {'_git'}, 'isolation': {'_available_backend', 'run'}, 'ledger': {'_git'},
     'task': {'run_task'}, 'run': {'run_command'}, 'planning': {'_plan_command'}, 'planrun': {'run_plan'}, 'task_l1': {'evaluate'},
+    'risky': {'audit'},
     'task_l0': {'_tests'}, 'gitutil': {'_git'}, 'proc': {'_WindowsJob.stop', 'run'},
     'gate_lite': {'_git_bytes', '_project', '_probe_python'}, 'do': {'_git', '_resolve_identity.config', 'run_do'},
     'worktree': {'_git'}, 'mapping': {'manager_run'},
@@ -44,6 +45,9 @@ PATHS = {
     'plan': ('planning', '_plan_command', 'manager'),
     'evaluator-claude': ('task_l1', 'evaluate', 'manager'),
     'evaluator-codex': ('task_l1', 'evaluate', 'review'),
+    # T60: the risky-lane auditor is a separate read-only call with the evaluator profiles.
+    'auditor-claude': ('risky', 'audit', 'manager'),
+    'auditor-codex': ('risky', 'audit', 'review'),
     'task': ('task', 'run_task', 'write'),
     'plan --run': ('planrun', 'run_plan', 'write'),
     'gate': ('gate_lite', '_project', None),
@@ -84,6 +88,7 @@ class InventoryTests(PrivateHomes):
             visit(tree)
         self.assertEqual(found, SPAWN_SITES)
         self.assertEqual(set(PATHS), {'map', 'plan', 'evaluator-claude', 'evaluator-codex',
+                                      'auditor-claude', 'auditor-codex',
                                       'task', 'plan --run', 'gate', 'L0', 'red-first'})
 
 
@@ -196,6 +201,24 @@ class TaskSecurity(tasks.TaskFixture):
                         selection=selection, adapter=adapter, run_dir=self.directory / tool, run_id='security')
                 self.assertEqual(value['reason'], None, value)
                 self.assertTrue(value['rubric']['overall_pass'])
+
+
+    def test_auditor_environments_profiles_and_home(self):
+        from orcexe import risky
+        verdict = dict(schema='orcexe.audit.v1', verdict='pass', findings=[])
+        for tool in ('claude-code', 'codex'):
+            with self.subTest(tool=tool):
+                evaluators.EvaluatorTests.evaluator(self, [verdict], tool=tool)
+                selection = dict(tool=tool, model='claude-opus-5-5' if tool == 'claude-code' else 'gpt-6.1-sol',
+                                 effort='high')
+                with audit(self, 'auditor-claude' if tool == 'claude-code' else 'auditor-codex'), \
+                        mock.patch.dict(os.environ, self.env, clear=True):
+                    adapter = (ClaudeCodeAdapter if tool == 'claude-code' else CodexAdapter)(env=self.env)
+                    value = risky.audit(repo_path=self.main, tree=self.head,
+                        contract=dict(head=self.head, task_id='T1', done=['Observed']), notes='', gate={}, l0={},
+                        l1={}, selection=selection, adapter=adapter, run_dir=self.directory / ('audit-' + tool),
+                        run_id='security')
+                self.assertEqual((value['outcome'], value['reason']), ('pass', None), value)
 
 
 class ProjectPolicyTests(PrivateHomes):

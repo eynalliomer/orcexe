@@ -15,7 +15,7 @@ import threading
 from types import FunctionType, SimpleNamespace
 
 from orcexe import do, exitcodes, fsio, gate_lite, gitutil, globs, intake
-from orcexe import isolation, ledger, planning, questions, redact, risk_areas, runguard, task_gate, task_l0, task_l1, trust, planrun
+from orcexe import isolation, ledger, planning, questions, redact, risk_areas, risky, route, runguard, task_gate, task_l0, task_l1, trust, planrun
 from orcexe.adapters import ClaudeCodeAdapter, CodexAdapter, CursorAdapter
 from orcexe.adapters.base import RunRequest, safe_write_json, safe_write_text, validate_run_result
 from orcexe.run import _minimal_result
@@ -23,7 +23,10 @@ from orcexe.run import _minimal_result
 
 EXIT_REASONS = {
     'gate_passed': 0, 'accepted': 0, 'l1_unavailable': 0, 'l1_invalid': 0,
-    'isolation_unavailable': 0, 'state_tampered': 1, 'exhausted': 1, 'outside_allow': 1, 'risk_path_touched': 1,
+    'isolation_unavailable': 0,
+    # T60 risky lane (T57 §3.6): never accepted, never landable.
+    'l1_basis_insufficient': 0, 'auditor_unavailable': 0, 'audit_invalid': 0,
+    'auditor_wrote': 1, 'same_failure': 1, 'state_tampered': 1, 'exhausted': 1, 'outside_allow': 1, 'risk_path_touched': 1,
     'contract_tampered': 1, 'main_repository_changed': 1, 'git_controls_changed': 1,
     'pipes_held': 1, 'observation_unavailable': 1,
     'git_identity_missing': 1, 'task_running': 1, 'internal_error': 70,
@@ -31,6 +34,7 @@ EXIT_REASONS = {
     **{reason: 2 for reason in (
         'plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered',
         'task_unknown', 'task_deferred', 'dependency_pending', 'lane_not_supported', 'no_route',
+        'contract_unapproved',
         'not_a_repository', 'state_corrupt', 'output_symlink', 'orcexe_invalid',
         'ledger_corrupt', 'ledger_head_mismatch')},
 }
@@ -158,7 +162,7 @@ def read_contract(path, digest):
         if hashlib.sha256(contents).hexdigest() != digest:
             raise ValueError('contract_tampered')
         value = intake._json(contents.decode('utf-8'))
-        if value['schema'] != 'orcexe.contract.lite.v1':
+        if value['schema'] not in ('orcexe.contract.lite.v1', risky.CONTRACT_SCHEMA):
             raise ValueError('contract_tampered')
         return value
     except (OSError, ValueError, KeyError, UnicodeError, RecursionError):
@@ -243,10 +247,14 @@ def _escalation(main, paths):
     return dict(suggested_lane='risky' if risky else 'standard', paths=paths)
 
 
-def _land(main, wt, tree, dispatch_id, identity):
+def _commit(main, wt, tree, dispatch_id, identity):
     _, commit = do._git(main, 'commit-tree', tree, '-p', wt.base_commit,
                         '-m', 'orcexe task ' + dispatch_id, identity=identity)
-    commit = commit.decode().strip()
+    return commit.decode().strip()
+
+
+def _land(main, wt, tree, dispatch_id, identity):
+    commit = _commit(main, wt, tree, dispatch_id, identity)
     ref = 'refs/orcexe/accepted/' + dispatch_id
     do._git(main, 'update-ref', ref, commit, '0' * len(commit))
     return ref
@@ -304,7 +312,7 @@ def _marks(rubric):
 
 
 @ledger.in_session
-def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False):
+def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False, constraints=None):
     """Return a task.v1 summary plus an internal exit_code; never land or print."""
     summary = dict(schema='orcexe.task.v1', task_id=task_id, plan_id=plan_id,
                    state='blocked', reason=None, attempts=0, contract_sha256=None,
@@ -319,7 +327,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
     accepted_commit = None
     deferred = False
 
-    def finish(final, reason=None):
+    def finish(final, reason=None, extra=None):
         nonlocal state, attempt_open, deferred
         # Do not let a signal split acceptance from its CLI record.
         deferred = True
@@ -343,6 +351,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                attempt=summary['attempts'], reason=reason or final, isolation=isolated))
                     state = 'gate.failed'
                 data = dict(plan_id=plan_id, **{'from': state, 'to': final}, reason=reason or final)
+                data.update(extra or {})
                 if final == 'accepted':
                     planrun.advance(main, plan, accepted_commit, contract['head'])
                     data['commit'] = accepted_commit
@@ -355,6 +364,8 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                              else 'internal_error')
                 summary['land'] = summary['l1'] = None
         state = final
+        if final not in ('accepted', 'gate_passed') and 'auditor' in summary:
+            summary['auditor'] = None  # no auditor line on a rejected/exhausted/diagnosing task
         summary.update(state=final, reason=reason,
                        exit_code=130 if received is not None else EXIT_REASONS.get(reason or final, 1))
         return summary
@@ -411,11 +422,41 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
             return finish('blocked', 'git_identity_missing')
         do._exclude(main)
         base = planrun.ensure_chain(main, plan, log)
+        resuming = _resume and prior['state'] in planrun.UNFINISHED and prior['contract'] is not None
+        approved_contract = None
+        if constraints is not None and task['lane'] != 'risky':
+            summary['detail'] = 'not_a_risky_task'
+            return finish('blocked', 'contract_unapproved')
+        if constraints is not None and resuming:
+            # A frozen contract never changes; constraints belong to a new proposal (refused explicitly).
+            summary['detail'] = 'constraint_on_resume'
+            return finish('blocked', 'contract_unapproved')
+        if resuming and task['lane'] == 'risky' and not risky.frozen_still_approved(main, plan, task_id, log,
+                                                                                     prior['contract']):
+            # T60 L2 P3-1: --resume re-checks the contract approval like a fresh dispatch; a freeze
+            # that no longer rests on an anchored, unrevoked approval is proposed again.
+            resuming = False
+        if task['lane'] == 'risky' and not resuming:
+            # T57 §3.2: a risky contract is frozen only under the user's anchored approval of
+            # exactly the current proposal; otherwise propose (or re-propose) and park the task.
+            approved_contract = risky.contract_gate(main, plan, task, log, prior['state'], constraints)
+            summary['contract'] = dict(approval_sha256=approved_contract['approval_sha256'],
+                                       path=approved_contract['path'],
+                                       approve=risky.approve_command(plan_id, task_id,
+                                                                     approved_contract['approval_sha256']))
+            if approved_contract['status'] != 'approved':
+                if approved_contract['changed']:
+                    summary['detail'] = 'proposal_changed'
+                return finish('awaiting_approval', 'contract_unapproved')
+            del summary['contract']['approve']
         directory = main / '.orcexe/runs' / dispatch_id
         contract_path = directory / 'contract.lite.json'
         start = 0
         l1_memory = {}
-        if _resume and prior['state'] in planrun.UNFINISHED and prior['contract'] is not None:
+        audit_memory, audit_calls, classes = {}, 0, []
+        # T60 L2 P1-1: the actual model of every attempt behind the cumulative tree.
+        actuals = []
+        if resuming:
             saved = prior['contract']
             contract_path = main / saved['path']
             directory = contract_path.parent
@@ -429,17 +470,29 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                     or contract['head'] != base):
                 raise ValueError('contract_tampered')
             l1_memory = _l1_memory(log, task_id, plan_id, digest, directory, contract['done'])
+            actuals = risky.attempt_models(log, task_id, plan_id, digest)
+            if contract['lane'] == 'risky':
+                audit_memory, audit_calls = risky.audit_memory(log, task_id, plan_id, digest)
+                classes = risky.failure_classes(log, task_id, plan_id, digest)
         else:
-            contract = dict(schema='orcexe.contract.lite.v1', task_id=task_id, plan_id=plan_id,
-                            goal=task['goal'], files=task['files'], done=task['done'],
-                            budget=dict(attempts=3), lane=task['lane'], head=base)
+            if approved_contract is not None:
+                contract = risky.frozen_contract(approved_contract['fields'], base,
+                                                 approved_contract['approval_sha256'])
+            else:
+                contract = dict(schema='orcexe.contract.lite.v1', task_id=task_id, plan_id=plan_id,
+                                goal=task['goal'], files=task['files'], done=task['done'],
+                                budget=dict(attempts=3), lane=task['lane'], head=base)
             safe_write_json(contract_path, contract, mode=0o600)
             os.chmod(directory.parent, 0o700)
             os.chmod(directory, 0o700)
             digest = hashlib.sha256(contract_path.read_bytes()).hexdigest()
             summary['contract_sha256'] = digest
-            log.append('contract.frozen', task_id, dict(plan_id=plan_id, contract_sha256=digest,
-                       path=contract_path.relative_to(main).as_posix(), head=base))
+            frozen_data = dict(plan_id=plan_id, contract_sha256=digest,
+                               path=contract_path.relative_to(main).as_posix(), head=base)
+            if approved_contract is not None:
+                # The chain tip at freezing is recorded on its own; it is outside the approval hash.
+                frozen_data.update(approval_sha256=approved_contract['approval_sha256'], base=base)
+            log.append('contract.frozen', task_id, frozen_data)
         frozen = True
         state = 'contract.frozen'
         # P2-2: ledger, head ref and this dispatch's run directory around every external run.
@@ -472,6 +525,98 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
         def activate(evaluator, identifier):
             nonlocal adapter, active_run_id
             adapter, active_run_id = evaluator, identifier
+
+        audit_view = None
+
+        def executor_view(result):
+            """The executor for L1/auditor eligibility: tool family plus the union of every
+            attempt's actual model (recomputed each attempt; T60 L2 P1-1)."""
+            try:
+                family = getattr(executor_adapter.manifest, 'family', None)
+            except Exception:
+                family = None
+            return dict(selection, family=family, model_actual=result['model_actual'], models_actual=list(actuals))
+
+        def audit_stage(attempt, tree, contract, gate, l0, verdict, result):
+            """T57 §3.3: the cross-family auditor after a passing cross-family L1 (separate call).
+
+            Returns ``dict(outcome=pass|fail|wrote|invalid|unavailable, findings, reason, tree)``.
+            A remembered *fail* for this tree is reused; a pass is always asked again.
+            """
+            nonlocal audit_calls, evaluator_adapters, audit_view
+            remembered = audit_memory.get(tree)
+            if remembered is not None:
+                log.append('audit.verdict', task_id, dict(plan_id=plan_id, run_id=run_id, attempt=attempt,
+                           model=remembered['model'], basis=remembered['basis'], verdict='fail',
+                           findings=risky.finding_marks(remembered['findings']), tree=tree, call=1, reason=None,
+                           reused_from=remembered['run_id']))
+                return dict(outcome='fail', findings=remembered['findings'], reason=None, tree=tree)
+            if evaluator_adapters is None:
+                evaluator_adapters = {'codex': executor_adapter if selection['tool'] == 'codex' else CodexAdapter(),
+                    'claude-code': executor_adapter if selection['tool'] == 'claude-code' else ClaudeCodeAdapter()}
+            try:
+                if audit_view is None:
+                    audit_view = (route.gather_access(list(evaluator_adapters.values())), route.load_roles())
+                access, roles = audit_view
+            except Exception:
+                return dict(outcome='unavailable', findings=None, reason='auditor_unavailable', tree=tree)
+            # The executor's families at run time: its tool plus every family of every actual model.
+            view = executor_view(result)
+            tried, invalid_once, call = [], False, 0
+            while True:
+                if audit_calls >= contract['budget']['auditor_calls']:
+                    return dict(outcome='unavailable', findings=None, reason='auditor_unavailable', tree=tree)
+                try:
+                    chosen, _ = risky.select_auditor(view, access, roles, l1_model=verdict['model'],
+                                                     tried=tried)
+                except Exception:
+                    chosen = None
+                if chosen is None and tried:
+                    # Every candidate was unavailable once: an environmental outcome, so retry
+                    # within the auditor-call budget rather than end the task.
+                    tried = []
+                    try:
+                        chosen, _ = risky.select_auditor(view, access, roles, l1_model=verdict['model'])
+                    except Exception:
+                        chosen = None
+                if chosen is None:
+                    return dict(outcome='unavailable', findings=None, reason='auditor_unavailable', tree=tree)
+                audit_calls += 1
+                call += 1
+                log.append('audit.started', task_id, dict(plan_id=plan_id, run_id=run_id, attempt=attempt,
+                           tool=chosen['tool'], model=chosen['model'], basis=chosen['basis'], call=call,
+                           same_model_as_l1=chosen['same_model_as_l1']))
+                outcome = risky.audit(repo_path=main, tree=tree, contract=contract, notes=task.get('notes', ''),
+                    gate=gate, l0=l0, l1=dict(model=verdict['model'], basis=verdict['basis'],
+                                              criteria=_marks(verdict['rubric'])),
+                    selection=chosen, adapter=guard.wrap(evaluator_adapters[chosen['tool']], with_main=True),
+                    run_dir=attempt_dir, run_id=run_id, activate=activate, timeout_s=timeout, call=call)
+                guard.check()
+                read_contract(contract_path, digest)
+                if received is not None:
+                    raise do._Cancelled()
+                parsed = outcome['verdict']
+                findings = parsed['findings'] if parsed else []
+                log.append('audit.verdict', task_id, dict(plan_id=plan_id, run_id=run_id, attempt=attempt,
+                           model=chosen['model'], basis=chosen['basis'], verdict=parsed['verdict'] if parsed else None,
+                           findings=risky.finding_marks(findings), tree=tree, call=call, reason=outcome['reason']))
+                if outcome['outcome'] == 'wrote':
+                    return dict(outcome='wrote', findings=None, reason='auditor_wrote', tree=tree)
+                if outcome['outcome'] in ('pass', 'fail'):
+                    if outcome['outcome'] == 'fail':
+                        audit_memory[tree] = dict(model=chosen['model'], basis=chosen['basis'], run_id=run_id,
+                                                  findings=findings)
+                    else:
+                        summary['auditor'] = dict(tool=chosen['tool'], model=chosen['model'], basis=chosen['basis'],
+                                                  same_model_as_l1=chosen['same_model_as_l1'], tree=tree)
+                    return dict(outcome=outcome['outcome'], findings=findings, reason=None, tree=tree)
+                if outcome['outcome'] == 'invalid':
+                    # Asked once more without spending an attempt; a second invalid reply is final.
+                    if invalid_once:
+                        return dict(outcome='invalid', findings=None, reason='audit_invalid', tree=tree)
+                    invalid_once = True
+                    continue
+                tried.append(chosen['model'])
 
         for attempt in range(start + 1, contract['budget']['attempts'] + 1):
             contract = read_contract(contract_path, digest)
@@ -515,10 +660,11 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                     except Exception:
                         pass
             guard.check()
+            actuals.append(result['model_actual'])
             deferred = True
             try:
                 log.append('attempt.ended', task_id, {key: result[key] for key in
-                           ('run_id', 'status', 'exit_code', 'duration_ms', 'usage', 'warnings')})
+                           ('run_id', 'status', 'exit_code', 'duration_ms', 'usage', 'warnings', 'model_actual')})
                 attempt_open = False
             finally:
                 deferred = False
@@ -542,15 +688,21 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                            plan_id=plan_id, **summary['escalation']))
                 return finish('rejected', 'outside_allow')
             paths = {f[k] for f in observed['files'] for k in ('path', 'old_path') if f[k]}
-            touched = risk_areas.touched_paths(main, paths)
+            if contract['lane'] == 'risky':
+                # T57 §3.1: the risky lane rejects only the frozen forbidden paths; a risk area
+                # the approved allow globs cover is the task's own scope.
+                touched = risky.forbidden_touched(paths, contract['forbidden_paths'])
+            else:
+                touched = risk_areas.touched_paths(main, paths)
             if touched:
                 summary['escalation'] = dict(suggested_lane='risky', paths=touched)
                 log.append('gate.failed', task_id, dict(plan_id=plan_id, run_id=run_id,
                            attempt=attempt, reason='risk_path_touched'))
                 state = 'gate.failed'
-                log.append('lane.escalated', task_id, dict(from_lane=contract['lane'],
-                           to_lane='risky', reason='risk_path_touched',
-                           plan_id=plan_id, **summary['escalation']))
+                if contract['lane'] != 'risky':
+                    log.append('lane.escalated', task_id, dict(from_lane=contract['lane'],
+                               to_lane='risky', reason='risk_path_touched',
+                               plan_id=plan_id, **summary['escalation']))
                 return finish('rejected', 'risk_path_touched')
             if 'pipes_held' in result['warnings']:
                 return finish('rejected', 'pipes_held')
@@ -576,7 +728,9 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 return finish('rejected', 'git_controls_changed')
             l1_reason = None
             l1_accepted = False
-            if passed and contract['lane'] == 'standard':
+            audit_ok, audit_findings, failure_stage = False, None, {}
+            risky_lane = contract['lane'] == 'risky'
+            if passed and contract['lane'] in ('standard', 'risky'):
                 l0 = task_l0.run_l0(repo_path=main, worktree=wt, observed=observed,
                                     commands=commands, gate=gate, run_dir=attempt_dir)
                 if isolation.tampered(l0):
@@ -589,10 +743,11 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                 checks=[c['id'] for c in l0['checks']],
                                 failed_checks=[c['id'] for c in l0['checks'] if c['status'] != 'pass']))
                 gate['checks'].extend(l0['checks'])
+                failure_stage.update({id(c): 'l0' for c in l0['checks']})
                 passed = l0['passed']
                 if passed:
                     tree = observed['tree']
-                    own = task_l1.executor_models(dict(selection, model_actual=result['model_actual']))
+                    own = task_l1.executor_models(executor_view(result))
                     remembered = l1_memory.get(tree)
                     rubric, verdict = None, None
                     if remembered is not None and remembered['model'] not in own:
@@ -608,21 +763,27 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                             if task_l1.CURSOR_REVIEW_VERIFIED:
                                 evaluator_adapters['cursor'] = (executor_adapter if selection['tool'] == 'cursor'
                                                                 else CursorAdapter())
-                            try:
-                                family = getattr(executor_adapter.manifest, 'family', None)
-                            except Exception:
-                                family = None
-                            try:
-                                evaluator_chain = task_l1.evaluator_chain(dict(selection, family=family,
-                                    model_actual=result['model_actual']), evaluator_adapters)
-                            except Exception:
-                                evaluator_chain = []
+                        # Recomputed every attempt from the union of actual models (never reused stale),
+                        # over one access snapshot per dispatch (K17).
+                        try:
+                            if audit_view is None:
+                                audit_view = (route.gather_access(list(evaluator_adapters.values())),
+                                              route.load_roles())
+                            evaluator_chain = task_l1.evaluator_chain(executor_view(result), evaluator_adapters,
+                                                                      audit_view)
+                        except Exception:
+                            evaluator_chain = []
                         l1_reason = 'l1_unavailable'
                         call = 0
+                        weaker = False
                         # K17 at run time: an unavailable evaluator yields to the next
                         # candidate of the same access snapshot, each once per attempt.
                         for candidate in evaluator_chain:
                             if candidate['model'] in own or candidate['tool'] not in task_l1.RUNNABLE_TOOLS:
+                                continue
+                            if risky_lane and candidate['l1_basis'] != risky.L1_REQUIRED_BASIS:
+                                # T57 §3.3: the risky lane skips cursor_read_only and same_family.
+                                weaker = True
                                 continue
                             call += 1
                             log.append('l1.started', task_id, dict(plan_id=plan_id, run_id=run_id,
@@ -645,10 +806,15 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                             if rubric is not None:
                                 verdict = dict(model=candidate['model'], basis=candidate['l1_basis'],
                                                run_id=run_id, rubric=rubric)
-                                l1_memory[tree] = verdict
+                                if not all(c['pass'] for c in rubric['criteria']):
+                                    # Only a rejection is remembered; a pass is always asked again, so its
+                                    # basis is judged against the executor families of that attempt.
+                                    l1_memory[tree] = verdict
                             # Malformed output is a verdict on this evaluator, not availability.
                             if l1_reason != 'l1_unavailable':
                                 break
+                        if risky_lane and call == 0 and weaker:
+                            l1_reason = 'l1_basis_insufficient'
                     if rubric is not None:
                         passed = all(c['pass'] for c in rubric['criteria'])
                         l1_accepted = passed
@@ -656,8 +822,31 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                             summary['l1'] = dict(basis=verdict['basis'], model=verdict['model'],
                                                  reused=verdict is remembered)
                         else:
-                            gate['checks'].extend(dict(id=c['id'], status='fail', detail=c['reason'])
-                                                  for c in rubric['criteria'] if not c['pass'])
+                            failed_criteria = [dict(id=c['id'], status='fail', detail=c['reason'])
+                                               for c in rubric['criteria'] if not c['pass']]
+                            gate['checks'].extend(failed_criteria)
+                            failure_stage.update({id(c): 'l1' for c in failed_criteria})
+                    if passed and risky_lane and rubric is not None:
+                        if verdict['basis'] != risky.L1_REQUIRED_BASIS:
+                            # same_family / cursor_read_only never suffices on the risky lane.
+                            l1_reason, l1_accepted = 'l1_basis_insufficient', False
+                        else:
+                            outcome = audit_stage(attempt, tree, contract, gate, l0, verdict, result)
+                            if outcome['outcome'] == 'wrote':
+                                return finish('rejected', 'auditor_wrote')
+                            if outcome['outcome'] == 'pass':
+                                audit_ok = True
+                            elif outcome['outcome'] == 'fail':
+                                passed, l1_accepted = False, False
+                                audit_findings = outcome['findings']
+                                first = sorted(audit_findings, key=lambda f: risky.SEVERITIES.index(f['severity']))[0]
+                                check = dict(id='audit', status='fail',
+                                             detail=first['severity'] + ' ' + first['path'] + ': ' + first['reason'],
+                                             failure_id=first['severity'] + ':' + first['path'])
+                                gate['checks'].append(check)
+                                failure_stage[id(check)] = 'audit'
+                            else:
+                                l1_reason, l1_accepted = outcome['reason'], False
                 if gate_lite.snapshot_controls(main, wt) != controls:
                     return finish('rejected', 'git_controls_changed')
             # The gate receipt binds immutable objects. As with do, a later
@@ -667,9 +856,38 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 l1_reason = 'isolation_unavailable'
                 l1_accepted = False
             reason = failed['id'] if failed else l1_reason
-            log.append('gate.passed' if passed else 'gate.failed', task_id,
-                       dict(plan_id=plan_id, run_id=run_id, attempt=attempt, reason=reason, isolation=isolated))
+            failure = None
+            if risky_lane and not passed and failed is not None and not risky.environmental(
+                    result, failed, failure_stage.get(id(failed), 'gate')):
+                # T57 §3.5: (stage, check id, normalized message hash); environmental results excluded.
+                failure = risky.failure_class(failure_stage.get(id(failed), 'gate'),
+                                              failed.get('failure_id', failed['id']), failed.get('detail'))
+                failure_check = risky.failure_label(failed.get('failure_id', failed['id']))
+            event = dict(plan_id=plan_id, run_id=run_id, attempt=attempt, reason=reason, isolation=isolated)
+            if failure is not None:
+                event['failure_class'] = failure
+            log.append('gate.passed' if passed else 'gate.failed', task_id, event)
             state = 'gate.passed' if passed else 'gate.failed'
+            if passed and risky_lane and not (isolated != 'none' and l1_accepted and audit_ok
+                                              and (summary.get('auditor') or {}).get('tree') == tree == observed['tree']):
+                # T57 §3.4: on the risky lane the ref and the landing command exist only for accepted.
+                summary['auditor'] = None if not audit_ok else summary.get('auditor')
+                return finish('gate_passed', l1_reason or 'auditor_unavailable')
+            if passed and risky_lane:
+                # T57 §3.4 / L2 P2-2: the accepted record (chain advance + task.state) comes first; the
+                # accepted ref is written only after it, so a failed record never leaves a ref behind.
+                deferred = True
+                contract = read_contract(contract_path, digest)
+                accepted_commit = _commit(main, wt, observed['tree'], dispatch_id, identity)
+                read_contract(contract_path, digest)
+                outcome = finish('accepted')
+                if outcome['state'] == 'accepted':
+                    ref = 'refs/orcexe/accepted/' + dispatch_id
+                    try:
+                        do._git(main, 'update-ref', ref, accepted_commit, '0' * len(accepted_commit))
+                    except Exception:
+                        pass  # The integration chain ref (land form) already carries the accepted commit.
+                return outcome
             if passed:
                 deferred = True
                 contract = read_contract(contract_path, digest)
@@ -689,7 +907,16 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                        l1_basis=planrun.l1_basis(plan, planrun.task_records(plan, log),
                                            (task_id, summary['l1']['basis'] if summary['l1'] else 'none')))
                 return finish('accepted' if isolated != 'none' and (contract['lane'] == 'fast' or l1_accepted) else 'gate_passed', l1_reason)
+            if failure is not None:
+                if failure in classes:
+                    # Same failure class twice: no third attempt, not landable; the next step is human.
+                    summary['diagnosis'] = {'class': failure, 'attempts': attempt, 'check': failure_check}
+                    return finish('diagnosing', 'same_failure', {'class': failure, 'attempts': attempt})
+                classes.append(failure)
             feedback = _feedback(attempt, gate['checks'])
+            if audit_findings:
+                # Untrusted auditor findings for the next attempt (T57 §3.3).
+                feedback['audit_findings'] = audit_findings
         return finish('exhausted', 'exhausted')
     except (KeyboardInterrupt, do._Cancelled):
         summary['land'] = None
@@ -724,24 +951,42 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
 
 
 def task_command(args):
-    result = run_task(args.plan, args.task, args.repo, timeout=args.timeout_min * 60)
+    if getattr(args, 'approve_contract', None):
+        return risky.approve_contract_command(args)
+    result = run_task(args.plan, args.task, args.repo, timeout=args.timeout_min * 60,
+                      constraints=getattr(args, 'constraint', None))
     code = result.pop('exit_code')
     detail = result.pop('detail', None)
     clean = redact.redact_obj(result)
     if args.json:
         print(json.dumps(clean, ensure_ascii=False))
     else:
-        print('State: ' + clean['state'])
+        # Every value below may carry untrusted text (findings, paths): one line each (L2 P1-3).
+        line = risky.one_line
+        print('State: ' + line(clean['state']))
         if clean['reason']:
-            print('not_seen: ' + clean['reason'])
+            print('not_seen: ' + line(clean['reason']))
         if clean['escalation']:
             print('Escalation: ' + json.dumps(clean['escalation'], ensure_ascii=False))
         if clean['l1']:
-            print('L1 basis: ' + clean['l1']['basis'])
+            print('L1 basis: ' + line(clean['l1']['basis']))
+        if clean.get('auditor'):
+            print('Auditor: ' + line(clean['auditor']['model']) + ' (' + line(clean['auditor']['basis']) + ')')
+            if clean['auditor'].get('same_model_as_l1'):
+                # Decision 027 Ş3: no second eligible cross-family model; its own line.
+                print('Auditor same model as L1: same_model_as_l1 (' + line(clean['auditor']['model']) + ')')
+        if clean.get('diagnosis'):
+            print('Diagnosing: failure class ' + line(clean['diagnosis']['class']) + ' ('
+                  + line(clean['diagnosis'].get('check', '')) + ') seen twice (attempt '
+                  + str(clean['diagnosis']['attempts']) + '); no further attempt; the next step is yours.')
+        if clean.get('contract') and clean['contract'].get('approve'):
+            print('Contract proposal: ' + line(clean['contract']['path']))
+            print('Approve it yourself after reviewing it (a host agent never runs this):\n'
+                  + line(clean['contract']['approve']))
         if clean['land']:
             print('Human landing command (review the frozen commit):\n' + clean['land']['command'])
-            for line in planrun._basis_lines(clean['land'])[1:]:
-                print(line)
+            for item in planrun._basis_lines(clean['land'])[1:]:
+                print(line(item))
     if code == exitcodes.USAGE and clean['reason']:
         print('not_seen: ' + clean['reason'], file=sys.stderr)
     if detail:
@@ -752,4 +997,7 @@ def task_command(args):
         print(planning.UNANCHORED_HINT if detail else ledger.TAMPER_HINT, file=sys.stderr)
     elif detail == 'approval_revoked':
         print(planning.REVOKED_HINT, file=sys.stderr)
+    elif detail == 'proposal_changed':
+        print('The contract proposal changed since the last one (not a tamper alarm); review and approve the '
+              'current one.', file=sys.stderr)
     return code

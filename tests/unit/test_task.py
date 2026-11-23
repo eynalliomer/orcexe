@@ -143,6 +143,8 @@ class TaskFixture(GitFixture):
         return code, json.loads(out.getvalue()) if json_output else out.getvalue(), err.getvalue()
 
 class TaskTests(TaskFixture):
+    # T60: risky is runnable (K18 a); this T59 test keeps lane_not_supported via the K18 (b) fallback.
+    @mock.patch.object(planning, 'SUPPORTED_LANES', ('fast', 'standard'))
     def test_precondition_reasons_run_nothing(self):
         original = copy.deepcopy(self.saved)
         # T59: an unrunnable lane or a plan without a route is deferred at approval, so

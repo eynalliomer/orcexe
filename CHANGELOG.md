@@ -1,5 +1,82 @@
 ## Unreleased
 
+### T60 — minimal risky lane: `contract.v1`, per-task contract approval, cross-family auditor, `diagnosing`
+
+- `risky` is a supported lane (K18 a; T57 r2 §3.1–§3.6, decision 027 Ş3). `plan --approve` defers a
+  risky task as `no_auditor` (evidence `auditor: none (executor families: …)`) when no eligible
+  cross-family auditor route exists at the decision; the live reason is frozen, never recomputed
+  at dispatch, and `--open` recomputes it. Approvals made before T60 are `plan_stale`
+  (`lanes_changed`); a proposal still carrying a risky `lane_note` is `plan_stale` at approval.
+- Per-task contract approval: the first `task`/`plan --run` on an approved risky task writes
+  `.orcexe/contracts/<plan>/<task>/contract.proposed.json` + ledger `contract.proposed
+  {approval_sha256}`, `task.state → awaiting_approval` and exits 2 `contract_unapproved` (plan run:
+  other tasks continue, dependants stay `pending`, run `partial`; run output and `status` print the
+  exact approve command). New `orcexe task --approve-contract PLAN_ID TASK_ID APPROVAL_SHA256
+  [--repo PATH]` (user only; README/SKILL rule) records `decision.v1 {kind: contract_approval}`,
+  its `decision.recorded` anchor and `contract.approved`. A hash other than the current proposal's
+  is `contract_unapproved` (`detail: proposal_changed`). The approval hash covers T57 §3.2's field
+  list; `base` is outside it and recorded as `contract.frozen {approval_sha256, base}`. An
+  unanchored approval line is `state_tampered` (`detail: contract_unanchored`, approval revoked).
+  `--constraint TEXT` (≤5, ≤300 chars) re-proposes with human constraints.
+- `orcexe.contract.v1` = contract.lite + `notes_sha256`, `risk {signals, areas}`, `forbidden_paths`
+  (risk areas the allow globs do not cover + do-not-touch; the only paths that give
+  `risk_path_touched` on risky), `executor`, `auditor` (upper bound), `l1_required_basis:
+  cross_family`, `human_constraints`, `budget {attempts: 3, auditor_calls: 3, same_failure:
+  diagnosing}`, `approval_sha256`, `base`.
+- Order per attempt: executor → gate → L0 → L1 → auditor. Risky L1 skips `cursor_read_only` and
+  `same_family` (`l1_basis_insufficient`). The auditor (`roles.yaml` `auditor` stage via
+  `route.route`) is a separate read-only call in a throwaway copy; its family excludes
+  `task_l1.executor_families` of the executor's tool and actual model at run time; its model must
+  differ from L1's when another eligible model exists, else `same_model_as_l1: true` (ledger and its
+  own land-form line). Output `orcexe.audit.v1` via `mapping.parse_strict_json_output`; `pass` only
+  without P0/P1/P2; verdict from the adapter's in-memory final text. `audit_invalid` is asked once
+  more without spending an attempt (second: `gate_passed`/`audit_invalid`); `fail` findings go to
+  the next brief as untrusted feedback. Auditor writes to its copy → `rejected`/`auditor_wrote`;
+  writes to ledger/runs/decisions/plan during its call → `state_tampered`/`main_repository_changed`
+  (T55 runguard + main snapshot). Only `fail` verdicts are remembered per tree (also on `--resume`).
+- `accepted` (risky) only when L1 `cross_family` passed, the auditor `cross_family` passed, the L1,
+  audit and land trees are equal and isolation evidence exists; otherwise `gate_passed` with the
+  reason. On risky the accepted ref and landing command are written only after that decision
+  (standard lane unchanged). Same failure class twice (stage, check id, normalized message hash;
+  environmental results excluded; recorded as `gate.failed {failure_class}`) → `diagnosing`
+  (`same_failure`, `task.state {class, attempts}`), final, not landable.
+- New ledger events/fields: `contract.proposed`, `contract.approved`, `audit.started`,
+  `audit.verdict`; optional `contract.frozen.approval_sha256/base`, `gate.failed.failure_class`,
+  `task.state.class/attempts`; the ledger accepts a `bool` field type. New task reasons:
+  `contract_unapproved` (2), `l1_basis_insufficient`, `auditor_unavailable`, `audit_invalid` (0),
+  `auditor_wrote`, `same_failure` (1). `planrun.FINAL` gains `diagnosing`; `awaiting_approval` is
+  parked. A contract approval anchor is never counted as the plan's latest decision.
+- Standard-lane fix: a model id also names its vendor family by prefix (`claude` → anthropic,
+  `gpt-`/`o3`/`codex` → openai, …), so a Cursor executor running e.g.
+  `claude-opus-5-thinking-high` never gets a Claude L1 counted as `cross_family`.
+- r2 (hidden-gate findings): environmental outcomes never get a failure class — besides
+  quota/timeout/stalled/auth statuses, `*_unavailable` and `audit_invalid`, an executor
+  `run_status` failure caused by them (`quota_suspected`, `executor_error`) no longer counts, so
+  quota ×2 then success reaches attempt 3 and is accepted. An unavailable auditor call is retried
+  (next candidate, then the same again) within the 3-call budget before `auditor_unavailable`.
+  `same_model_as_l1` is shown on its own line containing the literal `same_model_as_l1` in `task`
+  text output, `plan --run`, `status` and `status.md` (`Auditor same model as L1:
+  same_model_as_l1 (…)`), and as fields in `task --json` (`auditor.same_model_as_l1`) and the land
+  form (`land.same_model_as_l1`).
+- r3 (L2 review, RET narrow): (P1-1) the executor family set for L1 and auditor is the union of
+  every attempt's `model_actual` (new optional `attempt.ended.model_actual`, re-read on `--resume`)
+  plus the routed model; the L1 chain is recomputed each attempt; only failing L1 verdicts are
+  remembered in-run. (P1-2) vendor tokens anywhere in an id (`sonnet`, `opus`, `anthropic/…`, `gpt5`,
+  …) name the family; a multi-vendor tool's missing/`auto`/unrecognised slug is unknown → never
+  `cross_family` (standard L1 is labelled `same_family`; risky gets `l1_basis_insufficient` /
+  `auditor_unavailable`). (P1-3) audit `path`/`reason` must be single-line printable (`path`
+  relative, ≤160) or the reply is `audit_invalid`; `task`/`plan --run` text output escapes every
+  non-printable character. (P2-1) `environmental()` uses structured run results only (status,
+  warnings, exact `*_unavailable` codes), never words in details or findings. (P2-2) risky:
+  accepted record first, then `refs/orcexe/accepted/*` (no ref if the record fails). P3: `--resume`
+  re-checks the contract approval (else re-proposes); `--open` recomputes the auditor for every
+  risky task opened; `roles.yaml` `auditor` gains `claude-sonnet-5-5` and `gpt-6-sol` so the auditor
+  differs from the L1 model when one is in access; failure classes are `stage:<32 hex>` (never cut
+  or redacted in the ledger; readable check label separate); no `Auditor:` line on non-accepted
+  tasks; `--constraint` on resume is refused (`detail: constraint_on_resume`).
+- Tests: `tests/unit/test_risky_lane.py`. T59 tests that exercise `lane_not_supported` deferral
+  now patch `planning.SUPPORTED_LANES` to `('fast', 'standard')` (the K18 b fallback).
+
 ### T59 — partial plan approval and `deferred` tasks; `--open`; classifier version check
 
 - `orcexe plan --approve PLAN_ID [--defer T2[,T5]]` approves the runnable subset (T57 r2 §2,
