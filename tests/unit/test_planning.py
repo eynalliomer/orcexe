@@ -483,8 +483,11 @@ class PlanCLI(GitFixture):
         self.assertIn('| risky (lane_not_supported) |', row)
         self.assertNotIn('lane_not_supported', next(line for line in markdown.splitlines()
                                                      if line.startswith('| T1 |')))
-        self.assertIn('lane_not_supported: T2 (risky)', markdown)
-        self.assertIn('`orcexe plan --approve` refuses this plan', markdown)
+        # T59 §2.6: the form shows what an approval runs and what it defers (was a refusal note).
+        self.assertIn('## Will run after approval\n\nT1 (fast)\n', markdown)
+        self.assertIn('## Will be deferred\n\n- T2 (risky): lane_not_supported — lane: risky', markdown)
+        self.assertIn('- T3: dependency_deferred (depends on T2)', markdown)
+        self.assertIn('Approve: `orcexe plan --approve ' + result['plan_id'] + '`', markdown)
         code, human, error = self.invoke('--goal', 'Fix 1 typo in README.md')
         self.assertEqual((code, error), (0, ''))
         self.assertEqual(json.loads(human)['tasks'][1]['lane_note'], 'lane_not_supported')
@@ -498,35 +501,46 @@ class PlanCLI(GitFixture):
         self.assertNotIn('lane_note', plain_plan['tasks'][0])
         self.assertNotIn('lane_not_supported', (self.state / 'plan.md').read_text())
 
-    def test_approve_refuses_unsupported_lane_and_run_refuses_before_dispatch(self):
-        from orcexe import task as task_module
+    def test_approve_defers_unsupported_lane_and_refuses_only_when_nothing_runs(self):
+        # T59 (was: approval refused the whole plan with lane_not_supported).
+        from orcexe import ledger, task as task_module
         result = self.unsupported_plan()
-        before = self.snapshot()
         with mock.patch.object(mapping, 'manager_run') as run:
-            self.assertEqual(self.invoke('--approve', result['plan_id']),
-                             (2, '', 'not_seen: lane_not_supported\nlane_not_supported: T2 risky\n'))
+            code, out, error = self.invoke('--approve', result['plan_id'])
             run.assert_not_called()
+        self.assertEqual((code, error), (0, ''))
+        approved = json.loads(out)
+        self.assertEqual((approved['plan_id'], approved['content_sha256']), (result['plan_id'], result['content_sha256']))
+        self.assertEqual(approved['approval']['approved'], ['T1'])
+        self.assertEqual(approved['approval']['deferred'], [
+            dict(id='T2', reason='lane_not_supported', cause=None, evidence='lane: risky (this version runs fast and standard)'),
+            dict(id='T3', reason='dependency_deferred', cause='T2', evidence='depends on T2')])
+        self.assertIn('Status: approved (1 of 3; 2 deferred)', (self.state / 'plan.md').read_text())
+        # Nothing runnable: plan_rejected names every task, writes nothing, plan stays proposed.
+        self.final.write_text(json.dumps(manager([task('T1', lane='risky'), task('T2', depends_on=['T1']),
+                                                  task('T3', lane='risky')])))
+        second = self.proposed()
+        before = self.snapshot()
+        log_before = ledger.default_path(self.main).read_bytes()
+        self.assertEqual(self.invoke('--approve', second['plan_id']), (2, '', 'not_seen: plan_rejected\n'
+            'deferred: T1 lane_not_supported (lane: risky (this version runs fast and standard))\n'
+            'deferred: T2 dependency_deferred (depends on T1)\n'
+            'deferred: T3 lane_not_supported (lane: risky (this version runs fast and standard))\n'))
         self.assertEqual(self.snapshot(), before)
+        self.assertEqual(ledger.default_path(self.main).read_bytes(), log_before)
         self.assertEqual(fsio.read_json(self.state / 'plan.json')['status'], 'proposed')
-        self.assertFalse((self.state / 'decisions.jsonl').exists())
         with mock.patch.object(task_module, 'run_task') as dispatch:
-            code, out, error = self.invoke('--run', result['plan_id'])
+            code, out, error = self.invoke('--run', second['plan_id'])
             dispatch.assert_not_called()
         self.assertEqual(code, 2, (out, error))
         self.assertIn('not_seen: plan_not_approved', error)
         self.assertEqual(self.snapshot(), before)
-        # Every unsupported task is named, in plan order.
-        self.final.write_text(json.dumps(manager([task('T1', lane='risky'), task('T2'), task('T3', lane='risky')])))
-        second = self.proposed()
-        self.assertEqual(self.invoke('--approve', second['plan_id']),
-                         (2, '', 'not_seen: lane_not_supported\nlane_not_supported: T1 risky\n'
-                                 'lane_not_supported: T3 risky\n'))
 
     def test_lane_note_is_bound_and_legacy_unmarked_plans_still_refuse(self):
         original = self.unsupported_plan()
         for change, expected in [(lambda p: p['tasks'][0].update(lane_note='lane_not_supported'), 'plan_tampered'),
                                  (lambda p: p['tasks'][1].update(lane_note='other'), 'plan_tampered'),
-                                 (lambda p: p['tasks'][1].pop('lane_note'), 'lane_not_supported')]:
+                                 (lambda p: p['tasks'][1].pop('lane_note'), None)]:
             plan = copy.deepcopy(original)
             change(plan)
             plan['content_sha256'] = planning.content_sha256(plan)
@@ -534,6 +548,11 @@ class PlanCLI(GitFixture):
             (self.state / 'plan.json').write_text(json.dumps(plan))
             before = self.snapshot()
             code, out, error = self.invoke('--approve', plan['plan_id'])
+            if expected is None:
+                # T59: an unmarked legacy risky task is still never approved to run; it is deferred.
+                self.assertEqual((code, error), (0, ''))
+                self.assertEqual([d['id'] for d in json.loads(out)['approval']['deferred']], ['T2', 'T3'])
+                continue
             self.assertEqual((code, error.splitlines()[0]), (2, 'not_seen: ' + expected))
             self.assertEqual(self.snapshot(), before)
 

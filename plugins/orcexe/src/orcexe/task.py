@@ -30,7 +30,7 @@ EXIT_REASONS = {
     'cancelled': 130, 'run_interrupted': 2,
     **{reason: 2 for reason in (
         'plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered',
-        'task_unknown', 'dependency_pending', 'lane_not_supported', 'no_route',
+        'task_unknown', 'task_deferred', 'dependency_pending', 'lane_not_supported', 'no_route',
         'not_a_repository', 'state_corrupt', 'output_symlink', 'orcexe_invalid',
         'ledger_corrupt', 'ledger_head_mismatch')},
 }
@@ -74,6 +74,8 @@ def _read_plan(main, identifier, task_id, log):
         raise ValueError('plan_tampered')
     if plan.get('plan_id') != identifier:
         raise ValueError('plan_mismatch')
+    if plan.get('status') == 'revoked':
+        raise planning.not_approved(detail='approval_revoked')
     if plan.get('status') != 'approved':
         raise ValueError('plan_not_approved')
     try:
@@ -85,7 +87,7 @@ def _read_plan(main, identifier, task_id, log):
     try:
         digest = planning.content_sha256(plan)
         approvals = [d for d in questions.read_decisions(directory)
-                     if d.get('kind') == 'plan_approval' and d.get('plan_id') == identifier]
+                     if d.get('kind') in planning.DECISION_KINDS and d.get('plan_id') == identifier]
         if (plan.get('content_sha256') != digest or planning.plan_id(digest) != identifier
                 or not approvals or approvals[-1].get('content_sha256') != digest
                 or approvals[-1].get('head') != head):
@@ -98,9 +100,18 @@ def _read_plan(main, identifier, task_id, log):
             raise ValueError('plan_tampered')
     except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OSError):
         raise ValueError('plan_tampered') from None
+    # T59: the classifier that set the lanes, then the latest anchored decision (allowlist).
+    planning.check_classifier(plan)
+    try:
+        approval = planning.check_approval(plan, directory, log)
+    except ValueError as error:
+        if str(error) == 'state_tampered':
+            # §4: a decision the ledger does not vouch for revokes the approval; re-approve.
+            planning.revoke(plan, log, error.detail, directory)
+        raise
     if task_id is None:
         for item in plan['tasks']:
-            if item['lane'] != 'risky':
+            if item['id'] in approval['approved']:
                 _route(item)
         return plan
     return plan, _select_task(plan, task_id, log)
@@ -110,6 +121,9 @@ def _select_task(plan, task_id, log):
     task = next((t for t in plan['tasks'] if t['id'] == task_id), None)
     if task is None:
         raise ValueError('task_unknown')
+    # Dispatch permission is the latest decision's approved list (T57 §2.3), never ledger state.
+    if task_id not in plan['approval']['approved']:
+        raise ValueError('task_deferred')
     if task['lane'] not in planning.SUPPORTED_LANES:
         raise ValueError('lane_not_supported')
     states = planrun.task_records(plan, log)
@@ -687,6 +701,8 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
     except ValueError as error:
         summary['land'] = None
         reason = str(error) if str(error) in EXIT_REASONS else 'observation_unavailable'
+        if isinstance(getattr(error, 'detail', None), str):
+            summary['detail'] = error.detail
         return finish('rejected' if contract_path is not None else 'blocked', reason)
     except Exception:
         summary['land'] = None
@@ -710,6 +726,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
 def task_command(args):
     result = run_task(args.plan, args.task, args.repo, timeout=args.timeout_min * 60)
     code = result.pop('exit_code')
+    detail = result.pop('detail', None)
     clean = redact.redact_obj(result)
     if args.json:
         print(json.dumps(clean, ensure_ascii=False))
@@ -727,8 +744,12 @@ def task_command(args):
                 print(line)
     if code == exitcodes.USAGE and clean['reason']:
         print('not_seen: ' + clean['reason'], file=sys.stderr)
+    if detail:
+        print('detail: ' + detail, file=sys.stderr)
     if clean['reason'] in ('ledger_corrupt', 'ledger_head_mismatch'):
         print(ledger.REPAIR_HINT, file=sys.stderr)
     elif clean['reason'] == 'state_tampered':
-        print(ledger.TAMPER_HINT, file=sys.stderr)
+        print(planning.UNANCHORED_HINT if detail else ledger.TAMPER_HINT, file=sys.stderr)
+    elif detail == 'approval_revoked':
+        print(planning.REVOKED_HINT, file=sys.stderr)
     return code

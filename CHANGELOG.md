@@ -1,5 +1,132 @@
 ## Unreleased
 
+### T59 — partial plan approval and `deferred` tasks; `--open`; classifier version check
+
+- `orcexe plan --approve PLAN_ID [--defer T2[,T5]]` approves the runnable subset (T57 r2 §2,
+  F11, K19 a). Runnability is computed and frozen at the decision: `lane_not_supported` (risky
+  in this version), `no_route` (the plan's route is null), `deferred_by_human` (`--defer`) and
+  `dependency_deferred` (`cause`: the first deferred dependency) for every transitive dependant;
+  each entry also carries a short `evidence`. Nothing runnable (or an unknown `--defer` id) is
+  exit 2 `plan_rejected` with one stderr line per task and nothing written. `no_auditor` joins
+  with the risky lane (T60). The old whole-plan refusal `lane_not_supported` (exit 2) of
+  `plan --approve` is gone from the plan reason table.
+- `content_sha256` and `plan_id` are unchanged by a decision. `plan.approval = {approved,
+  deferred, approval_sha256, decision_id, at, opened_from}`; `approval_sha256` hashes
+  `{plan_id, content_sha256, classifier, head, approved, deferred, opened_from}`. The
+  `orcexe.decision.v1` record (`plan_approval` / `plan_open`) carries the same lists and hash,
+  and the ledger gets the new event `decision.recorded {kind, decision_id, plan_id,
+  record_sha256}` (T55 head ref and session trust; written before the plan is published) plus
+  `task.state pending → deferred` (approval) and `deferred → pending`, reason `opened` (open)
+  rows. Approval/open take the dispatch lock (`task_running`), check the tamper marker and verify
+  the ledger head first (`state_tampered`, `ledger_corrupt`, `ledger_head_mismatch` now in the
+  plan table).
+- Dispatch gate (`task._read_plan`, so `task`, `plan --run`, `--resume` and `--open`): after the
+  content hash and HEAD, a `classifier` other than `classify.CLASSIFIER_VERSION` is `plan_stale`
+  with stderr `detail: classifier_changed` (also when approving a proposal); a missing
+  `approval` (plans approved before T59) is `plan_stale`; then `approval_sha256`, `approved ∪
+  deferred` = the plan's tasks without overlap, at least one approved task, the plan-derived
+  reasons recomputed (a fixed point of the human-held set, so a consistent forgery that approves
+  a risky task still fails), the latest decision record (hash, lists, head, classifier, chain
+  `opened_from`) → else `plan_tampered`. Each decision of the current chain needs its
+  `decision.recorded` anchor with the record's canonical SHA-256, and every ledger
+  `deferred → pending` row needs an anchored `plan_open` that opened it → else `state_tampered`
+  with `detail: decision_unanchored` / `open_unanchored` and a "propose again" hint (no marker is
+  written: the plan itself is untrusted, not the ledger). Dispatch permission is the approved
+  list: `task` on a deferred task is exit 2 `task_deferred`; `plan --run`/`--resume` skip
+  deferred tasks (run `partial`, exit 1). Status/ledger projections show them as `deferred` with
+  their frozen reason, taken from the decision, not from ledger rows.
+- `orcexe plan --approve PLAN_ID --open T3[,T4]` (approved plans only, else
+  `plan_not_approved`): the dispatch gate plus the full approval-time `plan_tampered` checks,
+  then runnability now — an opened task must be deferred, runnable and have every dependency
+  approved or opened in the same call; otherwise `plan_rejected` with `refused: T<n> <why>`
+  lines and nothing written. Remaining deferred tasks are re-reasoned (r3: a dependant whose
+  dependency was opened but that was not opened itself keeps `dependency_deferred` with its cause,
+  evidence `depends on T2; not opened with it`). Landing
+  moves HEAD, so `--open` after a land is `plan_stale` (decision 027 Ş4).
+- Land form: `land.deferred` lists the deferred tasks and `status.md`, `plan --run` and `task`
+  print "Warning: landing closes deferred T3/T4 for this plan for good …". `plan.md`: "Will run
+  after approval" / "Will be deferred" sections and the approve/defer/open commands; after a
+  decision `Status: approved (2 of 4; 2 deferred)`.
+- Docs: README partial-approval section (CLI, record, hash, gate order, open, land warning,
+  threat-model boundary of decision 027 Ş2), task/planrun/plan reason tables (`task_deferred`;
+  `plan_stale`, `plan_tampered`, `state_tampered`, `plan_rejected` meanings), SKILL workflow line
+  and tables (two blank lines dropped to stay at 160 lines).
+- r2 (§2.6): `plan.md` keeps the design's `## Will run after approval` (approved ids with lanes,
+  ` · `-joined) and `## Will be deferred` sections after a decision too (r1 renamed them
+  "Approved to run"/"Deferred"); a deferred entry reads `- T3: dependency_deferred (depends on
+  T2)` when it has a cause, else `- T2 (risky): <reason> — <evidence>`. Pinned in the C33 test.
+- r2 (§4 `approval.revoked`): new ledger event `approval.revoked {plan_id, reason}`. The first
+  dispatch gate (`task`, `plan --run`, `--resume`, `--open`) that finds a decision without its
+  anchor (`decision_unanchored`) or an unanchored opened row (`open_unanchored`) writes it, then
+  refuses with `state_tampered` as before. Every later gate for that plan refuses with exit 2
+  `plan_not_approved` and stderr `detail: approval_revoked` plus a re-approve hint (no new
+  reason word). `plan --approve PLAN_ID` accepts an `approved` plan only when its latest anchored
+  approval was revoked (otherwise `plan_not_proposed`), under the dispatch lock and only after the
+  tamper-marker check and `verify_head` pass (`ledger_corrupt` etc. write nothing); it starts a new
+  decision chain. Opened-task ledger rows count only after the current chain's anchored
+  `plan_approval` (by ledger seq), so a forged row before a fresh approval no longer blocks.
+  Not covered: a mid-run `state_tampered` from the T55 run guard (ledger/runs/ control state) does
+  not revoke the approval — its ledger is untrusted until `ledger repair`, and the marker already
+  stops every dispatch.
+- r3 (L2 review T58-T59, T59 RET narrow):
+  - P1-1, replaying an older, wider approval: every `plan --goal` publication first writes the new
+    ledger event `plan.proposed {plan_id}` (dispatch lock, so never inside a running plan:
+    `task_running`; written before publishing, fail closed). The gate trusts a decision chain only
+    when its tail is the plan's LAST `decision.recorded` and its start comes after the latest
+    `plan.proposed` (any plan); otherwise `state_tampered`, `detail: decision_superseded`, plus
+    `approval.revoked`. Both L2 paths are refused before any dispatch: (a) same `plan_id`
+    re-proposed and approved narrower, then the old plan.json and A1 line restored; (b) a replaced
+    plan restored through plan.json alone. Tamper twins 6a/6b.
+  - P2-5: after `approval.revoked` a fresh approval needs the deferrals restated:
+    `plan --approve PLAN_ID --defer IDS` or `--defer none` (new parser value). A bare re-approval is
+    `plan_rejected` with `refused: T2 deferred_by_human (restate with --defer T2 or --defer none)`,
+    taken from the last genuinely anchored decision. Hints name the flag. I picked "restate"
+    over "carry forward": it never decides for the human and does not trust a decision chain that was
+    just tampered with.
+  - P3-1: `plan --run` re-checks the approval (`task._read_plan`) after every dispatched task, so a
+    decision forged in a task's executor window stops that run with `state_tampered` and revokes
+    before the next task.
+  - P3-2: revocation is decided from the ledger alone (`approval.revoked` newer than the plan's
+    last anchor). Re-approval ignores a forged `approval` left in plan.json and recomputes from the
+    content. The revoking gate republishes the plan as `status: revoked` (`plan.md`
+    `Status: revoked (…)`), and `orcexe status` reports `plan_status: revoked` even when plan.json
+    still says approved. A `revoked` plan is `plan_not_approved` / `approval_revoked`.
+  - P3-3: `plan.md` keeps the §2.6 sections and offers `--open` only for openable tasks (deferred by
+    the human, or only behind such tasks); the rest are listed as "Cannot be opened in this
+    version". README says `--open` uses the plan's recorded routes, not live access.
+  - P3-4: see `--open` above. P3-5: the approval records `lanes` (the runnable lanes, inside
+    `approval_sha256`); a different set at dispatch or `--open` is `plan_stale`,
+    `detail: lanes_changed`, not `plan_tampered`.
+  - P3-6: `ledger repair` lines show `kind=` and `decision_id=` for anchors.
+- Tests: `test_partial_approval` — C33 end to end with fake CLIs (fake Claude manager proposes 4
+  tasks, the risky T2 and its dependant T3 deferred, T1/T4 run by the fake Codex executor and
+  accepted, run `partial`, land warning, `--resume` dispatches nothing), `--defer` and
+  nothing-runnable refusals, parser checks, `task_deferred`, lock, `--open` chain/anchor/refusals,
+  `plan_not_approved`, `plan_stale` after landing, classifier change for approve/`--open`/
+  `plan --run`/`task`, pre-T59 plans, tamper twins 1, 1b (consistent forgery incl. ledger
+  anchor), 2, 3, 4, 4b (forged opened row), 4c (edited record), 5 and a tampered `--open` (each
+  unanchored twin also checks the revocation and the follow-up `plan_not_approved`); revocation
+  end to end (`plan --run`/`task`/`--open` refused, corrupt ledger refuses re-approval and writes
+  nothing, bare re-approval refused until `--defer none`, fresh approval runs both tasks, an
+  unrevoked plan stays `plan_not_proposed`); r3: twins 6a/6b, status/plan.md `revoked`,
+  re-approval over a forged plan file, `--open` suggestions, `lanes_changed`, repair line, and a
+  decision forged in the executor window stopping the run;
+  deferral fixed point; decision overlay. Fixture: `TaskFixture.save()` now writes a real T59
+  approval with its anchor (`write_approved`), and its `log()` view hides that anchor so
+  lifecycle assertions keep their exact event lists.
+- Changed assertions (r3): `test_planrun` stacked-order test expects `_read_plan` calls
+  `1 + dispatched tasks` (was 1; the P3-1 re-check); the `--open` re-reasoning test expects
+  `dependency_deferred`/cause `T2` (was `deferred_by_human`); `test_planning` expects
+  `- T3: dependency_deferred (depends on T2)` (§2.6 form, r2).
+- Changed assertions: `test_task` precondition cases `lane_not_supported`/`no_route` now expect
+  `task_deferred` (a runnable task was added so the plan can be approved); `test_planrun` T5/T6
+  are `deferred` (`lane_not_supported` / `dependency_deferred`) instead of `blocked`, and the
+  plan-wide `no_route` precondition case was removed (a routeless task is deferred);
+  `test_planning` unsupported-lane form expects the §2.6 sections, the approval test now expects
+  partial approval and `plan_rejected` only when nothing runs, and the unmarked legacy risky plan
+  is approved with T2/T3 deferred; `test_isolation` saves its post-tamper plans without the
+  ledger anchor (the ledger is deleted or forged there; the marker decides first).
+
 ### T58 — lane classifier v2: goal + done + notes, the lane only rises; a broken risk map never lowers
 
 - `classify.task_lane(goal, done, notes, files)` (T57 r2 §1.2, decision 027 Ş1). The goal keeps

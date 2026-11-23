@@ -14,13 +14,43 @@ from unittest import mock
 from tests.unit.test_gitutil import GitFixture, ROOT
 from tests.unit.test_planning import task as plan_task
 from tests.unit.test_questions import project
-from orcexe import cli, fsio, gate_lite, isolation, ledger, planning, task, task_gate, task_l0, task_l1, worktree
+from orcexe import classify, cli, fsio, gate_lite, isolation, ledger, planning, task, task_gate, task_l0, task_l1, worktree
 from orcexe.adapters.codex import CodexAdapter
 
 
 APP = 'def app():\n    return 1\n'
 TEST = ('import unittest\nfrom src.app import app\nclass AppTest(unittest.TestCase):\n'
         '    def test_app(self):\n        self.assertEqual(app(), 1)\n')
+
+
+def write_approved(main, value, held=(), anchor=True):
+    """A T59 approval of ``value`` as `plan --approve` writes it: frozen deferral,
+    approval_sha256, the decision record and its ledger anchor (decision.recorded)."""
+    deferred = planning.deferral(value['tasks'], set(held))
+    names = {d['id'] for d in deferred}
+    approval = dict(approved=[t['id'] for t in value['tasks'] if t['id'] not in names], deferred=deferred,
+                    decision_id='d-' + hashlib.sha256(os.urandom(8)).hexdigest()[:16], at='2026-11-23T00:00:00+00:00',
+                    opened_from=None, lanes=list(planning.SUPPORTED_LANES))
+    approval['approval_sha256'] = planning.approval_digest(value, approval)
+    value['approval'] = approval
+    fsio.atomic_write_json(main / '.orcexe/plan.json', value)
+    record = planning._record(value, 'plan_approval', approval, [], approval['at'])
+    fsio.atomic_write_text(main / '.orcexe/decisions.jsonl', json.dumps(record) + '\n')
+    if anchor:
+        ledger.Ledger(ledger.default_path(main)).append('decision.recorded', 'plan', dict(
+            kind='plan_approval', decision_id=approval['decision_id'], plan_id=value['plan_id'],
+            record_sha256=planning.record_digest(record)))
+    return value
+
+
+class TaskLog(ledger.Ledger):
+    """Lifecycle view for assertions: the approval anchor save() writes (T59 decision.recorded)
+    precedes every task record and is not part of a task's lifecycle; ask for it by event."""
+
+    def records(self, *, event=None, **options):
+        for record in super().records(event=event, **options):
+            if event is not None or record['event'] != 'decision.recorded':
+                yield record
 
 
 class TaskFixture(GitFixture):
@@ -69,25 +99,20 @@ class TaskFixture(GitFixture):
                         PYTHONDONTWRITEBYTECODE='1')
         self.saved = self.save()
 
-    def save(self, tasks=None, **changes):
+    def save(self, tasks=None, held=(), anchor=True, **changes):
         tasks = copy.deepcopy(tasks) if tasks is not None else [plan_task(
             goal='Return two and update its test', lane='standard',
             files={'allow': ['src/*.py', 'tests/**']}, done=['app returns 2 and its test passes'])]
         for item in tasks:
             item.setdefault('route', dict(tool='codex', model='gpt-6.1-sol', effort='high'))
-        value = dict(schema='orcexe.plan.v1', head=self.head, status='approved', tasks=tasks,
-                     goal='Improve app', decisions=[], assumptions=[], **changes)
+        value = dict(schema='orcexe.plan.v1', head=self.head, classifier=classify.CLASSIFIER_VERSION,
+                     status='approved', tasks=tasks, goal='Improve app', decisions=[], assumptions=[], **changes)
         value['content_sha256'] = planning.content_sha256(value)
         value['plan_id'] = planning.plan_id(value['content_sha256'])
-        fsio.atomic_write_json(self.main / '.orcexe/plan.json', value)
-        record = dict(schema='orcexe.decision.v1', kind='plan_approval', plan_id=value['plan_id'],
-                      content_sha256=value['content_sha256'], head=self.head,
-                      question_id='plan:' + value['plan_id'], answer='Approved')
-        fsio.atomic_write_text(self.main / '.orcexe/decisions.jsonl', json.dumps(record) + '\n')
-        return value
+        return write_approved(self.main, value, held, anchor)
 
     def log(self):
-        return ledger.Ledger(ledger.default_path(self.main))
+        return TaskLog(ledger.default_path(self.main))
 
     def invoke(self, identifier=None, task_id='T1', before=None, after=None, json_output=True,
                repo=None, timeout='0.5'):
@@ -120,10 +145,13 @@ class TaskFixture(GitFixture):
 class TaskTests(TaskFixture):
     def test_precondition_reasons_run_nothing(self):
         original = copy.deepcopy(self.saved)
-        for reason in ('plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale',
-                       'plan_tampered', 'task_unknown', 'dependency_pending',
-                       'lane_not_supported', 'no_route'):
-            with self.subTest(reason=reason):
+        # T59: an unrunnable lane or a plan without a route is deferred at approval, so
+        # dispatching it is task_deferred (was lane_not_supported / no_route).
+        for case in ('plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale',
+                     'plan_tampered', 'task_unknown', 'dependency_pending',
+                     'lane_not_supported', 'no_route', 'deferred_by_human'):
+            reason = 'task_deferred' if case in ('lane_not_supported', 'no_route', 'deferred_by_human') else case
+            with self.subTest(reason=case):
                 self.saved = self.save()
                 path = self.main / '.orcexe/plan.json'
                 value = copy.deepcopy(self.saved)
@@ -143,10 +171,12 @@ class TaskTests(TaskFixture):
                 elif reason == 'dependency_pending':
                     self.saved = self.save([plan_task(), plan_task('T2', depends_on=['T1'])])
                     options['task_id'] = 'T2'
-                elif reason == 'lane_not_supported':
-                    self.saved = self.save([plan_task(lane='risky')])
-                elif reason == 'no_route':
-                    self.saved = self.save([plan_task(route={'tool': None})])
+                elif case == 'lane_not_supported':
+                    self.saved = self.save([plan_task('T2'), plan_task(lane='risky')])
+                elif case == 'no_route':
+                    self.saved = self.save([plan_task('T2'), plan_task(route={'tool': None})])
+                elif case == 'deferred_by_human':
+                    self.saved = self.save([plan_task('T2'), plan_task()], held={'T1'})
                 if reason in ('plan_not_approved', 'plan_stale', 'plan_tampered'):
                     fsio.atomic_write_json(path, value)
                 code, result, error = self.invoke(**options)

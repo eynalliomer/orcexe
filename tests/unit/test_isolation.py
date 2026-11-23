@@ -120,7 +120,8 @@ class TaskIsolationTests(TaskFixture):
                 self.assertTrue(marker.exists())
                 # Even a now-valid plan/ledger cannot reuse the corrupted state.
                 self.log().path.unlink(missing_ok=True)
-                self.saved = self.save()
+                # T59: the deleted ledger cannot take the approval anchor; the marker decides first.
+                self.saved = self.save(anchor=False)
                 code, result, _ = self.invoke()
                 self.assertEqual((code, result['reason'], result['attempts']), (1, 'state_tampered', 0))
 
@@ -141,7 +142,8 @@ class TaskIsolationTests(TaskFixture):
         self.assertEqual((code, result['state'], result['reason']), (1, 'rejected', 'state_tampered'), result)
         self.assertTrue(self.log().verify()['ok'])  # An unanchored hash chain alone accepts this forgery.
         self.assertTrue(list(self.log().records(task='T2')))
-        self.saved = self.save([plan_task(id='T2'), plan_task(id='T3', depends_on=['T2'])])
+        # T59: the forged tail refuses the approval anchor; the marker decides first.
+        self.saved = self.save([plan_task(id='T2'), plan_task(id='T3', depends_on=['T2'])], anchor=False)
         code, result, _ = self.invoke(task_id='T3')
         self.assertEqual((code, result['reason'], result['attempts']), (1, 'state_tampered', 0), result)
 

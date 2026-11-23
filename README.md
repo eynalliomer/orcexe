@@ -484,23 +484,116 @@ assumptions, each task's allowed files, size, parallel flag, lane, tool/model, d
 approval command. A plan starts as `proposed` and records HEAD and decision IDs.
 This version runs only `fast` and `standard` tasks. A task whose final lane is
 anything else (`risky`) gets `"lane_note": "lane_not_supported"` in `plan.json`,
-its lane cell in `plan.md` reads `risky (lane_not_supported)`, and a
-"Not runnable in this version" section lists such tasks, so the operator sees it
-before approving.
+and its lane cell in `plan.md` reads `risky (lane_not_supported)`. The form ends
+with "Will run after approval" and "Will be deferred" sections, so the operator
+sees before approving what an approval would run and what it would park.
 
-`orcexe plan [--repo PATH] --approve PLAN_ID [--json]` requires that exact proposed
-plan at the same HEAD. It marks it `approved`, records `approved_at`, and appends
-one `orcexe.decision.v1` record of kind `plan_approval` to `decisions.jsonl`.
 `content_sha256` binds the canonical JSON content (sorted keys, compact separators,
 UTF-8), excluding `plan_id`, `content_sha256`, `status`, `approved_at` and `approval`.
 `plan_id` is `plan-` plus this digest. Approval recomputes it, rechecks cleaned
 tasks, P3 and current lanes, rejects empty or changed plans as `plan_tampered`,
-and records the digest in the approval decision. A valid plan with any task
-whose final lane this version cannot run is refused with `lane_not_supported`
-(exit 2): stderr prints `not_seen: lane_not_supported` and one
-`lane_not_supported: T<n> <lane>` line per task, nothing is written and the plan
-stays `proposed`, so `plan --run` refuses it (`plan_not_approved`) before any
-dispatch. Later consumers can call
+and records the digest in the approval decision.
+
+### Partial approval and `deferred` tasks
+
+```sh
+orcexe plan --approve PLAN_ID                  # approve the runnable subset, defer the rest
+orcexe plan --approve PLAN_ID --defer T2[,T5]  # also defer tasks you do not want run
+orcexe plan --approve PLAN_ID --open T3[,T4]   # later: open deferred tasks with a new decision
+```
+
+`orcexe plan [--repo PATH] --approve PLAN_ID [--defer IDS] [--json]` requires that
+exact proposed plan at the same HEAD. It decides, once and for all at that moment,
+which tasks run: a task is `deferred` with `lane_not_supported` (its final lane
+cannot run in this version), `no_route` (the plan has no executor route for it),
+`deferred_by_human` (`--defer`), or `dependency_deferred` (a dependency is
+deferred; `cause` names it). Every transitive dependant of a deferred task is
+deferred too. The rest are approved. If nothing is runnable the approval is
+refused with `plan_rejected` (exit 2): stderr prints `not_seen: plan_rejected`
+and one `deferred: T<n> <reason> (<evidence>)` line per task, nothing is written
+and the plan stays `proposed`, so `plan --run` refuses it (`plan_not_approved`).
+An unknown `--defer` id is refused the same way (`refused: T<n> task_unknown`).
+
+The plan keeps its `plan_id` and `content_sha256`. Approval marks it `approved`,
+records `approved_at`, and writes `plan.approval = {approved, deferred: [{id,
+reason, cause, evidence}], approval_sha256, decision_id, at, opened_from}`.
+`approval_sha256` is the SHA-256 of the canonical `{plan_id, content_sha256,
+classifier, head, approved (sorted), deferred (sorted by id), opened_from, lanes}`
+(`lanes`: the lanes this version runs); the reasons are frozen into it and never
+recomputed from live access later. One
+`orcexe.decision.v1` record (kind `plan_approval`, with the same lists and
+`approval_sha256`) is appended to `decisions.jsonl`, and the ledger gets
+`decision.recorded {kind, decision_id, plan_id, record_sha256}` (anchored by the
+ledger head ref) plus a `task.state pending → deferred` row per deferred task.
+`plan.md` then says `Status: approved (2 of 4; 2 deferred)` and keeps the "Will run
+after approval" / "Will be deferred" sections (a dependant reads `- T4:
+dependency_deferred (depends on T3)`). It suggests `--open` only for a task that can
+be opened (deferred by you, or only behind such tasks) and lists the rest as
+"Cannot be opened in this version". Every `plan --goal` publication first writes
+`plan.proposed {plan_id}` to the ledger (under the dispatch lock, so a running
+plan is not disturbed: `task_running`); decision anchors before the latest
+proposal, of any plan, no longer authorize dispatch.
+
+Dispatch permission is the latest decision's `approved` list, never ledger
+state: `plan --run` and `--resume` skip deferred tasks (the run ends `partial`,
+exit 1) and `orcexe task --plan PLAN_ID --task T3` on a deferred task exits 2
+with `task_deferred`. Before any dispatch (`task`, `plan --run`, `--open`) the
+CLI checks the content hash, HEAD (`plan_stale`), the classifier (a plan whose
+`classifier` is not the current `lane.v2` is `plan_stale` with stderr
+`detail: classifier_changed`, also when approving a proposal), a missing
+`approval` (plans approved before this version are `plan_stale`, never treated
+as fully approved), `approval_sha256`, that `approved ∪ deferred` are exactly the
+plan's tasks with no overlap, that the deferred set is closed under
+dependencies, the plan-derived reasons recomputed (`lane_not_supported`,
+`no_route`, `dependency_deferred`), and the latest decision record carrying the
+same hash, lists, head and chain. Any mismatch is `plan_tampered`; a change of the
+runnable lanes since the decision is `plan_stale` (`detail: lanes_changed`). A
+decision record without its `decision.recorded` ledger anchor, a ledger
+`deferred → pending` row without an anchored `plan_open` decision, or a trusted
+decision that is not the plan's last anchored one or predates the latest
+`plan.proposed` (an older, wider approval put back into the files) is
+`state_tampered` (stderr `detail: decision_unanchored`, `open_unanchored` or
+`decision_superseded`): the decision was written outside orcexe. That first refusal also writes
+`approval.revoked {plan_id, reason}` to the ledger (T57 §4): from then on `plan
+--run`, `task` and `--open` for the plan exit 2 with `plan_not_approved` and
+stderr `detail: approval_revoked`, until a fresh approval; the plan is republished
+with `Status: revoked` and `orcexe status` reports `plan_status: revoked`. The fresh
+approval is allowed only when the ledger's last word on the plan is
+`approval.revoked` (otherwise `plan_not_proposed`), only on a verified ledger
+(tamper marker absent, chain and head ref intact, else
+`state_tampered`/`ledger_corrupt`/`ledger_head_mismatch`), and only with the
+deferrals restated: `plan --approve PLAN_ID --defer IDS` or `--defer none`. A bare
+re-approval is refused with `plan_rejected` and lists the tasks you had deferred in
+the last genuinely anchored decision (`refused: T2 deferred_by_human (restate with
+--defer T2 or --defer none)`), so a tamper plus the recovery hint can never silently
+approve a task you deferred. The approval is recomputed from the plan content (a
+forged `approval` in `plan.json` is ignored) and starts a new decision chain, so
+opened-task rows before it no longer count. Proposing again with `plan --goal`
+works too. During `plan --run` the approval is checked again after every
+dispatched task, so a decision forged in a task's executor window stops that run
+(and revokes the approval) before the next task.
+Approval and opening take the repository dispatch lock (`task_running` while a
+run holds it) and verify the ledger and its head ref first.
+
+`--open T3[,T4]` runs the same checks on the approved plan, then recomputes
+runnability from the plan (its lanes and the routes recorded in it at proposal;
+executor access is not probed again): an opened task must be deferred, runnable in
+this version, and each dependency must be approved or opened in the same call.
+A dependant you leave deferred keeps `dependency_deferred` with its cause
+(evidence `depends on T3; not opened with it`). Otherwise the call
+is refused with `plan_rejected` and `refused: T<n> <why> (…)` lines, and nothing
+is written. A successful open is a new `plan_open` decision chained to the
+previous one (`opened_from`), anchored the same way, plus `task.state deferred →
+pending` rows; the earlier decision is never changed. Landing moves HEAD, so
+after a land `--open` is `plan_stale`: the land form warns that the deferred
+tasks close for good for this plan, and they return through a new `plan --goal`.
+
+Threat model: these checks catch edits by the sandboxed executor, L1 or agents,
+manager output, accidental human edits and broken files. A local process that
+runs as you outside the sandbox and rewrites `.orcexe/`, the ledger and its head
+ref consistently is out of scope in v0.3; it could just as well run `git merge`.
+
+Later consumers can call
 `planning.content_sha256(plan)` to verify the same content. Corrupt plan/decision
 state reports `state_corrupt` (exit 2). Approval makes no model call. Failed validation changes nothing; write failures
 roll back the plan files and decision append. Neither command executes tasks.
@@ -514,7 +607,6 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 | `gitlink_tree` | 2 | The tree contains unsupported submodules. |
 | `head_moved` | 2 | HEAD changed while observations were being collected. |
 | `internal_error` | 70 | Internal computation failed; inspect the reported step. |
-| `lane_not_supported` | 2 | `--approve` refused: a task's final lane cannot run in this version; stderr names each task. |
 | `manager_output_invalid` | 2 | Manager output failed the closed schema or bounds. |
 | `manager_unavailable: auth` | 2 | Manager failed: auth. |
 | `manager_unavailable: failed` | 2 | Manager failed: failed. |
@@ -529,15 +621,20 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
+| `ledger_corrupt` | 2 | `--approve`/`--open`: the ledger has an invalid line; run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | `--approve`/`--open`: the ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
+| `plan_not_approved` | 2 | `--open` needs an approved plan whose approval was not revoked (`detail: approval_revoked`). |
 | `plan_not_proposed` | 2 | Only a proposed plan can be approved. |
-| `plan_rejected` | 2 | Deterministic P3 checks rejected the proposed tasks. |
-| `plan_stale` | 2 | The plan was made for another HEAD. |
-| `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
+| `plan_rejected` | 2 | Deterministic P3 checks rejected the proposed tasks, or `--approve`/`--open` would approve or open nothing; stderr names each task. |
+| `plan_stale` | 2 | The plan was made for another HEAD (also after landing), its classifier or runnable lanes changed (`detail: classifier_changed`/`lanes_changed`), or it was approved before partial approval. |
+| `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `proposed` | 0 | A plan is ready for human approval. |
 | `questions_invalid` | 2 | The map, goal or question data is invalid. |
 | `questions_pending` | 2 | Answer the saved form before planning. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
 | `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
+| `state_tampered` | 2 | `--approve`/`--open`: a tamper marker exists, or a decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`). |
+| `task_running` | 2 | `--approve`/`--open`: another dispatch holds the repository lock. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /plan-exit-reasons -->
 
@@ -555,8 +652,9 @@ rule. Tasks run sequentially in topological order, choosing plan order among
 ready tasks. It reuses `task` for the contract, attempts, L0 and L1 gates.
 Only ledger state `accepted` satisfies a dependency. An `exhausted`, `rejected`
 or `gate_passed` task blocks all transitive dependents with `dependency_failed`;
-independent tasks continue. Risky tasks are `blocked`/`lane_not_supported`, and
-their dependents are blocked too.
+independent tasks continue. Deferred tasks (risky ones among them) and their
+dependants are never dispatched: they stay `deferred` with their frozen reason
+and the run ends `partial`.
 
 The CLI keeps one integration chain at `refs/orcexe/plans/<plan-id>`, starting
 at the approved plan head. Every task, including a single `orcexe task`, starts
@@ -565,7 +663,10 @@ result advances the chain with a frozen commit parented by the previous tip.
 Gate-passed results do not advance it. HEAD, the user's index and working files
 stay untouched. This ref is never a branch; landing stays manual. Review the
 chain and use the printed `git -C … merge --ff-only refs/orcexe/plans/…` command
-while HEAD equals the plan head.
+while HEAD equals the plan head. When the plan has deferred tasks the land form
+also carries `deferred` (their ids) and prints a warning: landing closes them for
+good for this plan (HEAD moves, so `--open` refuses with `plan_stale`); open them
+before landing, or plan them again with `plan --goal`.
 
 SIGINT/SIGTERM closes the partial attempt in the ledger, removes its worktree
 and exits 130 with state `interrupted`. Without `--resume`, an interrupted plan
@@ -606,12 +707,12 @@ zero attempts. Failed preconditions print `not_seen: <reason>` on stderr.
 | `partial` | 1 | At least one task was not accepted. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
-| `plan_not_approved` | 2 | Approve this plan before executing it. |
-| `plan_stale` | 2 | The plan was made for another HEAD. |
-| `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
+| `plan_not_approved` | 2 | Approve this plan before executing it; after `approval.revoked` (`detail: approval_revoked`) approve it again. |
+| `plan_stale` | 2 | The plan was made for another HEAD, its classifier or runnable lanes changed (`detail: classifier_changed`/`lanes_changed`), or it was approved before partial approval. |
+| `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `run_interrupted` | 2 | Use --resume to continue an unfinished plan. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
-| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
+| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
 | `task_running` | 2 | Another dispatch holds the repository lock. |
 <!-- /planrun-exit-reasons -->
 
@@ -688,7 +789,9 @@ orcexe task --plan PLAN_ID --task T1 --repo /path/to/repo --json --timeout-min 3
 `task` verifies the saved plan's ID, approval, HEAD and canonical content hash
 against its approval decision before creating a worktree or dispatching a tool.
 Dependencies must have ledger state `accepted`. It uses the
-approved task's tool/model/effort route; risky tasks and unassigned routes stop.
+approved task's tool/model/effort route. Only a task in the latest decision's
+`approved` list is dispatched; a deferred task (risky lanes and unassigned
+routes are deferred at approval) stops with `task_deferred`.
 
 The CLI freezes `orcexe.contract.lite.v1` as a private (0600) file at
 `.orcexe/runs/<dispatch-id>/contract.lite.json`, outside the executor checkout.
@@ -855,14 +958,15 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `pipes_held` | 1 | An escaped process may still hold the executor pipes. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
-| `plan_not_approved` | 2 | Approve this plan before executing it. |
-| `plan_stale` | 2 | The plan was made for another HEAD. |
-| `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
+| `plan_not_approved` | 2 | Approve this plan before executing it; after `approval.revoked` (`detail: approval_revoked`) approve it again. |
+| `plan_stale` | 2 | The plan was made for another HEAD, its classifier or runnable lanes changed (`detail: classifier_changed`/`lanes_changed`), or it was approved before partial approval. |
+| `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `risk_path_touched` | 1 | A changed path matches a protected risk area. |
 | `run_interrupted` | 2 | Use --resume to continue an unfinished plan. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
-| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
+| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
 | `task_running` | 1 | Another dispatch holds the repository lock. |
+| `task_deferred` | 2 | The task is deferred by the latest plan decision; open it with `plan --approve PLAN_ID --open`. |
 | `task_unknown` | 2 | The task ID is absent from the approved plan. |
 <!-- /task-exit-reasons -->
 
@@ -1103,7 +1207,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `signal_SIGINT` | 1 | Cancelled by SIGINT; do retains its failure exit code. |
 | `signal_SIGTERM` | 1 | Cancelled by SIGTERM; do retains its failure exit code. |
 | `size` | 1 | Changes exceeded the fast-lane budget. |
-| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
+| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
 | `test_floor` | 1 | Tests were removed or skip markers were added. |
 <!-- /do-exit-reasons -->
 
@@ -1118,9 +1222,9 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_missing` | 2 | No saved plan exists. |
-| `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
+| `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
-| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
+| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
 <!-- /status-exit-reasons -->
 
 Diagnostic tables list reason/result codes for each command. For `plan --run`,

@@ -15,6 +15,12 @@ Data allow-lists (all listed fields are required, including nullable fields):
 * questions.form: count (int >= 0, not bool), form_sha256 (64 lowercase hex).
 * orchestrator.usage: input, output (nonnegative int or null), source
   (measured or not_seen).
+* decision.recorded (T59): kind, decision_id, plan_id (text), record_sha256 (64 lowercase
+  hex): the anchor of one ``decisions.jsonl`` record (``plan_approval`` / ``plan_open``).
+* approval.revoked (T59): plan_id, reason (text): the plan's latest approval no longer counts
+  (a decision was found without its anchor); only a fresh ``plan --approve`` restores it.
+* plan.proposed (T59): plan_id (text): ``plan --goal`` published a proposal; every decision
+  anchor before it (any plan) no longer authorizes dispatch.
 All text, including dropped field names and list entries, is redacted before
 truncation (200 characters unless specified above). Nested unknown fields
 have their own _dropped list; only unknown fields are dropped. Missing or invalid
@@ -107,6 +113,9 @@ _SHAPES = {
     "question.asked": dict(count="positive", topic="topic"),
     "questions.form": dict(count="counter", form_sha256="sha256"),
     "orchestrator.usage": dict(input="counter?", output="counter?", source="source"),
+    "decision.recorded": dict(kind="text", decision_id="text", plan_id="text", record_sha256="sha256"),
+    "approval.revoked": dict(plan_id="text", reason="text"),
+    "plan.proposed": dict(plan_id="text"),
     "ledger.anchored": dict(),
 }
 
@@ -528,7 +537,7 @@ def _state_text(state):
 def describe(record):
     """One safe line per record for repair output: seq, task, event and its target state."""
     data = record["data"]
-    extra = "".join(" " + key + "=" + str(data[key]) for key in ("to", "reason", "run_id")
+    extra = "".join(" " + key + "=" + str(data[key]) for key in ("to", "reason", "run_id", "kind", "decision_id")
                     if isinstance(data.get(key), str))
     return "seq {} {} {} {}{}".format(record["seq"], record["ts"], record["task"], record["event"], extra)
 

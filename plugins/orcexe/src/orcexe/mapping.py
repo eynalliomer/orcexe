@@ -60,6 +60,9 @@ def report_failure(error, failure, step, expected=()):
     print('not_seen: ' + failure, file=sys.stderr)
     if isinstance(error, ManagerOutputInvalid) and failure == 'manager_output_invalid':
         print('detail: ' + error.detail, file=sys.stderr)
+    elif failure in ('plan_stale', 'state_tampered', 'plan_not_approved') and isinstance(getattr(error, 'detail', None), str):
+        # T59: classifier_changed / decision_unanchored / open_unanchored (details, not reasons).
+        print('detail: ' + error.detail, file=sys.stderr)
     elif failure in ('internal_error', 'manager_output_invalid', 'plan_rejected'):
         print('detail: ' + step + ' ' + type(error).__name__, file=sys.stderr)
     return exitcodes.INTERNAL if failure == 'internal_error' else exitcodes.USAGE

@@ -77,7 +77,9 @@ class PlanRunTests(TaskFixture):
         index = (self.main / '.git/index').read_bytes()
         with mock.patch.object(task, '_read_plan', wraps=task._read_plan) as read:
             code, result, error = self.invoke_plan(before=before)
-        self.assertEqual(read.call_count, 1)
+        # Validated once under the lock, plus (T59 r3, §4 P3-1) a re-check of the approval after
+        # each dispatched task's executor window; run_task itself never re-reads the plan.
+        self.assertEqual(read.call_count, 1 + len(self.requests))
         self.assertEqual((code, result['state'], error), (0, 'completed', ''), result)
         self.assertEqual([req.task for req in self.requests], ['T1', 'T3', 'T2'])
         self.assertEqual(self.git_run(self.main, 'rev-parse', 'HEAD').strip(), self.head)
@@ -143,8 +145,9 @@ class PlanRunTests(TaskFixture):
         states = {t['task_id']: (t['state'], t['reason'], t['attempts']) for t in result['tasks']}
         self.assertEqual(states, {'T1': ('rejected', 'outside_allow', 1),
             'T2': ('blocked', 'dependency_failed', 0), 'T3': ('blocked', 'dependency_failed', 0),
-            'T4': ('accepted', 'accepted', 1), 'T5': ('blocked', 'lane_not_supported', 0),
-            'T6': ('blocked', 'dependency_failed', 0)})
+            'T4': ('accepted', 'accepted', 1),
+            # T59: the risky task and its dependant are deferred at approval, never dispatched.
+            'T5': ('deferred', 'lane_not_supported', 0), 'T6': ('deferred', 'dependency_deferred', 0)})
         self.assertEqual([r.task for r in self.requests], ['T1', 'T4'])
         before = self.log().path.read_bytes()
         self.assertEqual(self.invoke_plan()[0], 1)
@@ -322,7 +325,9 @@ class PlanRunTests(TaskFixture):
 
 
     def test_plan_preconditions_dispatch_nothing(self):
-        for reason in ('plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered', 'no_route', 'output_symlink'):
+        # T59: a task without a plan route is deferred at approval (no_route is no longer a
+        # plan-wide precondition); an approved task without one is plan_tampered.
+        for reason in ('plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered', 'output_symlink'):
             with self.subTest(reason=reason):
                 self.saved = self.save()
                 path = self.main / '.orcexe/plan.json'
@@ -334,8 +339,6 @@ class PlanRunTests(TaskFixture):
                     identifier = 'plan-other'
                 elif reason == 'output_symlink':
                     (self.main / '.orcexe/status.md').symlink_to(self.directory / 'outside')
-                elif reason == 'no_route':
-                    self.saved = self.save([plan_task(), plan_task('T2', route={'tool': None})])
                 else:
                     if reason == 'plan_not_approved':
                         value['status'] = 'proposed'

@@ -45,7 +45,22 @@ def task_records(plan, log):
         elif event == 'task.state':
             item.update(state=data['to'], reason=data['reason'],
                         l1_basis=(item['l1_pass'] or 'none') if data['to'] == 'accepted' else None)
+    # T59: the latest decision, not the ledger, says which tasks are deferred.
+    for key, entry in deferred_tasks(plan).items():
+        if key in result and result[key]['state'] == 'pending':
+            result[key].update(state='deferred', reason=entry.get('reason'))
+    for key, item in result.items():
+        if item['state'] == 'deferred' and key not in deferred_tasks(plan):
+            item.update(state='pending', reason=None)
     return result
+
+
+def deferred_tasks(plan):
+    """{id: entry} of the latest decision's deferred list (empty for an unapproved plan)."""
+    approval = plan.get('approval')
+    if plan.get('status') != 'approved' or not isinstance(approval, dict) or not isinstance(approval.get('deferred'), list):
+        return {}
+    return {d['id']: d for d in approval['deferred'] if isinstance(d, dict) and isinstance(d.get('id'), str)}
 
 
 # Strongest first. 'unknown': a passing verdict recorded before T51 (no basis);
@@ -106,8 +121,14 @@ def land(main, plan, log):
         return None
     action = 'merge --ff-only ' if gitutil.head(main) == plan['head'] else 'cherry-pick '
     ref = chain_ref(plan)
-    return dict(ref=ref, command='git -C ' + shlex.quote(str(main)) + ' ' + action + shlex.quote(ref),
+    form = dict(ref=ref, command='git -C ' + shlex.quote(str(main)) + ' ' + action + shlex.quote(ref),
                 l1_basis=l1_basis(plan, task_records(plan, log)))
+    parked = deferred_tasks(plan)
+    deferred = [t['id'] for t in plan['tasks'] if t['id'] in parked]
+    if deferred:
+        # T59 / decision 027 Ş4: landing moves HEAD, so these can never be opened for this plan.
+        form['deferred'] = deferred
+    return form
 
 
 def public_tasks(records):
@@ -123,9 +144,13 @@ def run_state(records):
 
 
 def status(main, plan, log):
+    from orcexe import planning
     records = task_records(plan, log)
+    # P3-2: the ledger's approval.revoked wins over a plan file that still says approved.
+    revoked = plan.get('status') == 'approved' and planning.revoked(plan['plan_id'], log)
     return dict(schema='orcexe.status.v1', plan_id=plan['plan_id'],
-                plan_status=plan['status'], tasks=public_tasks(records), land=land(main, plan, log))
+                plan_status='revoked' if revoked else plan['status'], tasks=public_tasks(records),
+                land=land(main, plan, log))
 
 
 def render(plan, result):
@@ -144,10 +169,20 @@ def render(plan, result):
 
 def _basis_lines(land_form):
     basis = (land_form or {}).get('l1_basis')
-    if not basis or not basis['tasks']:
-        return []
-    return ['', 'L1 basis behind this ref (weakest: ' + str(basis['weakest']) + '): '
-            + ', '.join(t['task_id'] + '=' + str(t['basis']) for t in basis['tasks'])]
+    lines = []
+    if basis and basis['tasks']:
+        lines += ['', 'L1 basis behind this ref (weakest: ' + str(basis['weakest']) + '): '
+                  + ', '.join(t['task_id'] + '=' + str(t['basis']) for t in basis['tasks'])]
+    deferred = (land_form or {}).get('deferred')
+    if deferred:
+        lines += ['', deferred_warning(deferred)]
+    return lines
+
+
+def deferred_warning(deferred):
+    names = '/'.join(deferred)
+    return ('Warning: landing closes deferred ' + names + ' for this plan for good (HEAD moves, so '
+            '`--open` refuses with plan_stale); open them before landing, or run a new `orcexe plan --goal`.')
 
 
 def write_status(main, plan, log):
@@ -229,8 +264,8 @@ def run_plan(identifier, repo=None, *, resume=False):
             records = task_records(plan, log)
             result['tasks'] = public_tasks(records)
             key = item['id']
-            if records[key]['state'] in FINAL:
-                continue
+            if records[key]['state'] in FINAL or key not in plan['approval']['approved']:
+                continue  # T59: a deferred task is never dispatched; the run ends partial.
             if any(records[dep]['state'] != 'accepted' for dep in item['depends_on']):
                 reason = 'dependency_failed'
             elif item['lane'] == 'risky':
@@ -252,6 +287,9 @@ def run_plan(identifier, repo=None, *, resume=False):
                                'to': outcome['state']}, reason=outcome['reason'] or outcome['state']))
                 if outcome['exit_code'] == 130:
                     raise do._Cancelled()
+                # P3-1 (§4): a decision forged during that task's executor window stops the run
+                # here (and revokes the approval), before any later task is dispatched.
+                task._read_plan(main, identifier, None, log)
             write_status(main, plan, log)
         records = task_records(plan, log)
         result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
@@ -266,6 +304,8 @@ def run_plan(identifier, repo=None, *, resume=False):
     except (ValueError, ledger.LedgerError) as error:
         reason = str(error) if isinstance(error, ValueError) else ledger.reason(error)
         result['reason'] = reason
+        if isinstance(getattr(error, 'detail', None), str):
+            result['detail'] = error.detail
         return result, 2
     except Exception:
         result['reason'] = 'internal_error'
@@ -277,6 +317,7 @@ def run_plan(identifier, repo=None, *, resume=False):
 
 
 def _print(result, code, json_output):
+    detail = result.pop('detail', None)
     clean = redact.redact_obj(result)
     if json_output:
         print(json.dumps(clean, ensure_ascii=False))
@@ -291,10 +332,16 @@ def _print(result, code, json_output):
                 print(line)
     if clean.get('reason'):
         print('not_seen: ' + clean['reason'], file=sys.stderr)
+    if detail:
+        print('detail: ' + detail, file=sys.stderr)
     if clean.get('reason') in ('ledger_corrupt', 'ledger_head_mismatch'):
         print(ledger.REPAIR_HINT, file=sys.stderr)
     elif clean.get('reason') == 'state_tampered':
-        print(ledger.TAMPER_HINT, file=sys.stderr)
+        from orcexe import planning
+        print(planning.UNANCHORED_HINT if detail else ledger.TAMPER_HINT, file=sys.stderr)
+    elif detail == 'approval_revoked':
+        from orcexe import planning
+        print(planning.REVOKED_HINT, file=sys.stderr)
     return code
 
 

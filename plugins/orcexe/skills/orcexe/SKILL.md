@@ -4,10 +4,8 @@ description: Use when the user wants another AI coding tool (Codex, Claude Code,
 ---
 # orcexe
 ## Workflow
-
 Call `python3 "${CLAUDE_PLUGIN_ROOT}/bin/orcexe" COMMAND` from the repository; use `--repo` where supported and `--json` for parsing. Run `doctor` before the first `do` or for setup; `--quick` skips quota/app-server probes. Use `probe TOOL detect|auth|models|quota` for details. Never install or authenticate a tool without the user's request.
-Use `map` → `questions`/`answer` → `plan --goal TEXT` → human review → `plan --approve PLAN_ID` → `plan --run PLAN_ID` (or `task --plan PLAN_ID --task T1`) → `orcexe status` → review frozen refs and land manually. `--resume` continues interrupted plans without replenishing attempts. `do "TASK"` is the fast single-target comments/docs lane; standard work needs a plan, risky execution is unsupported (`plan.md` marks such tasks `lane_not_supported` and `plan --approve` refuses the plan). Agent completion claims never establish acceptance.
-
+Use `map` → `questions`/`answer` → `plan --goal TEXT` → human review → `plan --approve PLAN_ID` → `plan --run PLAN_ID` (or `task --plan PLAN_ID --task T1`) → `orcexe status` → review frozen refs and land manually. `--resume` continues interrupted plans without replenishing attempts. `do "TASK"` is the fast single-target comments/docs lane; standard work needs a plan, risky execution is unsupported. `plan --approve PLAN_ID [--defer T2,T5]` approves the runnable subset and freezes the rest as `deferred` (`lane_not_supported`, `no_route`, `deferred_by_human`, `dependency_deferred` with `cause`; dependants follow) into `approval_sha256`, anchored in the ledger by `decision.recorded`; nothing runnable is `plan_rejected`. `plan --run`/`--resume` skip deferred tasks (run ends `partial`), `task` on one is `task_deferred`. `plan --approve PLAN_ID --open T3[,T4]` opens deferred tasks with a new chained decision (dependencies approved or opened together; still unrunnable is refused, nothing written). Landing moves HEAD, so deferred tasks close for good (the land form warns; `--open` is then `plan_stale`). A changed classifier (`detail: classifier_changed`) or runnable-lane set (`lanes_changed`), or a plan approved before partial approval is `plan_stale`; edited approval lists/hashes are `plan_tampered`; a decision without its ledger anchor, or one that is not the plan's last anchor or predates the latest `plan.proposed` (every `plan --goal` writes it), is `state_tampered` (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`/`decision_superseded`) and writes `approval.revoked`: later dispatches are `plan_not_approved` (`detail: approval_revoked`, status `revoked`) until `plan --approve PLAN_ID --defer IDS|none` (deferrals must be restated) on a verified ledger. Same-user processes rewriting `.orcexe/`, ledger and refs consistently are outside the v0.3 threat model. Agent completion claims never establish acceptance.
 Plan lanes use classifier `lane.v2` (recorded in `plan.json`): goal, every done item and the notes are classified and the task gets the highest lane; outward or destructive action shapes in any field (commands, calls, `git push`, "is pushed to origin", `rmtree`) make it risky, and an unusable `risk-map.yaml` never lowers a lane. Words the classifier does not know (for example `aws s3 sync`, `pip install`) are not recognized, so still read each task before approving.
 Map is incremental from `intake_sha`; missing/invalid maps, nonancestor HEAD, `--full` or over 40% changed files force a full rebuild. No-change maps skip models. Human JSON additions persist as `source: human`, deletions persist, restorations become proposals. Edited prose is kept with adjacent proposals and `human_edit_kept`. Current-state is always regenerated from CLI facts; retain all human blocks verbatim, including malformed tails, and save outside-block edits once to `current-state.previous.md`, reporting `current_state_previous_saved`.
 `questions [--goal TEXT]` saves a form; `answer --form ID --choice QID=INDEX|LABEL --text QID=TEXT` records validated batches (index is zero-based; an unmatched choice lists the valid choices on stderr after `not_seen: answer_invalid`). At most four answers per normalized goal; decided question IDs apply globally. Pending questions block planning. Plan P3 validates scope, dependency graph, sizes S/M, 1–12 tasks, shared bounded globs and test paths; plans require matching HEAD, canonical digest and approval before execution.
@@ -36,7 +34,6 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `gitlink_tree` | 2 | The tree contains unsupported submodules. |
 | `head_moved` | 2 | HEAD changed while observations were being collected. |
 | `internal_error` | 70 | Internal computation failed; inspect the reported step. |
-| `lane_not_supported` | 2 | `--approve` refused: a task's final lane cannot run in this version; stderr names each task. |
 | `manager_output_invalid` | 2 | Manager output failed the closed schema or bounds. |
 | `manager_unavailable: auth` | 2 | Manager failed: auth. |
 | `manager_unavailable: failed` | 2 | Manager failed: failed. |
@@ -51,15 +48,20 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_mismatch` | 2 | The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | No saved plan exists. |
+| `ledger_corrupt` | 2 | `--approve`/`--open`: the ledger has an invalid line; run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | `--approve`/`--open`: the ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
+| `plan_not_approved` | 2 | `--open` needs an approved plan whose approval was not revoked (`detail: approval_revoked`). |
 | `plan_not_proposed` | 2 | Only a proposed plan can be approved. |
-| `plan_rejected` | 2 | Deterministic P3 checks rejected the proposed tasks. |
-| `plan_stale` | 2 | The plan was made for another HEAD. |
-| `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
+| `plan_rejected` | 2 | Deterministic P3 checks rejected the proposed tasks, or `--approve`/`--open` would approve or open nothing; stderr names each task. |
+| `plan_stale` | 2 | The plan was made for another HEAD (also after landing), its classifier or runnable lanes changed (`detail: classifier_changed`/`lanes_changed`), or it was approved before partial approval. |
+| `plan_tampered` | 2 | The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `proposed` | 0 | A plan is ready for human approval. |
 | `questions_invalid` | 2 | The map, goal or question data is invalid. |
 | `questions_pending` | 2 | Answer the saved form before planning. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
 | `state_dir_in_repository` | 2 | The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
+| `state_tampered` | 2 | `--approve`/`--open`: a tamper marker exists, or a decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`). |
+| `task_running` | 2 | `--approve`/`--open`: another dispatch holds the repository lock. |
 | `write_failed` | 2 | Publishing private state failed. |
 <!-- /plan-exit-reasons -->
 
@@ -120,9 +122,9 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `pipes_held` | 1 | task, do: An escaped process may still hold the executor pipes. |
 | `plan_mismatch` | 2 | task, planrun: The supplied plan ID does not match saved state. |
 | `plan_missing` | 2 | task, planrun, status: No saved plan exists. |
-| `plan_not_approved` | 2 | task, planrun: Approve this plan before executing it. |
-| `plan_stale` | 2 | task, planrun: The plan was made for another HEAD. |
-| `plan_tampered` | 2 | task, planrun, status: The plan hash, approval or task shape is invalid. |
+| `plan_not_approved` | 2 | task, planrun: Approve this plan before executing it; after `approval.revoked` (`detail: approval_revoked`) approve it again. |
+| `plan_stale` | 2 | task, planrun: The plan was made for another HEAD, its classifier or runnable lanes changed (`detail: classifier_changed`/`lanes_changed`), or it was approved before partial approval. |
+| `plan_tampered` | 2 | task, planrun, status: The plan hash, approval lists, reasons, decision record or task shape is invalid. |
 | `project_checks` | 1 | do: Project checks failed or were not observed. |
 | `questions_invalid` | 2 | questions: The map, goal or question data is invalid. |
 | `report_failed` | 70 | do: Writing the final report failed. |
@@ -147,10 +149,11 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `size` | 1 | do: Changes exceeded the fast-lane budget. |
 | `state_corrupt` | 2 | questions, answer, task, planrun, status: Saved state or ledger is unreadable or inconsistent. |
 | `state_dir_in_repository` | 2 | map: The resolved `ORCEXE_STATE_DIR` is inside the repository or its main worktree. |
-| `state_tampered` | 1 | task, do: Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
-| `state_tampered` | 2 | planrun, status: Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
+| `state_tampered` | 1 | task, do: Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
+| `state_tampered` | 2 | planrun, status: Project code, a run or a leftover process changed CLI control state (see `orcexe ledger repair` recovery), or a plan decision has no ledger anchor (`detail: decision_unanchored`/`open_unanchored`/`decision_superseded`; propose again). |
 | `task_running` | 1 | task: Another dispatch holds the repository lock. |
 | `task_running` | 2 | planrun: Another dispatch holds the repository lock. |
+| `task_deferred` | 2 | task: The task is deferred by the latest plan decision; open it with `plan --approve PLAN_ID --open`. |
 | `task_unknown` | 2 | task: The task ID is absent from the approved plan. |
 | `test_floor` | 1 | do: Tests were removed or skip markers were added. |
 | `write_failed` | 2 | map, questions: Publishing private state failed. |

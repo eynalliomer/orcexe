@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 import sys
 
@@ -17,6 +18,16 @@ def _timeout(value):
     except ValueError:
         pass
     raise argparse.ArgumentTypeError("timeout must be finite and positive")
+
+
+def _task_ids(value):
+    """T59: a comma-separated list of plan task ids, each once (T2 or T2,T5); ``none`` is empty."""
+    if value == "none":
+        return []
+    ids = value.split(",")
+    if not all(re.fullmatch(r"T[1-9][0-9]*", i) for i in ids) or len(set(ids)) != len(ids):
+        raise argparse.ArgumentTypeError("expected task ids such as T2 or T2,T5")
+    return ids
 
 
 def _trust_command(args):
@@ -195,6 +206,10 @@ def main(argv=None):
     plan_action.add_argument("--approve", metavar="PLAN_ID")
     plan_action.add_argument("--run", metavar="PLAN_ID")
     plan_parser.add_argument("--resume", action="store_true")
+    plan_parser.add_argument("--defer", type=_task_ids, metavar="T2[,T5]",
+                             help="With --approve: also defer these tasks (and their dependants)")
+    plan_parser.add_argument("--open", type=_task_ids, metavar="T3[,T4]",
+                             help="With --approve on an approved plan: open these deferred tasks")
     status_parser = subcommands.add_parser("status", help="Read the latest plan and ledger status")
     status_parser.add_argument("--repo", default=None)
     status_parser.add_argument("--json", action="store_true")
@@ -305,6 +320,12 @@ def main(argv=None):
     if args.command == "plan":
         if args.resume and args.run is None:
             parser.error("--resume requires --run")
+        if (args.defer is not None or args.open) and args.approve is None:
+            parser.error("--defer and --open require --approve")
+        if args.open == []:
+            parser.error("--open needs task ids")
+        if args.defer is not None and args.open:
+            parser.error("--defer and --open are separate decisions")
         if args.run is not None:
             from orcexe.planrun import run_command
             return run_command(args)
