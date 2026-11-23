@@ -8,14 +8,15 @@ import signal
 import sys
 import threading
 
-from orcexe import do, fsio, gitutil, intake, ledger, redact
+from orcexe import do, fsio, gitutil, intake, isolation, ledger, redact, runguard
 
 
 FINAL = frozenset(('accepted', 'exhausted', 'rejected', 'gate_passed', 'blocked'))
 UNFINISHED = frozenset(('interrupted', 'running', 'contract.frozen'))
 EXIT_REASONS = {'completed': 0, 'partial': 1, 'interrupted': 130,
                 'dependency_failed': 1, 'lane_not_supported': 1,
-                'run_interrupted': 2, 'task_running': 2, 'internal_error': 70}
+                'run_interrupted': 2, 'task_running': 2, 'internal_error': 70,
+                'ledger_corrupt': 2, 'ledger_head_mismatch': 2}
 
 
 def task_records(plan, log):
@@ -193,6 +194,7 @@ def _order(plan):
     return ordered
 
 
+@ledger.in_session
 def run_plan(identifier, repo=None, *, resume=False):
     from orcexe import task
     result = dict(schema='orcexe.planrun.v1', plan_id=identifier, state='partial', tasks=[], land=None)
@@ -209,6 +211,10 @@ def run_plan(identifier, repo=None, *, resume=False):
         if lock_info is None:
             raise ValueError('task_running')
         log = ledger.Ledger(ledger.default_path(main))
+        # T55: the whole chain and its external head ref before any state is read
+        # (an earlier terminal tamper marker is reported first).
+        runguard.check_marker(main)
+        log.verify_head()
         # The same approval/hash/HEAD/tamper checks as task, once under the lock.
         plan = task._read_plan(main, identifier, None, log)
         records = task_records(plan, log)
@@ -236,6 +242,9 @@ def run_plan(identifier, repo=None, *, resume=False):
                            'to': 'blocked'}, reason=reason))
             else:
                 outcome = task.run_task(identifier, key, main, _context=plan, _resume=resume)
+                if outcome['reason'] == 'state_tampered':
+                    # P2-2: never read (or dispatch dependants from) a ledger written during a run.
+                    raise isolation.StateTampered()
                 # Pre-dispatch refusals do not freeze contracts, but must be final
                 # ledger states for a plan run, so they cannot silently re-run.
                 if task_records(plan, log)[key]['state'] == 'pending':
@@ -255,7 +264,7 @@ def run_plan(identifier, repo=None, *, resume=False):
         result['state'] = 'interrupted'
         return result, 130
     except (ValueError, ledger.LedgerError) as error:
-        reason = str(error) if isinstance(error, ValueError) else 'state_corrupt'
+        reason = str(error) if isinstance(error, ValueError) else ledger.reason(error)
         result['reason'] = reason
         return result, 2
     except Exception:
@@ -282,6 +291,10 @@ def _print(result, code, json_output):
                 print(line)
     if clean.get('reason'):
         print('not_seen: ' + clean['reason'], file=sys.stderr)
+    if clean.get('reason') in ('ledger_corrupt', 'ledger_head_mismatch'):
+        print(ledger.REPAIR_HINT, file=sys.stderr)
+    elif clean.get('reason') == 'state_tampered':
+        print(ledger.TAMPER_HINT, file=sys.stderr)
     return code
 
 
@@ -290,6 +303,7 @@ def run_command(args):
     return _print(result, code, args.json)
 
 
+@ledger.in_session
 def status_command(args):
     from orcexe import task
     try:
@@ -301,9 +315,21 @@ def status_command(args):
             raise ValueError('plan_missing') from None
         if not isinstance(plan, dict) or plan.get('schema') != 'orcexe.plan.v1':
             raise ValueError('plan_tampered')
-        result = status(main, plan, ledger.Ledger(ledger.default_path(main)))
+        if os.path.lexists(main / runguard.MARKER):
+            # T55: never report state recorded around a terminal tamper as fact.
+            raise ValueError('state_tampered')
+        log = ledger.Ledger(ledger.default_path(main))
+        # T55: status decides nothing from a ledger whose tail is not the anchored head.
+        log.verify_head()
+        result = status(main, plan, log)
         return _print(result, 0, args.json)
     except (ValueError, OSError, KeyError, ledger.LedgerError) as error:
-        reason = str(error) if isinstance(error, ValueError) else 'state_corrupt'
+        reason = (str(error) if isinstance(error, ValueError) else
+                  'ledger_head_mismatch' if isinstance(error, ledger.HeadMismatch) else
+                  'ledger_corrupt' if isinstance(error, ledger.LedgerError) else 'state_corrupt')
         print('not_seen: ' + reason, file=sys.stderr)
+        if reason in ('ledger_corrupt', 'ledger_head_mismatch'):
+            print(ledger.REPAIR_HINT, file=sys.stderr)
+        elif reason == 'state_tampered':
+            print(ledger.TAMPER_HINT, file=sys.stderr)
         return 2

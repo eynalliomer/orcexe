@@ -583,15 +583,18 @@ class FallbackAndMemoryTests(EvaluatorTests):
             blob = git('hash-object', '-w', '--stdin', data=contents.encode())
             git('update-index', '--add', '--cacheinfo', '100644,' + blob + ',' + name)
         tree = git('write-tree')
-        def forge(req):
-            # Something able to append chain-valid ledger records during the executor run.
-            self.log().append('l1.verdict', 'T1', dict(plan_id=self.saved['plan_id'], run_id=req.run_id,
-                attempt=1, model='claude-sonnet-5-5', reason=None, criteria=['d1:pass'],
-                basis='cross_family', tree=tree, call=1))
+        runs = []
+        def interrupt(req):
+            runs.append(req.run_id)
             os.kill(os.getpid(), signal.SIGTERM)
         with mock.patch.object(isolation, 'evidence', return_value='seatbelt'):
-            code, result, _ = self.invoke(before=forge)
+            code, result, _ = self.invoke(before=interrupt)
             self.assertEqual((code, result['state']), (130, 'interrupted'), result)
+            # Something able to append chain-valid ledger records between runs (during a run it
+            # is state_tampered since T55, see test_ledger_authority).
+            self.log().append('l1.verdict', 'T1', dict(plan_id=self.saved['plan_id'], run_id=runs[0],
+                attempt=1, model='claude-sonnet-5-5', reason=None, criteria=['d1:pass'],
+                basis='cross_family', tree=tree, call=1))
             self.assertTrue(self.log().verify()['ok'])
             with mock.patch.dict(os.environ, self.env, clear=True):
                 resumed = task.run_task(self.saved['plan_id'], 'T1', self.main, timeout=30, _resume=True)

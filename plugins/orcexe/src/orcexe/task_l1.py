@@ -190,8 +190,12 @@ def evaluate(*, repo_path, tree, contract, gate, l0, selection, adapter, run_dir
             if (receipt['status'] != 'completed' or receipt['exit_code'] != 0
                     or 'pipes_held' in receipt['warnings'] or 'model_mismatch' in receipt['warnings']):
                 return dict(reason='l1_unavailable', rubric=None)
-            with (directory / 'final.md').open(encoding='utf-8') as handle:
-                final = handle.read(OUTPUT_CAP + 1)
+            # T55 (P1-1): the verdict comes from the text the adapter captured in memory when
+            # the run ended; final.md on disk is evidence only and is never re-read.
+            final = getattr(adapter, 'final_text', lambda run_id: None)(req.run_id)
+            if not isinstance(final, str):
+                return dict(reason='l1_unavailable', rubric=None)
+            final = final[:OUTPUT_CAP + 1]
         rubric = parse_rubric(final, contract['done'])
         safe_write_json(directory / 'rubric.json', rubric)
         return dict(reason=None, rubric=rubric)

@@ -104,6 +104,8 @@ class TaskIsolationTests(TaskFixture):
                 if marker.exists():
                     marker.unlink()
                 self.log().path.unlink(missing_ok=True)
+                # T55: deleting the ledger is itself detected by its head ref; reset both.
+                self.git_run(self.main, 'update-ref', '-d', 'refs/orcexe/ledger-head')
                 self.saved = self.save()
                 self.env['ORCEXE_NO_SANDBOX'] = '1'
                 destination = self.main / '.orcexe' / target
@@ -167,8 +169,10 @@ class TaskIsolationTests(TaskFixture):
 
     def test_invalid_ledger_refuses_dependency_read(self):
         self.log().path.write_text('forged\n')
-        code, result, _ = self.invoke()
-        self.assertEqual((code, result['reason'], result['attempts']), (1, 'state_tampered', 0))
+        code, result, err = self.invoke()
+        # T55: an unreadable ledger is ledger_corrupt (exit 2) with a repair line.
+        self.assertEqual((code, result['reason'], result['attempts']), (2, 'ledger_corrupt', 0))
+        self.assertIn('orcexe ledger repair', err)
 
     def test_fast_risk_touch_is_terminal_before_gates(self):
         self.saved = self.save([plan_task()])

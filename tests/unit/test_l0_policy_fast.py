@@ -45,7 +45,8 @@ class FastL0PolicyTests(PrivateHomes):
                 runtime_count = 50 if case == 'static-drop' else len([p for p in after if task_l0.is_test(p)])
                 runtime = 'Ran {} tests in 0.01s\nOK{}\n'.format(runtime_count,
                             ' (skipped=1)' if case == 'runtime-skip' else '')
-                (run_dir / 'gate/unittest.log').write_text(runtime)
+                # T55: L0 reads the gate's in-process log copy, as the gate writes it.
+                gate_lite._write_log(run_dir / 'gate', 'unittest', runtime)
                 phases = []
 
                 def checkout(repo, tree, scratch, *args):
@@ -109,7 +110,8 @@ class FastL0PolicyTests(PrivateHomes):
                     fingerprints.append((':100644 100644 %s %s M' % (old, new), name, name))
                 observed = dict(tree='candidate', versions=versions, files=files)
                 count = len([p for p in after if task_l0.is_test(p)])
-                (run_dir / 'gate/unittest.log').write_text('Ran {} tests in 0.01s\nOK\n'.format(count))
+                # T55: L0 reads the gate's in-process log copy, as the gate writes it.
+                gate_lite._write_log(run_dir / 'gate', 'unittest', 'Ran {} tests in 0.01s\nOK\n'.format(count))
                 phases = []
 
                 def checkout(repo, tree, scratch, *args):

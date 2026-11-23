@@ -27,7 +27,7 @@ from orcexe.manifest import GLOBAL_FORBIDDEN_ARGV
 # Every layer entry is intentional. Discovery below rejects a new function or
 # module even when it happens to reuse an already tested low-level helper.
 SPAWN_SITES = {
-    'intake': {'_git'}, 'isolation': {'_available_backend', 'run'},
+    'intake': {'_git'}, 'isolation': {'_available_backend', 'run'}, 'ledger': {'_git'},
     'task': {'run_task'}, 'run': {'run_command'}, 'planning': {'_plan_command'}, 'planrun': {'run_plan'}, 'task_l1': {'evaluate'},
     'task_l0': {'_tests'}, 'gitutil': {'_git'}, 'proc': {'_WindowsJob.stop', 'run'},
     'gate_lite': {'_git_bytes', '_project', '_probe_python'}, 'do': {'_git', '_resolve_identity.config', 'run_do'},

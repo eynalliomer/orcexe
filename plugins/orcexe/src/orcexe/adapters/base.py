@@ -297,6 +297,17 @@ class Adapter(ABC):
         self._kill_grace_s = kill_grace_s
         self._active = {}
         self._lock = threading.Lock()
+        self._finals = {}
+
+    def _remember_final(self, run_id, text):
+        """Keep the redacted final text extracted from the stream, per run id."""
+        with self._lock:
+            self._finals[run_id] = text
+
+    def final_text(self, run_id):
+        """The final text captured in memory when ``run_id`` ended, or None (never re-read from disk)."""
+        with self._lock:
+            return self._finals.get(run_id)
 
     def _environment(self):
         return envfilter.child_env(self._env, allow_extra=self._allow_extra)[0]
@@ -475,6 +486,8 @@ class Adapter(ABC):
             warnings.append("model_mismatch")
         final_text = redact.redact_text(extracted.get("final_text") or "")
         # Tool-written final files are not trusted as a second status channel.
+        # T55: decisions use this in-memory copy; final.md is evidence only.
+        self._remember_final(req.run_id, final_text)
         safe_write_text(paths["final_text_path"], final_text, mode=0o600)
         safe_write_text(paths["stderr_tail_path"],
             redact.redact_text(observed.stderr_tail if observed else ""), mode=0o600)

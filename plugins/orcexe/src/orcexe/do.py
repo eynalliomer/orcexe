@@ -18,13 +18,15 @@ import secrets
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import traceback
 
 from orcexe.adapters.base import safe_write_text
 
-from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, isolation, ledger, redact, route, trust, worktree
+from orcexe import classify, exitcodes, fsio, gate_lite, gitutil, isolation, ledger, redact, route, runguard, trust, worktree
 from orcexe.adapters.base import RunRequest, validate_run_result
 from orcexe.adapters.codex import CodexAdapter
 from orcexe.adapters.claude_code import ClaudeCodeAdapter
@@ -85,9 +87,42 @@ def _lock_data(path):
         return {}
 
 
+# An empty or unparseable lock this old cannot be a writer between O_EXCL and fsync.
+JUNK_LOCK_GRACE_S = 10
+
+
+def _junk(path, info):
+    """An empty or unparseable lock (no JSON object at all), older than the grace period.
+
+    A parseable object is never junk, even without a valid pid (``{}``, ``{"pid": null}``):
+    it may be a live owner's lock someone rewrote, so it blocks and names the manual step.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return False
+    except (OSError, UnicodeError):
+        return False
+    except ValueError:
+        pass
+    return time.time() - info.st_mtime > JUNK_LOCK_GRACE_S
+
+
+def _junk_candidate(path):
+    """Empty/unparseable content (reclaimed after the grace period, so no manual step)."""
+    try:
+        return not isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except (OSError, UnicodeError):
+        return False
+    except ValueError:
+        return True
+
+
 def _stale(path):
     try:
         info = path.stat()
+        if _junk(path, info):
+            return info
         data = _lock_data(path)
         pid = data.get("pid")
         # Legacy locks lacked host/task. Never reclaim a remote or live PID.
@@ -112,6 +147,10 @@ def _acquire(path, task_id, on_abandoned):
         except FileExistsError:
             stale = _stale(path)
             if stale is None:
+                pid = _lock_data(path).get("pid")
+                if path.exists() and (type(pid) is not int or pid <= 0) and not _junk_candidate(path):
+                    print("Warning: {} names no valid owner pid; if no orcexe command is running, "
+                          "remove it by hand.".format(path), file=sys.stderr)
                 return None
             reclaim = path.with_suffix(".reclaim")
             try:
@@ -121,6 +160,9 @@ def _acquire(path, task_id, on_abandoned):
             try:
                 current = _stale(path)
                 if current is not None and (current.st_dev, current.st_ino) == (stale.st_dev, stale.st_ino):
+                    if _junk(path, current):
+                        print("Warning: removed an empty or unreadable lock older than {}s: {}".format(
+                            JUNK_LOCK_GRACE_S, path), file=sys.stderr)
                     on_abandoned(_lock_data(path))
                     path.unlink()
             finally:
@@ -188,7 +230,9 @@ def _main_snapshot(main, task_id):
     _, oid = _git(main, "rev-parse", "--verify", "HEAD")
     _, refs = _git(main, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")
     prefix = ("refs/heads/orcexe/do/" + task_id.lower() + "-").encode()
-    refs = tuple(line for line in refs.splitlines() if not line.split(b" ", 1)[0].startswith(prefix))
+    # The ledger head ref moves with every CLI append; the run guard observes it instead.
+    refs = tuple(line for line in refs.splitlines() if not line.split(b" ", 1)[0].startswith(prefix)
+                 and line.split(b" ", 1)[0] != ledger.HEAD_REF.encode())
     _, status = _git(main, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=no")
     if status and not status.endswith(b"\0"):
         raise _DoFailure("Incomplete main status")
@@ -329,6 +373,7 @@ def _report(summary, directory=None):
     return clean
 
 
+@ledger.in_session
 def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=None):
     """Return a redacted summary with exit_code; never prompt, print or land.
 
@@ -431,6 +476,17 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
                                         _lock_data(lock_path).get("pid", "unknown"),
                                         _lock_data(lock_path).get("task_id", "unknown"))))
             _exclude(main)
+            # T55: whole chain plus external head before this command decides anything.
+            try:
+                ledger.Ledger(ledger.default_path(main), clock=_utc).verify_head()
+            except (OSError, ledger.LedgerError) as error:
+                if isinstance(error, ledger.HeadMismatch):
+                    summary.update(verdict="blocked", exit_code=exitcodes.USAGE, reason="ledger_head_mismatch",
+                                   message="not_seen: ledger_head_mismatch\n" + ledger.REPAIR_HINT)
+                else:
+                    summary.update(verdict="blocked", exit_code=exitcodes.USAGE, reason="ledger_corrupt",
+                                   message="not_seen: ledger_corrupt\n" + ledger.REPAIR_HINT)
+                return _report(summary)
         if not dry_run:
             directory = main / ".orcexe" / "runs" / run_id
         classification = classify.classify_repo(str(main), task)
@@ -495,10 +551,12 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
                 trust_before = trust.headers(trust_config.parent)
             except Exception as error:
                 summary.setdefault("warnings", []).append("trust_snapshot_failed:" + type(error).__name__)
+        request = RunRequest(run_id=run_id, task=task_id, tool=decision["tool"],
+            model=decision["model"], effort=decision["effort"], profile="write", workdir=wt.path,
+            brief_path=str(directory / "brief-src.md"), run_dir=str(directory), timeout_s=timeout)
         try:
-            result = adapter.run(RunRequest(run_id=run_id, task=task_id, tool=decision["tool"],
-                model=decision["model"], effort=decision["effort"], profile="write", workdir=wt.path,
-                brief_path=str(directory / "brief-src.md"), run_dir=str(directory), timeout_s=timeout))
+            # P2-2: any ledger/head/run-directory change during the executor is terminal.
+            result = runguard.Guard(main, directory.parent, log).run(lambda: adapter.run(request), directory)
         finally:
             if trust_before is not None:
                 try:
@@ -579,10 +637,15 @@ def run_do(task, repo=None, *, dry_run=False, timeout=1800, model_constraint=Non
         if verdict == "escalated":
             log.append("lane.escalated", task_id, dict(from_lane="fast", to_lane="standard", reason=failed["id"]))
         return report
-    except isolation.StateTampered:
+    except (isolation.StateTampered, ledger.ForeignRecord):
         summary.pop('land_commands', None)
         summary.update(verdict='failed', exit_code=exitcodes.FAIL, reason='state_tampered',
                        failed_check='state_tampered', detail='state_tampered')
+        if log:
+            try:
+                log.append("task.state", task_id, {"from": state, "to": "failed", "reason": "state_tampered"})
+            except Exception:
+                pass  # A forged or moved ledger must not mask the terminal reason.
         try:
             return _report(summary, directory)
         except (OSError, ValueError):

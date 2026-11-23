@@ -15,7 +15,7 @@ import threading
 from types import FunctionType, SimpleNamespace
 
 from orcexe import do, exitcodes, fsio, gate_lite, gitutil, globs, intake
-from orcexe import isolation, ledger, planning, questions, redact, risk_areas, task_gate, task_l0, task_l1, trust, planrun
+from orcexe import isolation, ledger, planning, questions, redact, risk_areas, runguard, task_gate, task_l0, task_l1, trust, planrun
 from orcexe.adapters import ClaudeCodeAdapter, CodexAdapter, CursorAdapter
 from orcexe.adapters.base import RunRequest, safe_write_json, safe_write_text, validate_run_result
 from orcexe.run import _minimal_result
@@ -31,7 +31,8 @@ EXIT_REASONS = {
     **{reason: 2 for reason in (
         'plan_missing', 'plan_mismatch', 'plan_not_approved', 'plan_stale', 'plan_tampered',
         'task_unknown', 'dependency_pending', 'lane_not_supported', 'no_route',
-        'not_a_repository', 'state_corrupt', 'output_symlink', 'orcexe_invalid')},
+        'not_a_repository', 'state_corrupt', 'output_symlink', 'orcexe_invalid',
+        'ledger_corrupt', 'ledger_head_mismatch')},
 }
 
 
@@ -288,6 +289,7 @@ def _marks(rubric):
     return [] if rubric is None else [c['id'] + (':pass' if c['pass'] else ':fail') for c in rubric['criteria']]
 
 
+@ledger.in_session
 def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False):
     """Return a task.v1 summary plus an internal exit_code; never land or print."""
     summary = dict(schema='orcexe.task.v1', task_id=task_id, plan_id=plan_id,
@@ -334,7 +336,9 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 if final == 'accepted':
                     summary['land'] = planrun.land(main, plan, log)
             except (OSError, ValueError, ledger.LedgerError):
-                final, reason = 'rejected', 'state_tampered' if reason == 'state_tampered' else 'internal_error'
+                # A tamper or ledger verdict stays the reason when its own records cannot land.
+                final, reason = 'rejected', (reason if reason in ('state_tampered', 'ledger_corrupt', 'ledger_head_mismatch')
+                                             else 'internal_error')
                 summary['land'] = summary['l1'] = None
         state = final
         summary.update(state=final, reason=reason,
@@ -374,10 +378,15 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
             lock_info = do._acquire(lock_path, dispatch_id, lambda data: None)
             if lock_info is None:
                 return finish('blocked', 'task_running')
+            # T55: the whole chain and its external head ref, before any state is read
+            # (an earlier terminal tamper marker is reported first).
+            runguard.check_marker(main)
+            log.verify_head()
             plan, task = _read_plan(main, plan_id, task_id, log)
         else:
             # The plan runner owns the repo lock and validated approval once.
             plan = _context
+            log.verify_head()
             task = _select_task(plan, task_id, log)
         prior = planrun.task_records(plan, log)[task_id]
         if prior['state'] in planrun.UNFINISHED and not _resume:
@@ -419,6 +428,9 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                        path=contract_path.relative_to(main).as_posix(), head=base))
         frozen = True
         state = 'contract.frozen'
+        # P2-2: ledger, head ref and this dispatch's run directory around every external run.
+        guard = runguard.Guard(main, main / '.orcexe/runs', log,
+                               main_snapshot=lambda: _main_snapshot(main, wt, dispatch_id))
         contract = read_contract(contract_path, digest)
         if start >= contract['budget']['attempts']:
             return finish('exhausted', 'exhausted')
@@ -477,7 +489,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 except Exception:
                     pass
             try:
-                result = adapter.run(req)
+                result = guard.run(lambda: adapter.run(req), attempt_dir)
                 validate_run_result(result, run_dir=attempt_dir)
             except Exception:
                 result = _minimal_result(req, 'unknown', 'failed', ['executor_error'])
@@ -488,6 +500,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                      trust.headers(trust_config.parent), run_id, trust_config)
                     except Exception:
                         pass
+            guard.check()
             deferred = True
             try:
                 log.append('attempt.ended', task_id, {key: result[key] for key in
@@ -603,8 +616,10 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                 basis=candidate['l1_basis'], call=call))
                             evaluation = task_l1.evaluate(repo_path=main, tree=tree, contract=contract,
                                 gate=gate, l0=l0, selection=candidate,
-                                adapter=evaluator_adapters[candidate['tool']], run_dir=attempt_dir,
+                                adapter=guard.wrap(evaluator_adapters[candidate['tool']], with_main=True), run_dir=attempt_dir,
                                 run_id=run_id, activate=activate, timeout_s=timeout, call=call)
+                            # evaluate() reports any exception as unavailability; the flag is sticky.
+                            guard.check()
                             read_contract(contract_path, digest)
                             if received is not None:
                                 raise do._Cancelled()
@@ -665,7 +680,11 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
     except (KeyboardInterrupt, do._Cancelled):
         summary['land'] = None
         return finish('interrupted', 'cancelled')
-    except (ValueError, ledger.LedgerError) as error:
+    except ledger.LedgerError as error:
+        summary['land'] = None
+        reason = ledger.reason(error)
+        return finish('rejected' if contract_path is not None else 'blocked', reason)
+    except ValueError as error:
         summary['land'] = None
         reason = str(error) if str(error) in EXIT_REASONS else 'observation_unavailable'
         return finish('rejected' if contract_path is not None else 'blocked', reason)
@@ -708,4 +727,8 @@ def task_command(args):
                 print(line)
     if code == exitcodes.USAGE and clean['reason']:
         print('not_seen: ' + clean['reason'], file=sys.stderr)
+    if clean['reason'] in ('ledger_corrupt', 'ledger_head_mismatch'):
+        print(ledger.REPAIR_HINT, file=sys.stderr)
+    elif clean['reason'] == 'state_tampered':
+        print(ledger.TAMPER_HINT, file=sys.stderr)
     return code

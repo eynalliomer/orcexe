@@ -573,6 +573,8 @@ zero attempts. Failed preconditions print `not_seen: <reason>` on stderr.
 | `internal_error` | 70 | Internal computation failed; inspect the reported step. |
 | `interrupted` | 130 | Plan execution was interrupted; inspect before resuming. |
 | `lane_not_supported` | 1 | This entry point cannot execute the selected lane. |
+| `ledger_corrupt` | 2 | The ledger has an invalid line (often a torn tail); run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | The ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
 | `no_route` | 2 | The task has no eligible saved executor route. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
@@ -584,9 +586,73 @@ zero attempts. Failed preconditions print `not_seen: <reason>` on stderr.
 | `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
 | `run_interrupted` | 2 | Use --resume to continue an unfinished plan. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
-| `state_tampered` | 2 | Project code changed CLI control state; investigate before retrying. |
+| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
 | `task_running` | 2 | Another dispatch holds the repository lock. |
 <!-- /planrun-exit-reasons -->
+
+## The ledger: head anchor, `ledger verify` and `ledger repair`
+
+```sh
+orcexe ledger verify --repo /path/to/repo [--json]
+orcexe ledger repair --repo /path/to/repo [--json] [--accept-unanchored]
+```
+
+`.orcexe/ledger.jsonl` is a hash chain. A chain alone cannot see a deleted suffix
+or an edited last line, so every append also moves the Git ref
+`refs/orcexe/ledger-head` (a blob with the last `seq` and the sha256 of the last
+line) by compare-and-swap under the ledger lock. A ref someone else moved in between
+is refused, never overwritten, and the refused line is removed again. The first
+anchoring writes a `ledger.anchored` record, so a later missing ref is reported as
+deleted (`ref_deleted`) instead of being adopted again; a ledger written before
+T55 is adopted once, after its whole chain verifies. `plan --run`, `task`, `status`
+and `do` verify the chain and the head before reading state: a mismatch exits 2 with
+`not_seen: ledger_head_mismatch`, an invalid line (for example a torn tail) or a
+linked ledger file with `not_seen: ledger_corrupt`, each followed by a line naming
+`orcexe ledger repair`. The ref is not part of the main-repository snapshot,
+because the CLI moves it.
+
+During one command the CLI also remembers the last record it wrote or verified.
+Any other tail it meets later in the same command (a record written by a process
+an executor left behind, even between guarded windows and even with the ref moved)
+is terminal `state_tampered`: nothing more is appended on top of it, and the
+`.orcexe/state-tampered` marker records the last trusted `seq`/sha256. While the
+marker exists, `status` and `ledger verify` exit 2 with `state_tampered` instead of
+showing the recorded states. Out of scope: a process that, between two commands,
+rewrites ledger and ref consistently, empties the ledger and deletes the ref, or
+removes a loose ref file to fall back to an older packed value and truncates the
+ledger to match.
+
+`ledger verify` exits 0 when the chain and head agree and no marker exists.
+`ledger repair` takes the dispatch lock and keeps the trusted prefix: up to the
+marker's trusted record when there is one, else up to the head ref's record, else
+(a never-anchored ledger) the longest valid prefix. Everything after it, valid
+records included, moves byte-for-byte to `.orcexe/ledger.quarantine-<UTC>.jsonl`
+(0600, never overwriting an earlier quarantine) before truncation; each moved
+record is printed (seq, time, task, event, target state). Then the head ref is
+re-anchored. It never changes a valid ledger whose head matches. It refuses (exit 2,
+nothing changed) when the head ref names no record of this ledger (deleted suffix,
+edited line), when the ref of an anchored ledger was deleted, or when a marker
+without a trusted point meets unanchored records; `--accept-unanchored` then anchors
+the current valid prefix after you have reviewed the records it prints. Repair also
+exits 2 for `not_a_repository`, `orcexe_invalid`, `task_running` (another command
+holds `.orcexe/do.lock`) and for a symbolic, unreadable or linked head ref or ledger
+file (check `git show-ref refs/orcexe/ledger-head` and the file by hand).
+
+Recovery after `state_tampered`:
+
+1. Run `orcexe ledger repair`; it quarantines every record after the marker's last
+   trusted one and prints them.
+2. Inspect the quarantine file, `git status` and `.orcexe/` (`plan.json`,
+   `decisions.jsonl`, `runs/`) for other changes, and stop any process left behind
+   by the executor.
+3. Remove `.orcexe/state-tampered`, then continue with `orcexe plan --run ID --resume`
+   (or rerun the task).
+
+An empty or unparseable `.orcexe/do.lock` older than 10 seconds is removed with a
+warning. A lock that parses as an object without a valid owner pid (`{}`,
+`{"pid": null}`) still blocks, because it may be a live owner's rewritten lock; the
+warning names it for manual removal. A lock of a dead local process is reclaimed as
+before, and live, remote or fresh locks still block.
 
 ## `task`: execute one approved task
 
@@ -662,8 +728,23 @@ code step the CLI snapshots the main repository's `.orcexe/` controls, including
 ledger, plan, approvals, contracts and status. Any modification is terminal
 `rejected`/`state_tampered` (exit 1; `do`: `failed`). A persistent
 `.orcexe/state-tampered` marker prevents later dependency acceptance; investigate
-and restore trusted state before removing it. Dependency reads verify the entire
-ledger and refuse corrupted or marked state with `state_tampered`.
+and restore trusted state before removing it. Dependency reads refuse marked state
+with `state_tampered` and verify the entire ledger (see the ledger section below).
+
+The same rule covers the time an executor or L1 evaluator runs (T55). Before and
+after every external model run the CLI observes the ledger bytes, its head ref and
+a fingerprint of every `.orcexe/runs/` directory. A ledger record, a moved ref or
+any file under `runs/` not written by the CLI or the adapter's fixed artifacts
+(`brief.md`, `final.md`, `events.jsonl`, `stderr.txt`, `result.json`, `.attempt`,
+`brief/brief.md` in that call's own folder) is terminal `state_tampered`; `plan --run`
+stops there (exit 2), so no dependant of a forged acceptance is dispatched. During an
+L1 call the main-repository snapshot of the executor window (config, `plan.json`,
+`decisions.jsonl`, refs, status) is compared too: a change is
+`main_repository_changed`. Decisions never re-read run artifacts from disk: the L1
+verdict is parsed from the final text the adapter captured in memory when the run
+ended, and L0 runner counts from the gate's in-process log copy, so a process the
+executor left behind cannot rewrite them. `do` applies the same checks to its
+executor.
 
 Only the CLI writes task lifecycle ledger events:
 `contract.frozen` → `attempt.started` → `attempt.ended` →
@@ -737,6 +818,8 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `l1_invalid` | 0 | The evaluator rubric was invalid. |
 | `l1_unavailable` | 0 | An independent evaluator could not complete. |
 | `lane_not_supported` | 2 | This entry point cannot execute the selected lane. |
+| `ledger_corrupt` | 2 | The ledger has an invalid line (often a torn tail); run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | The ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
 | `main_repository_changed` | 1 | The executor changed the main repository. |
 | `no_route` | 2 | The task has no eligible saved executor route. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
@@ -753,7 +836,7 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `risk_path_touched` | 1 | A changed path matches a protected risk area. |
 | `run_interrupted` | 2 | Use --resume to continue an unfinished plan. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
-| `state_tampered` | 1 | Project code changed CLI control state; investigate before retrying. |
+| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
 | `task_running` | 1 | Another dispatch holds the repository lock. |
 | `task_unknown` | 2 | The task ID is absent from the approved plan. |
 <!-- /task-exit-reasons -->
@@ -972,6 +1055,8 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `isolation_unavailable` | 1 | No usable OS sandbox; acceptance is withheld. |
 | `lane_risky` | 7 | Risky execution is not supported. |
 | `lane_standard` | 7 | Use an approved standard-lane plan. |
+| `ledger_corrupt` | 2 | The ledger has an invalid line (often a torn tail); run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | The ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
 | `main_repository_changed` | 1 | The executor changed the main repository. |
 | `pipes_held` | 1 | An escaped process may still hold the executor pipes. |
 | `project_checks` | 1 | Project checks failed or were not observed. |
@@ -993,7 +1078,7 @@ account's included minutes. Drop macOS/Windows from the matrix in
 | `signal_SIGINT` | 1 | Cancelled by SIGINT; do retains its failure exit code. |
 | `signal_SIGTERM` | 1 | Cancelled by SIGTERM; do retains its failure exit code. |
 | `size` | 1 | Changes exceeded the fast-lane budget. |
-| `state_tampered` | 1 | Project code changed CLI control state; investigate before retrying. |
+| `state_tampered` | 1 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
 | `test_floor` | 1 | Tests were removed or skip markers were added. |
 <!-- /do-exit-reasons -->
 
@@ -1003,11 +1088,14 @@ account's included minutes. Drop macOS/Windows from the matrix in
 <!-- status-exit-reasons -->
 | Reason | Code | Meaning |
 | --- | --- | --- |
+| `ledger_corrupt` | 2 | The ledger has an invalid line (often a torn tail); run `orcexe ledger repair`. |
+| `ledger_head_mismatch` | 2 | The ledger tail differs from its anchored head ref; run `orcexe ledger verify`, then `orcexe ledger repair`. |
 | `not_a_repository` | 2 | The path is not a supported Git repository. |
 | `orcexe_invalid` | 2 | `.orcexe` at the repository root is a symlink or not a directory; remove or rename it. |
 | `plan_missing` | 2 | No saved plan exists. |
 | `plan_tampered` | 2 | The plan hash, approval or task shape is invalid. |
 | `state_corrupt` | 2 | Saved state or ledger is unreadable or inconsistent. |
+| `state_tampered` | 2 | Project code, a run or a leftover process changed CLI control state; see `orcexe ledger repair` recovery. |
 <!-- /status-exit-reasons -->
 
 Diagnostic tables list reason/result codes for each command. For `plan --run`,

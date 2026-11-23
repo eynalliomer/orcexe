@@ -975,6 +975,21 @@ def interpreters_log(interpreter):
         " (declared {})".format(interpreter["declared"]) if interpreter.get("declared") else "")
 
 
+# T55: project-check logs as written, keyed by (resolved gate directory, command id). L0
+# reads runner counts from here, never back from disk where a leftover process could edit them.
+_LOGS = {}
+
+
+def _write_log(directory, identifier, text, mode=0o600):
+    safe_write_text(directory / (identifier + ".log"), text, mode=mode)
+    _LOGS[(str(Path(directory).resolve()), identifier)] = text
+
+
+def project_log(directory, identifier):
+    """The log text this process wrote for a project check, or None."""
+    return _LOGS.get((str(Path(directory).resolve()), identifier))
+
+
 def _project(commands, path, directory, timeout, deadline, gate_dir=None, repo_path=None, base=None):
     if not commands:
         return "not_seen", "no_commands"
@@ -992,13 +1007,13 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None, repo_p
         if unavailable:
             missing = True
             observations.append(command.id + ": not_seen (" + unavailable + ")")
-            safe_write_text(directory / (command.id + ".log"), "not_seen: " + unavailable + "\n", mode=0o600)
+            _write_log(directory, command.id, "not_seen: " + unavailable + "\n", mode=0o600)
             continue
         command = Command(command.id, python_argv(command.argv, interpreter), command.source_path)
         if not shutil.which(command.argv[0], path=env.get("PATH", os.defpath)):
             missing = True
             observations.append(command.id + ": not_seen (binary_missing)")
-            safe_write_text(directory / (command.id + ".log"),
+            _write_log(directory, command.id,
                                    "not_seen: binary_missing\n", mode=0o600)
             continue
         output, output_bytes, overflow = [], 0, False
@@ -1024,7 +1039,7 @@ def _project(commands, path, directory, timeout, deadline, gate_dir=None, repo_p
         incomplete = overflow or result.truncated_lines
         log = ("not_seen: log_observation_incomplete\n" if incomplete else
                redact_text("".join(output)).encode("utf-8")[-4096:].decode("utf-8", errors="ignore"))
-        safe_write_text(directory / (command.id + ".log"), log, mode=0o600)
+        _write_log(directory, command.id, log, mode=0o600)
         text = "".join(output)
         zero = (not incomplete and result.status == "exited" and not result.pipes_held and
                 (re.search(r"Ran\s+0\s+tests?\b|NO TESTS RAN", text, re.I) or

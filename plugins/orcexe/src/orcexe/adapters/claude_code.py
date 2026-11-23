@@ -447,6 +447,8 @@ class ClaudeCodeAdapter(Adapter):
             warnings.append("model_mismatch")
         final_text = redact.redact_text(extracted.get("final_text") or "")
         # Tool-written final files are not trusted as a second status channel.
+        # T55: decisions use this in-memory copy; final.md is evidence only.
+        self._remember_final(req.run_id, final_text)
         safe_write_text(paths["final_text_path"], final_text, mode=0o600)
         safe_write_text(paths["stderr_tail_path"],
             redact.redact_text(observed.stderr_tail if observed else ""), mode=0o600)

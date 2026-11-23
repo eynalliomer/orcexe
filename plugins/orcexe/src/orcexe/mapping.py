@@ -550,8 +550,14 @@ def manager_run(repo, main, head, resolver, brief, selection, adapters):
         safe_write_json(directory / 'result.json', receipt)
         if receipt['status'] != 'completed':
             raise ManagerUnavailable(receipt['status'])
-        with (directory / 'final.md').open(encoding='utf-8') as handle:
-            final = handle.read(OUTPUT_CAP + 1)
+        # T55: the adapter's in-memory final text when it captured one (every real adapter
+        # does); final.md is read only for a run that captured nothing.
+        final = getattr(adapters[selection['tool']], 'final_text', lambda run_id: None)(run_id)
+        if isinstance(final, str):
+            final = final[:OUTPUT_CAP + 1]
+        else:
+            with (directory / 'final.md').open(encoding='utf-8') as handle:
+                final = handle.read(OUTPUT_CAP + 1)
     return final, dict(tool=selection['tool'], model=selection['model'], run_id=run_id)
 
 

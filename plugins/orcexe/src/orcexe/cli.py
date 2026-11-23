@@ -74,6 +74,107 @@ def _trust_command(args):
         return 2
 
 
+def _ledger_command(args):
+    """verify: exit 0, or 2 (ledger_corrupt / ledger_head_mismatch / state_tampered).
+    repair: quarantine the untrusted tail and re-anchor; exit 2 when it refuses."""
+    from orcexe import do, gitutil, ledger, planrun
+
+    def emit(result, lines, code):
+        print(json.dumps(result, ensure_ascii=False) if args.json else "\n".join(lines))
+        return code
+
+    try:
+        repo_path = gitutil.resolve_repo_path(args.repo) if args.repo is not None else Path.cwd().resolve()
+        if not gitutil.is_repo(repo_path):
+            raise gitutil.GitError("not a repository")
+        main = Path(gitutil.main_worktree(repo_path))
+    except gitutil.GitError:
+        return emit(dict(ok=False, reason="not_a_repository"), ["not_seen: not_a_repository"], exitcodes.USAGE)
+    try:
+        fsio.require_main_orcexe(main)
+    except fsio.OrcexeDirError:
+        return emit(dict(ok=False, reason="orcexe_invalid"), ["not_seen: orcexe_invalid"], exitcodes.USAGE)
+    log = ledger.Ledger(ledger.default_path(main))
+    present, point = ledger.read_marker(main / ".orcexe")
+    marker_line = ("Tamper marker .orcexe/state-tampered is present; last trusted record: "
+                   + (ledger._state_text(point) if point else "unknown") + ".")
+
+    if args.ledger_command == "verify":
+        try:
+            with ledger.session():
+                result = log.verify_head()
+        except ledger.LedgerError as error:
+            reason = ledger.reason(error)
+            lines = ["not_seen: " + reason]
+            if isinstance(error, ledger.HeadMismatch):
+                lines.append("Head ref " + ledger.HEAD_REF + " says " + ledger._state_text(error.head)
+                             + "; the ledger ends at " + ledger._state_text(error.state)
+                             + " (" + error.detail + ").")
+            else:
+                lines.append("Problem: " + str(error))
+            if present:
+                lines.append(marker_line)
+            return emit(dict(ok=False, reason=reason, detail=str(error), marker=present),
+                        lines + [ledger.REPAIR_HINT], exitcodes.USAGE)
+        if present:
+            return emit(dict(result, ok=False, reason="state_tampered", marker=True),
+                        ["not_seen: state_tampered", marker_line, ledger.TAMPER_HINT], exitcodes.USAGE)
+        lines = ["Ledger OK: {} records".format(result["records"])
+                 + ("; head anchored" if result["anchored"] else "; no head ref (empty ledger)")
+                 + ("; adopted an unanchored ledger" if result["adopted"] else "") + "."]
+        return emit(dict(result, reason=None, marker=False), lines, exitcodes.OK)
+    lock_path = main / ".orcexe" / "do.lock"
+    has_dir = (main / ".orcexe").is_dir()
+    lock_info = do._acquire(lock_path, "ledger-repair", lambda data: None) if has_dir else None
+    if has_dir and lock_info is None:
+        return emit(dict(ok=False, reason="task_running"),
+                    ["not_seen: task_running (another orcexe command holds .orcexe/do.lock)"], exitcodes.USAGE)
+    try:
+        report = log.repair(accept_unanchored=args.accept_unanchored)
+    except ledger.RepairRefused as error:
+        report = error.report
+        lines = ["not_seen: " + ("state_tampered" if present else "ledger_head_mismatch"),
+                 "Repair refused: " + error.detail + ". Head ref says "
+                 + ledger._state_text(report["head_found"]) + "; nothing was changed."]
+        if present:
+            lines.append(marker_line)
+        if report["quarantined"]:
+            lines.append("Records that --accept-unanchored would anchor (review them first):")
+            lines += ["  " + line for line in report["quarantined"]]
+        lines.append("If the records above are yours, rerun with --accept-unanchored; otherwise restore "
+                     "the ledger from a trusted copy.")
+        return emit(dict(report, ok=False, reason="state_tampered" if present else "ledger_head_mismatch"),
+                    lines, exitcodes.USAGE)
+    except ledger.LedgerError as error:
+        return emit(dict(ok=False, reason=ledger.reason(error), detail=str(error)),
+                    ["not_seen: " + ledger.reason(error), "Repair refused: " + str(error)
+                     + ". A symbolic, unreadable or linked ledger/head ref needs a manual check: "
+                     "inspect `git show-ref " + ledger.HEAD_REF + "` and .orcexe/ledger.jsonl."], exitcodes.USAGE)
+    finally:
+        if lock_info is not None:
+            planrun._release(lock_path, lock_info)
+    lines = []
+    moved = report["moved"]
+    if moved:
+        lines.append("Moved {} line(s) / {} byte(s) from line {} on ({}) to {}".format(
+            moved["lines"], moved["bytes"], moved["first_line"], moved["reason"], moved["path"]))
+        for line in report["quarantined"]:
+            lines.append("  quarantined: " + line)
+    if report["reanchored"]:
+        lines.append("Head ref " + ledger.HEAD_REF + " said " + ledger._state_text(report["head_found"])
+                     + ("" if report["head_found"] != "unreadable" else " (unreadable)")
+                     + "; re-anchored to " + ledger._state_text(report["head_now"])
+                     + " (basis: " + str(report["basis"]) + ").")
+    if not lines:
+        lines.append("Nothing to repair: the ledger verifies and its head ref matches ({} records).".format(
+            report["records"]))
+    else:
+        lines.append("Kept {} trusted record(s).".format(report["records"]))
+    if present:
+        lines += [marker_line, "The marker stays: " + ledger.TAMPER_HINT]
+    return emit(dict(report, ok=True), lines, exitcodes.OK)
+
+
 def main(argv=None):
     """Run the CLI and return its exit status."""
     parser = argparse.ArgumentParser(prog="orcexe", description="Orchestrate AI coding tools.")
@@ -160,6 +261,15 @@ def main(argv=None):
             mode.add_argument("--dry-run", action="store_true", help="Preview only (default)")
             mode.add_argument("--apply", action="store_true")
             command.add_argument("--yes", action="store_true", help="Confirm without a TTY")
+    ledger_parser = subcommands.add_parser("ledger", help="Verify or repair the project ledger")
+    ledger_commands = ledger_parser.add_subparsers(dest="ledger_command", required=True)
+    for name in ("verify", "repair"):
+        command = ledger_commands.add_parser(name)
+        command.add_argument("--repo", default=None, help="Repository (default: current directory)")
+        command.add_argument("--json", action="store_true")
+        if name == "repair":
+            command.add_argument("--accept-unanchored", action="store_true",
+                                 help="Anchor records no trusted point vouches for (after reviewing them)")
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -176,6 +286,9 @@ def main(argv=None):
 
     if args.command == "trust":
         return _trust_command(args)
+
+    if args.command == "ledger":
+        return _ledger_command(args)
 
     if args.command == "intake":
         from orcexe.intake import intake_command

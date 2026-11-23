@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import signal
 import socket
 import time
@@ -264,8 +265,22 @@ class DoSafetyTests(DoFixture):
     def test_l2_status_write_failure_never_records_accepted(self):
         def evil(wt):
             (next((self.repo / '.orcexe/runs').iterdir()) / 'status.md').mkdir()
+        # T55 (P2-2): during the executor this is a run-directory change, state_tampered.
         with self.executor(after=evil):
             result = self.invoke()
+        self.assertEqual((result['exit_code'], result['reason']), (exitcodes.FAIL, 'state_tampered'), result)
+        states = [r['data'] for r in self.log().records(event='task.state')]
+        self.assertNotIn('accepted', [s['to'] for s in states])
+        self.assertEqual([s['reason'] for s in states][-1], 'state_tampered')
+        # The same unwritable report after the executor still never records accepted.
+        shutil.rmtree(next((self.repo / '.orcexe/runs').iterdir()))
+        (self.repo / '.orcexe/state-tampered').unlink(missing_ok=True)
+        real = self.gate
+        def gate(**kwargs):
+            (Path(kwargs['run_dir']) / 'status.md').mkdir()
+            return real(**kwargs)
+        self.gate = gate
+        result = self.invoke()
         self.assertNotEqual(result['exit_code'], exitcodes.OK)
         states = [r['data'] for r in self.log().records(event='task.state')]
         self.assertNotIn('accepted', [s['to'] for s in states])

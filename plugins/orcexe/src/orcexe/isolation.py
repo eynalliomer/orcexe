@@ -19,7 +19,6 @@ import tempfile
 
 from orcexe import ledger, proc
 from orcexe.envfilter import child_env
-from orcexe.adapters.base import safe_write_text
 
 
 _active = ContextVar('orcexe_isolation', default=None)
@@ -122,10 +121,8 @@ class Session:
 
     def poison(self):
         self.tampered = True
-        try:
-            safe_write_text(self.repo / '.orcexe/state-tampered', 'state_tampered\n', mode=0o600)
-        except (OSError, ValueError):
-            pass  # A replaced control directory must not mask the terminal reason.
+        # T55: the marker carries the last ledger state this command trusted, for repair.
+        ledger.write_marker(self.repo / '.orcexe', ledger.trusted(ledger.default_path(self.repo)))
 
 
 def guarded(function):

@@ -202,7 +202,8 @@ private func privateSupport() { Issue.record("wrong") }
         observed = dict(tree='candidate', versions=versions, files=files)
         run_dir = self.directory / 'run'
         (run_dir / 'gate').mkdir(parents=True)
-        (run_dir / 'gate/unittest.log').write_text('Ran 2 tests in 0.01s\nOK\n')
+        # T55: L0 reads the gate's in-process log copy, as the gate writes it.
+        gate_lite._write_log(run_dir / 'gate', 'unittest', 'Ran 2 tests in 0.01s\nOK\n')
 
         def checkout(repo, tree, scratch, *args):
             copy = Path(scratch) / 'checkout'

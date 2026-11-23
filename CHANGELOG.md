@@ -1,5 +1,98 @@
 ## Unreleased
 
+### T55 — ledger authority: writes during a run are tamper, a CAS head ref, a repairable tail
+
+- P2-2: new `runguard.Guard` observes, before and after every external model run, the ledger
+  bytes (size + sha256), the head ref and a fingerprint of the dispatch's run directory. `task`
+  wraps the executor `adapter.run` and every L1 evaluator call (`guard.wrap(adapter)`; the flag
+  is sticky because `task_l1.evaluate` reports exceptions as unavailability); `do` wraps its
+  executor; later auditor calls use the same helper. Any ledger growth or change, a moved head
+  ref, or any run-directory change other than the adapter's fixed artifacts (`.attempt`,
+  `brief.md`, `brief/brief.md`, `final.md`, `events.jsonl`, `stderr.txt`, `result.json`) in that
+  call's own output directory is terminal `state_tampered` (`task`: `rejected`, exit 1; `do`:
+  `failed`, exit 1; nothing landed) and writes the persistent `.orcexe/state-tampered` marker.
+  `plan --run` stops at a task that ends `state_tampered` (exit 2), so dependants of a forged
+  `task.state … accepted` record are never dispatched.
+- Head anchor: a ledger at `<repo>/.orcexe/ledger.jsonl` of a Git checkout keeps
+  `refs/orcexe/ledger-head`, a blob `orcexe.ledger.head.v1` / `seq N` / `sha256 <last line>`.
+  Under the existing ledger lock every append first requires the ref to match the current tail,
+  then moves it with `git update-ref <ref> <new> <old>`; a ref moved by someone else in between
+  is refused (`ledger_head_mismatch`), never overwritten. `plan --run`, `task`, `status` and `do`
+  call `Ledger.verify_head()` (whole chain + head) before deciding anything; a mismatch is exit 2
+  `not_seen: ledger_head_mismatch` with a repair line. A ledger without a ref (written before T55)
+  is adopted once, after its whole chain verifies. Suffix deletion and last-line edits, invisible
+  to the chain alone, are now detected. The head ref is excluded from the main-repository ref
+  snapshot (`main_repository_changed`), since the CLI itself moves it during a run.
+- Corrupt tail (T32): a ledger with an invalid line is exit 2 `not_seen: ledger_corrupt` plus a
+  line naming `orcexe ledger repair` for `task`, `plan --run`, `status` and `do` (was `do` exit 70
+  "Internal error: truncated_tail", `status` `state_corrupt`). New `orcexe ledger verify [--repo]
+  [--json]` (exit 0; 2 with `ledger_corrupt` / `ledger_head_mismatch`) and `orcexe ledger repair
+  [--repo] [--json]`: keeps the longest valid chain prefix, moves the rest byte-for-byte to
+  `.orcexe/ledger.quarantine-<UTC>.jsonl` (0600, never overwriting an earlier one) before
+  truncating, re-anchors the head ref and prints what it moved. It never changes a valid ledger
+  whose head matches; for a head mismatch on a valid ledger it prints what the ref said and what
+  the ledger ends with, then re-anchors. Repair takes the dispatch lock.
+- Junk lock: an empty or unparseable `do.lock` (or one without a `pid`) older than
+  `do.JUNK_LOCK_GRACE_S` (10 s) is reclaimed with a stderr warning; the dead-pid reclaim and the
+  refusal of live, remote and fresh locks are unchanged.
+- Docs: `ledger_corrupt` / `ledger_head_mismatch` rows (exit 2) in the task, plan --run, status
+  and do reason tables (README) and the shared SKILL table; a README `ledger` section.
+- Tests: `test_ledger_authority` — head moves with every append;
+  suffix deletion, last-line edit and deleted ledger detected (chain alone still verifies); old
+  ledger adopted once and only when its chain verifies; CAS race refused with the foreign ref
+  kept; corrupt tail exit 2 + hint, repair → quarantine file (exact bytes, 0600) and verify ok;
+  mid-file corruption; valid ledger untouched; guard allows adapter outputs and flags foreign
+  writes; junk lock reclaim; executor-time and L1-time forged records and planted run files →
+  `state_tampered`; a plan run never dispatching dependants of a forged acceptance.
+
+#### T55-r2 — L2 review (Fable, RET narrow): P1-1, P2-1..P2-3, P3-1..P3-5
+
+- P1-1: the L1 verdict is parsed from the final text the adapter captured in memory when the
+  evaluator run ended (`Adapter.final_text(run_id)`, set by base/Claude/Cursor adapters before
+  `final.md` is written as evidence); `l1/final.md` is never re-read, so a process the executor
+  left behind (`setsid` grandchild) rewriting it cannot turn a rejection into acceptance. Same
+  principle: L0 reads runner counts from the gate's in-process log copy
+  (`gate_lite.project_log`), not `gate/<id>.log`; the map/plan manager uses the captured text
+  (disk only for a run that captured none, i.e. a mocked adapter).
+- P2-1: per-command ledger trust (`ledger.session` / `in_session` on `task`, `plan --run`,
+  `status`, `do`). The ledger remembers the last `(seq, sha256, size)` this command wrote or
+  verified; any other tail at a later append, read or verify is `ForeignRecord` →
+  `state_tampered`, also between guarded windows and with the head ref moved.
+- P2-2: the `state-tampered` marker is JSON (`orcexe.tamper.v1`) carrying the last trusted
+  ledger point (guard, foreign record and gate-time poison). `finish()` cannot append on top of
+  an untrusted tail. `ledger repair` keeps the trusted prefix (marker point, else the head
+  ref's record, else a never-anchored ledger's valid prefix), quarantines and prints every
+  later record, and refuses unvouched anchoring (ref naming no record, deleted ref of an anchored
+  ledger, marker without a point) unless `--accept-unanchored`; the marker stays for the human.
+  With the marker present `status` and `ledger verify` exit 2 `state_tampered` (new status row).
+  README documents the recovery steps.
+- P2-3: `Guard` fingerprints the whole `.orcexe/runs` tree (other dispatches included), and the
+  L1 window also compares the executor window's main-repository snapshot (`_main_snapshot`:
+  config, plan/plan-state, decisions, refs, status) → `main_repository_changed`.
+- P3-1: a `ledger.anchored` record (hidden from ordinary readers, `include_meta=True` shows
+  it) is written at first anchoring; a missing ref of such a ledger is `ref_deleted`, never
+  re-adopted. Remaining limits are documented (empty + ref deleted, packed-ref fallback +
+  truncation, consistent rewrite between commands).
+- P3-2: only empty/unparseable/non-object locks are reclaimed after the grace; `{}`,
+  `{"pid": null}` and other ownerless objects block with a warning naming manual removal.
+- P3-3: the ledger is opened with `O_NOFOLLOW` (append, read, verify, repair); a link is
+  `ledger_corrupt` and its target is untouched.
+- P3-4: a CAS-rejected append truncates its line again under the lock (a short write still stays
+  visible as before).
+- P3-5: README repair exit-2 cases, `state_tampered` meanings and recovery steps.
+- Tests: survivor (`setsid` grandchild) and in-window `final.md` rewrites keep the L1 rejection;
+  between-window forgery (ref moved) → `state_tampered`, T2 not dispatched; recovery
+  quarantines the forged record and status refuses while marked; L1-time `decisions.jsonl` /
+  `plan.json` writes → `main_repository_changed`, other dispatch's run dir → `state_tampered`;
+  deleted ref after anchoring; records past the ref quarantined, `--accept-unanchored`; marker
+  trust point; marker without point; linked ledger; session trust; ownerless locks; gate log
+  memory. Reviewer probes rerun against the worktree: A/D L1 rejection kept (exhausted), B and C
+  `state_tampered` with the forged record quarantined, J1/J2 `main_repository_changed`, J4
+  `state_tampered`, E/F/G/H/I fail closed.
+- Changed assertions: L0 fixtures write their log through `gate_lite._write_log` (the gate's own
+  writer) instead of the file; `test_ledger_authority` adapted to the `ledger.anchored` record
+  (sequence numbers +1) and to repair refusing unvouched anchoring.
+
 ### T54 (real run A, plan tasks T1–T2) — `answer --choice` takes a label or an index; scanned Python parses without warnings
 
 - `answer --choice QID=VALUE` accepts an option label or a zero-based index. A value of digits

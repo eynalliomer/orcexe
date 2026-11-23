@@ -383,8 +383,9 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             counts = _tests(selected, base, directory / 'base', command_timeout_s, deadline, base_root, interpreter)
             candidate = []
             for command in selected:
-                text = (Path(run_dir) / 'gate' / (command.id + '.log')).read_text(encoding='utf-8')
-                candidate.append(runner_summary(text))
+                # T55: the in-memory copy written by the gate, never the file re-read.
+                text = gate_lite.project_log(Path(run_dir) / 'gate', command.id)
+                candidate.append(runner_summary(text if text is not None else ''))
             if attempt_static < base_static:
                 check('test_count_dropped', 'fail', 'static base=' + str(base_static) + '; candidate=' + str(attempt_static))
             elif (not selected or any(v['count'] is None or v['exit_code'] is None for v in counts)

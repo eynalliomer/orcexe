@@ -402,11 +402,14 @@ class TaskTests(TaskFixture):
                         target.chmod(0o600)
                         path.unlink()
                         path.symlink_to(target)
+                marker = self.main / '.orcexe/state-tampered'
                 with mock.patch.object(task_gate, 'standard_gate') as gate:
                     code, result, _ = self.invoke(after=tamper)
+                # T55 (P2-2): a run-directory change during the executor is state_tampered.
                 self.assertEqual((code, result['reason'], result['attempts']),
-                                 (1, 'contract_tampered', 1), result)
+                                 (1, 'state_tampered', 1), result)
                 gate.assert_not_called()
+                marker.unlink()
 
     def test_outside_allow_terminal_without_widening(self):
         self.actions.write_text(json.dumps([{'README.md': 'Unexpected\n'}]))
