@@ -236,3 +236,84 @@ class GitUtilTests(GitFixture):
         for text in ("R  dest\0", "broken\0"):
             with self.assertRaises(gitutil.GitError):
                 gitutil._porcelain(text)
+
+
+class FakeGitStderrTests(unittest.TestCase):
+    """is_repo classification and GitError diagnostics from fake git stderr (T63b)."""
+
+    def classify(self, returncode, stderr, path="/work/repo"):
+        result = proc.ProcResult("exited", returncode, 0, 0, 0, 0, stderr, False, None)
+        with mock.patch("orcexe.gitutil.proc.run", return_value=result) as run:
+            try:
+                return gitutil.is_repo(path)
+            finally:
+                env = run.call_args.kwargs["env"]
+                self.assertEqual((env["LC_ALL"], env["LANG"]), ("C", "C"))
+                self.assertNotIn("LANGUAGE", env)
+
+    def test_not_a_repository_variants_are_false(self):
+        variants = {
+            "plain": "fatal: not a git repository (or any of the parent directories): .git\n",
+            "invalid gitfile": "fatal: not a git repository: (null)\n",
+            "gitfile path": "fatal: not a git repository: '/work/x/not-a-repository'\n",
+            "case and wrapping": "FATAL: Not a Git\n  repository (or any parent up to mount point /)\n",
+            "filesystem boundary": ("fatal: not a git repository (or any parent up to mount point /mnt)\n"
+                                    "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"),
+            "boundary only": "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n",
+            "ceiling": "fatal: not a git repository (or any of the parent directories): .git\n",
+            "home config warnings first": (
+                "warning: unable to access '/home/u/.config/git/attributes': Permission denied\n"
+                "warning: unable to access '/home/u/.config/git/ignore': Permission denied\n"
+                "fatal: not a git repository (or any of the parent directories): .git\n"),
+        }
+        for name, stderr in variants.items():
+            with self.subTest(name):
+                self.assertFalse(self.classify(128, stderr))
+
+    def test_cut_tail_accepts_discovery_suffix_only_when_cut(self):
+        cut = "x" * (gitutil._STDERR_BYTES - 40) + "t repository (or any of the parent directories): .git\n"
+        self.assertGreaterEqual(len(cut.encode()), gitutil._STDERR_BYTES)
+        self.assertFalse(self.classify(128, cut))
+        with self.assertRaises(gitutil.GitError):
+            self.classify(128, "fatal: t repository (or any of the parent directories): .git\n")
+
+    def test_ownership_and_other_failures_are_errors_with_diagnostics(self):
+        dubious = ("fatal: detected dubious ownership in repository at '/work/repo'\n"
+                   "To add an exception for this directory, call:\n\n"
+                   "\tgit config --global --add safe.directory /work/repo\n")
+        with self.assertRaises(gitutil.GitError) as caught:
+            self.classify(128, dubious)
+        self.assertEqual(caught.exception.reason, "Repository ownership is not trusted (safe.directory)")
+        self.assertEqual(caught.exception.returncode, 128)
+        self.assertIn("dubious ownership in repository at '<path>'", str(caught.exception))
+        self.assertNotIn("/work/repo", str(caught.exception))
+        for returncode, stderr in ((128, "fatal: unable to read current working directory\n"),
+                                   (128, ""), (1, "fatal: not a git repository\n"),
+                                   (129, "usage: git rev-parse\n")):
+            with self.subTest(returncode=returncode, stderr=stderr), \
+                    self.assertRaises(gitutil.GitError) as caught:
+                self.classify(returncode, stderr)
+            self.assertEqual(caught.exception.reason, "Cannot determine whether path is a repository")
+            self.assertIn("(exit {})".format(returncode), str(caught.exception))
+
+    def test_diagnostic_is_short_single_line_redacted_and_path_free(self):
+        home = str(Path.home())
+        message = ("fatal: cannot open '{}/secret/project/.git/HEAD': token=ghp_{}\n"
+                   "fatal: in /work/repo/sub\n").format(home, "A1b2C3d4" * 5)
+        stderr = message + "-" * 1000
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            text = gitutil._diagnostic(stderr, "/work/repo")
+        self.assertLessEqual(len(text), gitutil._DIAGNOSTIC_CHARS)
+        self.assertNotIn("\n", text)
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            short = gitutil._diagnostic(message, "/work/repo")
+        self.assertNotIn(home, short)
+        self.assertIn("~/secret/project", short)
+        self.assertIn("<path>/sub", short)
+        self.assertNotIn("A1b2C3d4" * 5, short)
+        result = proc.ProcResult("exited", 128, 0, 0, 0, 0, "fatal: bad object HEAD\n", False, None)
+        with mock.patch("orcexe.gitutil.proc.run", return_value=result), \
+                self.assertRaises(gitutil.GitError) as caught:
+            gitutil.toplevel("/work/repo")
+        self.assertEqual(str(caught.exception), "Git rev-parse failed (exit 128): fatal: bad object HEAD")
+        self.assertEqual(caught.exception.stderr_tail, "fatal: bad object HEAD")

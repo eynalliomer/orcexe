@@ -123,7 +123,10 @@ def run_command(args):
                    "cursor": CursorAdapter}[args.tool]()
     except (OSError, ValueError, gitutil.GitError) as error:
         # Decode/OS diagnostics may contain brief bytes or other private values.
-        message = str(error) if type(error) is ValueError else type(error).__name__
+        # GitError text is already redacted with home/repository paths replaced (T63b).
+        message = (str(error) if type(error) is ValueError
+                   else "GitError: " + str(error) if isinstance(error, gitutil.GitError)
+                   else type(error).__name__)
         print(redact.redact_text(json.dumps({"error": message}) if args.json else message))
         return exitcodes.USAGE
 

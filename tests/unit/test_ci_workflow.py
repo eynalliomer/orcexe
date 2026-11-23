@@ -1,6 +1,5 @@
 """Validate the checked-in Actions workflows without third-party YAML tools."""
 
-from itertools import product
 from pathlib import Path
 import re
 import sys
@@ -56,25 +55,32 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertEqual(job['runs-on'], '${{ matrix.os }}')
         self.assertEqual(job['continue-on-error'], '${{ matrix.experimental }}')
         matrix = job['strategy']['matrix']
-        self.assertEqual(matrix['os'], ['ubuntu-latest', 'macos-latest', 'windows-latest'])
-        self.assertEqual(matrix['python'], ['3.9', '3.13'])
-        self.assertEqual(set(matrix), {'os', 'python', 'include'})
-        # Include adds flags to existing combinations, never an extra job.
-        entries = [dict(os=os, python=python)
-                   for os, python in product(matrix['os'], matrix['python'])]
-        for addition in matrix['include']:
-            matches = [entry for entry in entries if entry['os'] == addition['os']]
-            self.assertEqual(len(matches), 2)
-            self.assertEqual(set(addition), {'os', 'experimental'})
-            for entry in matches:
-                entry.update(addition)
-        self.assertEqual(len(entries), 6)
-        for entry in entries:
+        # T63b: explicit jobs; 3.9 only where the image provides it (setup-python
+        # cannot find 3.9 on ubuntu-latest 24.04), macOS 3.9 is the system Python.
+        self.assertEqual(set(matrix), {'include'})
+        self.assertEqual([(e['os'], e['python'], e['experimental'], e['system_python'])
+                          for e in matrix['include']], [
+            ('ubuntu-22.04', '3.9', False, False),
+            ('ubuntu-latest', '3.13', False, False),
+            ('macos-latest', '3.9', False, True),
+            ('macos-latest', '3.13', False, False),
+            ('windows-latest', '3.9', True, False),
+            ('windows-latest', '3.13', True, False)])
+        for entry in matrix['include']:
+            self.assertEqual(set(entry), {'os', 'python', 'experimental', 'system_python'})
             self.assertIs(entry['experimental'], entry['os'] == 'windows-latest')
-        self.assertEqual([step['run'] for step in job['steps'] if 'run' in step],
-                         ['python scripts/check_marketplace.py',
-                          'python tests/tools/run_tests.py'])
+            # Only macOS images ship /usr/bin/python3 3.9 (Command Line Tools).
+            self.assertIs(entry['system_python'],
+                          entry['os'].startswith('macos') and entry['python'] == '3.9')
+        self.assertEqual(job['env'], {
+            'PY': "${{ matrix.system_python && '/usr/bin/python3' || 'python' }}"})
+        self.assertEqual(job['steps'][1]['if'], '${{ !matrix.system_python }}')
         self.assertEqual(job['steps'][1]['with']['python-version'], '${{ matrix.python }}')
+        self.assertEqual([step['run'] for step in job['steps'] if 'run' in step], [
+            '${{ env.PY }} -c "import sys; v = \'%d.%d\' % sys.version_info[:2]; '
+            'print(sys.version); assert v == \'${{ matrix.python }}\', v"',
+            '${{ env.PY }} scripts/check_marketplace.py',
+            '${{ env.PY }} tests/tools/run_tests.py'])
 
     def test_triggers(self):
         triggers = self.workflows['ci.yml']['on']
@@ -93,7 +99,8 @@ class CIWorkflowTests(unittest.TestCase):
             'plugins/orcexe/src/orcexe/classify.py',
             'plugins/orcexe/src/orcexe/miniyaml.py'])
         job = slow['jobs']['slow']
-        self.assertEqual(job['runs-on'], 'ubuntu-latest')
+        # 3.9 is in the ubuntu-22.04 toolcache, not ubuntu-latest (T63b).
+        self.assertEqual(job['runs-on'], 'ubuntu-22.04')
         self.assertEqual(job['timeout-minutes'], 30)
         self.assertEqual(job['steps'][1]['with']['python-version'], '3.9')
         self.assertEqual(job['steps'][2]['run'],

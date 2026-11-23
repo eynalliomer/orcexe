@@ -9,28 +9,80 @@ import hashlib
 from pathlib import Path
 import stat
 
-from orcexe import proc
+from orcexe import proc, redact
 
 
 class GitError(RuntimeError):
-    """Git could not produce a complete, trustworthy observation."""
+    """Git could not produce a complete, trustworthy observation.
+
+    `reason` is the stable short message; `returncode` and `stderr_tail` (redacted,
+    home/repository paths replaced) make CI failures diagnosable (T63b).
+    """
+
+    def __init__(self, reason, returncode=None, stderr_tail=""):
+        message = reason
+        if returncode is not None:
+            message += " (exit {})".format(returncode)
+        if stderr_tail:
+            message += ": " + stderr_tail
+        super().__init__(message)
+        self.reason = reason
+        self.returncode = returncode
+        self.stderr_tail = stderr_tail
 
 
-def _git(path, *args, nul=False, allow_failure=False):
+# Bytes of git stderr kept by the runner; shorter tails may cut a message's start.
+_STDERR_BYTES = 4096
+# Characters of the redacted tail carried by GitError.
+_DIAGNOSTIC_CHARS = 240
+
+
+def _diagnostic(stderr, path):
+    """A short, single-line, redacted stderr tail without home or repository paths."""
+    text = redact.redact_text(stderr or "")
+    replacements = []
+    for value, label in ((path, "<path>"), (os.environ.get("HOME"), "~")):
+        if not value:
+            continue
+        candidates = {str(value)}
+        try:
+            candidates.add(str(Path(value).resolve()))
+        except (OSError, RuntimeError):
+            pass
+        replacements.extend((candidate, label) for candidate in candidates
+                            if len(candidate) > 1)
+    # Longest first: the repository path usually lives below the home path.
+    for value, label in sorted(replacements, key=lambda item: -len(item[0])):
+        text = text.replace(value, label)
+    text = " ".join(text.split())
+    if len(text) > _DIAGNOSTIC_CHARS:
+        text = "..." + text[-(_DIAGNOSTIC_CHARS - 3):]
+    return text
+
+
+def _environment():
     # No credentials, GIT_DIR/GIT_WORK_TREE overrides, global aliases or pagers.
+    # LC_ALL/LANG=C (and no inherited LANGUAGE) keep git messages untranslated.
     env = {key: os.environ[key] for key in
            ("PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "PATHEXT")
            if key in os.environ}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                GIT_CONFIG_SYSTEM=os.devnull, GIT_TERMINAL_PROMPT="0",
                GIT_OPTIONAL_LOCKS="0", LC_ALL="C", LANG="C")
+    return env
+
+
+def _git(path, *args, nul=False, allow_failure=False):
     lines = []
-    result = proc.run(["git", "--no-pager", *args], cwd=str(path), env=env,
-                      timeout_s=10, stall_s=10, on_line=lines.append)
+    result = proc.run(["git", "--no-pager", *args], cwd=str(path), env=_environment(),
+                      timeout_s=10, stall_s=10, on_line=lines.append,
+                      stderr_tail_bytes=_STDERR_BYTES)
     if (result.status != "exited" or result.truncated_lines or result.pipes_held):
-        raise GitError("Incomplete git observation: " + result.status)
+        raise GitError("Incomplete git observation: " + result.status, result.returncode,
+                       _diagnostic(result.stderr_tail, path))
     if result.returncode and not allow_failure:
-        raise GitError("Git {} failed (exit {})".format(args[0], result.returncode))
+        raise GitError("Git {} failed".format(args[0]), result.returncode,
+                       _diagnostic(result.stderr_tail, path))
     # proc delivers newline-free lines, including the final NUL-terminated
     # fragment at EOF. Restore embedded newlines, not the artificial last one.
     output = "\n".join(lines)
@@ -50,12 +102,37 @@ def resolve_repo_path(path):
         raise GitError("not a repository") from error
 
 
+# Ownership refusals are a distinct, fixable error, never "not a repository".
+_UNTRUSTED = ("dubious ownership", "safe.directory")
+# Discovery found no repository: plain, ceiling directories, filesystem boundary
+# (GIT_DISCOVERY_ACROSS_FILESYSTEM), or a gitfile naming a missing directory.
+_NOT_A_REPOSITORY = ("not a git repository", "stopping at filesystem boundary",
+                     "git_discovery_across_filesystem")
+# Only when the runner cut the start of stderr: the remaining discovery suffix.
+_CUT_SUFFIXES = ("git repository", "(or any of the parent directories)",
+                 "(or any parent up to mount point")
+
+
+def _not_a_repository(returncode, stderr, path):
+    """True for git's discovery failure; raise for anything else, including ownership."""
+    text = " ".join((stderr or "").lower().split())
+    if returncode == 128 and any(marker in text for marker in _UNTRUSTED):
+        raise GitError("Repository ownership is not trusted (safe.directory)", returncode,
+                       _diagnostic(stderr, path))
+    if returncode == 128:
+        if any(marker in text for marker in _NOT_A_REPOSITORY):
+            return True
+        cut = len((stderr or "").encode("utf-8")) >= _STDERR_BYTES
+        if cut and any(marker in text for marker in _CUT_SUFFIXES):
+            return True
+    raise GitError("Cannot determine whether path is a repository", returncode,
+                   _diagnostic(stderr, path))
+
+
 def is_repo(path):
     result, text = _git(path, "rev-parse", "--is-inside-work-tree", allow_failure=True)
     if result.returncode:
-        if result.returncode == 128 and "not a git repository" in result.stderr_tail:
-            return False
-        raise GitError("Cannot determine whether path is a repository")
+        return not _not_a_repository(result.returncode, result.stderr_tail, path)
     return text == "true"
 
 

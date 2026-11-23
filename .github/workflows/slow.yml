@@ -22,7 +22,8 @@ env:
 
 jobs:
   slow:
-    runs-on: ubuntu-latest
+    # 3.9 is in the ubuntu-22.04 toolcache, not in ubuntu-latest (24.04) (T63b).
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

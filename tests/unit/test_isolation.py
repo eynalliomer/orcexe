@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -42,19 +43,22 @@ class IsolationTests(unittest.TestCase):
 
     def test_real_sandbox_denies_outside_writes_including_children_and_symlinks(self):
         if isolation.backend() == 'none':
-            self.skipTest('OS sandbox unavailable (missing backend or host denies sandbox creation)')
+            # Measured, not assumed per platform: the probe creates a real sandbox (T63b).
+            self.skipTest('OS sandbox unavailable: ' + isolation.unavailable_reason())
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()
             checkout = root / 'checkout'
             checkout.mkdir()
             (checkout / 'escape').symlink_to(root, target_is_directory=True)
-            script = ('import os,sys,subprocess\nfrom pathlib import Path\n'
+            script = ('import errno,os,sys,subprocess\nfrom pathlib import Path\n'
                       'Path("inside").write_text("yes")\n'
                       'Path(os.environ["TMPDIR"],"scratch").write_text("yes")\n'
                       'assert os.environ["TMPDIR"] == os.environ["TEMP"] == os.environ["TMP"]\n'
                       'for target in [sys.argv[1], "escape/symlink-write"]:\n'
                       '    try: Path(target).write_text("no")\n'
-                      '    except PermissionError: pass\n'
+                      # Seatbelt denies with EPERM; a bwrap read-only bind gives EROFS.
+                      '    except OSError as error:\n'
+                      '        if error.errno not in (errno.EPERM, errno.EACCES, errno.EROFS): raise\n'
                       '    else: raise AssertionError("outside write succeeded")\n'
                       'child=subprocess.run([sys.executable,"-c",'
                       '"from pathlib import Path; Path("+repr(sys.argv[1])+ ").write_text(\'no\')"],capture_output=True)\n'
@@ -76,6 +80,73 @@ class IsolationTests(unittest.TestCase):
             self.assertIn('--unshare-net', argv)
             self.assertEqual(argv[-2:], ['--', 'runner'])
             self.assertEqual(argv.count('--bind'), 2)
+
+    def probe(self, platform, returncode=0, stderr=b'', which='/fake/bwrap', error=None):
+        isolation._probe.cache_clear()
+        self.addCleanup(isolation._probe.cache_clear)
+        done = mock.Mock(returncode=returncode, stderr=stderr)
+        with mock.patch.object(isolation.sys, 'platform', platform), \
+                mock.patch.object(isolation.shutil, 'which', return_value=which), \
+                mock.patch.object(isolation.os, 'access', return_value=platform == 'darwin'), \
+                mock.patch.object(isolation.subprocess, 'run', return_value=done,
+                                  side_effect=error) as run, \
+                mock.patch.dict(os.environ, {'ORCEXE_NO_SANDBOX': ''}):
+            return isolation.backend(), isolation.unavailable_reason(), run
+
+    def test_bwrap_probe_uses_the_run_sandbox_shape(self):
+        mode, reason, run = self.probe('linux')
+        self.assertEqual((mode, reason), ('bwrap', ''))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ['/fake/bwrap', '--die-with-parent', '--ro-bind', '/', '/'])
+        for flag in ('--dev', '--unshare-net', '--chdir'):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv.count('--bind'), 2)
+
+    def test_namespace_denied_by_host_reports_unavailable_with_reason(self):
+        # Ubuntu 24.04 AppArmor (unprivileged user namespaces restricted) and
+        # refused mounts make bwrap exit 1 before the command runs.
+        for stderr in (b'bwrap: setting up uid map: Permission denied\n',
+                       b'bwrap: No permissions to creating new namespace\n',
+                       b"bwrap: Can't mount devpts on /newroot/dev/pts: Permission denied\n"):
+            with self.subTest(stderr=stderr):
+                mode, reason, _ = self.probe('linux', 1, stderr)
+                self.assertEqual(mode, 'none')
+                self.assertIn('bwrap cannot create a sandbox on this host (exit 1)', reason)
+                self.assertIn(stderr.decode().split(':', 1)[1].strip()[:20], reason)
+        mode, reason, _ = self.probe('linux', error=subprocess.TimeoutExpired('bwrap', 5))
+        self.assertEqual((mode, reason), ('none', 'bwrap probe failed: TimeoutExpired'))
+        mode, reason, run = self.probe('linux', which=None)
+        self.assertEqual(mode, 'none')
+        self.assertIn('no OS sandbox backend', reason)
+        run.assert_not_called()
+
+    def test_seatbelt_probe_uses_the_run_profile(self):
+        mode, reason, run = self.probe('darwin')
+        self.assertEqual((mode, reason), ('seatbelt', ''))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ['/usr/bin/sandbox-exec', '-p'])
+        self.assertIn('(deny file-write*)', argv[2])
+
+    def test_bwrap_setup_failure_at_run_time_records_unavailable(self):
+        refused = isolation.proc.ProcResult('exited', 1, 0.0, 0, 0, 0,
+                                            'bwrap: setting up uid map: Permission denied\n',
+                                            False, None)
+        child_failed = isolation.proc.ProcResult('exited', 1, 0.0, 0, 0, 0, 'Traceback ...\n',
+                                                 False, None)
+        for result, expected in ((refused, 'none'), (child_failed, 'bwrap')):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as raw, \
+                    mock.patch.object(isolation, 'backend', return_value='bwrap'), \
+                    mock.patch.object(isolation.shutil, 'which', return_value='/fake/bwrap'), \
+                    mock.patch.object(isolation, 'verify'), \
+                    mock.patch.object(isolation, 'snapshot', return_value={}), \
+                    mock.patch.object(isolation.proc, 'run', return_value=result):
+                session = isolation.Session(raw)
+                token = isolation._active.set(session)
+                try:
+                    self.assertIs(isolation.run(['runner'], cwd=raw, env={}), result)
+                finally:
+                    isolation._active.reset(token)
+                self.assertEqual(session.mode, expected)
 
 
 class TaskIsolationTests(TaskFixture):

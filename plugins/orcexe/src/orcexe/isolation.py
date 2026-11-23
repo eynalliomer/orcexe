@@ -36,21 +36,55 @@ def backend():
     return _available_backend()
 
 
-@lru_cache(maxsize=1)
 def _available_backend():
-    command, mode = None, 'none'
-    if sys.platform == 'darwin' and os.access('/usr/bin/sandbox-exec', os.X_OK):
-        command, mode = ['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true'], 'seatbelt'
-    elif sys.platform.startswith('linux') and shutil.which('bwrap'):
-        command, mode = [shutil.which('bwrap'), '--ro-bind', '/', '/', '--unshare-net', '--', '/usr/bin/true'], 'bwrap'
-    if command:
+    return _probe()[0]
+
+
+def unavailable_reason():
+    """Why no OS sandbox is available on this host ('' when one is)."""
+    if os.environ.get('ORCEXE_NO_SANDBOX') == '1':
+        return 'ORCEXE_NO_SANDBOX=1'
+    return _probe()[1]
+
+
+def _bwrap_argv(bwrap, checkout, temporary):
+    return [bwrap, '--die-with-parent', '--ro-bind', '/', '/',
+            '--bind', str(checkout), str(checkout), '--bind', str(temporary), str(temporary),
+            '--dev', '/dev', '--unshare-net', '--chdir', str(checkout), '--']
+
+
+def _bwrap_setup_failed(result):
+    # bwrap reports its own setup errors (user namespace denied, e.g. by Ubuntu
+    # 24.04 AppArmor, or a mount refused) as "bwrap: ..." with exit 1 before the
+    # command starts. A child forging this only downgrades evidence to 'none'.
+    return (result.status == 'exited' and result.returncode == 1
+            and result.stderr_tail.lstrip().startswith('bwrap:'))
+
+
+@lru_cache(maxsize=1)
+def _probe():
+    """Create a sandbox shaped like `run` uses; any refusal means 'none' (T63b)."""
+    mode, command = None, None
+    with tempfile.TemporaryDirectory(prefix='orcexe-probe-') as raw:
+        scratch = Path(raw).resolve()
+        if sys.platform == 'darwin' and os.access('/usr/bin/sandbox-exec', os.X_OK):
+            mode = 'seatbelt'
+            command = ['/usr/bin/sandbox-exec', '-p', profile(scratch, scratch), '/usr/bin/true']
+        elif sys.platform.startswith('linux') and shutil.which('bwrap'):
+            mode = 'bwrap'
+            command = _bwrap_argv(shutil.which('bwrap'), scratch, scratch) + ['/usr/bin/true']
+        if command is None:
+            return 'none', 'no OS sandbox backend (sandbox-exec or bwrap) on this host'
         try:
-            if subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, env=child_env()[0], timeout=5).returncode == 0:
-                return mode
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return 'none'
+            done = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE, env=child_env()[0], timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return 'none', '{} probe failed: {}'.format(mode, type(error).__name__)
+    if done.returncode == 0:
+        return mode, ''
+    detail = ' '.join(done.stderr.decode('utf-8', 'replace').split())[-200:]
+    return 'none', '{} cannot create a sandbox on this host (exit {}): {}'.format(
+        mode, done.returncode, detail or 'no stderr')
 
 
 def _quote(path):
@@ -189,11 +223,13 @@ def run(argv, *, cwd, env, **kwargs):
         if mode == 'seatbelt':
             command = ['/usr/bin/sandbox-exec', '-p', profile(checkout, temporary)] + command
         elif mode == 'bwrap':
-            command = [shutil.which('bwrap'), '--die-with-parent', '--ro-bind', '/', '/',
-                       '--bind', str(checkout), str(checkout), '--bind', str(temporary), str(temporary),
-                       '--dev', '/dev', '--unshare-net', '--chdir', str(checkout), '--'] + command
+            command = _bwrap_argv(shutil.which('bwrap'), checkout, temporary) + command
         try:
-            return proc.run(command, cwd=str(checkout), env=environment, **kwargs)
+            result = proc.run(command, cwd=str(checkout), env=environment, **kwargs)
+            if session is not None and mode == 'bwrap' and _bwrap_setup_failed(result):
+                # The command never ran sandboxed: record unavailable, never bwrap.
+                session.used.append('none')
+            return result
         finally:
             if session is not None:
                 try:

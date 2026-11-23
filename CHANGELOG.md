@@ -1,5 +1,43 @@
 ## Unreleased
 
+### T63b — diagnosable CI failures, CI-only breaks fixed (C15)
+
+- `gitutil.GitError` carries `reason`, the git `returncode` and a short (≤240 chars), single-line,
+  redacted `stderr_tail` with the repository path shown as `<path>` and the home directory as `~`;
+  its text is `reason (exit N): tail`. `orcexe run` now prints `GitError: <that text>` instead of a
+  bare `GitError`. The git runner keeps a 4 KiB stderr tail; git children keep `LC_ALL=C`/`LANG=C`
+  and inherit no `LANGUAGE`.
+- `is_repo` returns False only for exit 128 with git's discovery failure: `not a git repository`
+  anywhere in stderr (case and line wrapping ignored; plain, ceiling directories, a gitfile naming a
+  missing directory), `Stopping at filesystem boundary` / `GIT_DISCOVERY_ACROSS_FILESYSTEM`, or —
+  only when the tail filled the 4 KiB cap — the discovery suffix (`git repository`, `(or any of the
+  parent directories)`, `(or any parent up to mount point`). Warnings before the fatal line (e.g. an
+  unreadable home config dir) do not matter. `dubious ownership` / `safe.directory` raise
+  `GitError("Repository ownership is not trusted (safe.directory)")`, never "not a repository";
+  anything else raises `Cannot determine whether path is a repository (exit N): tail`.
+- Isolation probe: the backend check now creates a sandbox of the same shape `run` uses (bwrap:
+  `--die-with-parent`, read-only root, two binds, `--dev /dev`, `--unshare-net`, `--chdir`; seatbelt:
+  the real profile). A refusal (user namespace denied, e.g. Ubuntu 24.04 AppArmor; mount refused;
+  timeout) means backend `none` → `isolation_unavailable`, and `isolation.unavailable_reason()` names
+  the cause (exit code and bwrap's stderr). At run time a bwrap setup failure (`exit 1`, stderr
+  starting `bwrap:`) records `none` for the session, so it is never counted as sandboxed. The
+  security spawn inventory names `isolation._probe` instead of `_available_backend`.
+- `test_real_sandbox_denies_outside_writes_including_children_and_symlinks` skips with
+  `OS sandbox unavailable: <reason>` from the probe (measured, not per platform), and accepts
+  `EROFS` as well as `EPERM`/`EACCES`: under bwrap a write to the read-only root bind fails with
+  `EROFS`, which the earlier `except PermissionError` let escape as exit 1. Whether CI's Ubuntu
+  host also denies the namespace: GÖRÜLMEDİ (not measured here; the next CI run's skip reason or
+  pass shows it).
+- CI: Python 3.9 runs on `ubuntu-22.04` (setup-python toolcache) and on `macos-latest` with the
+  image's own `/usr/bin/python3` (Command Line Tools 3.9.6, setup-python skipped); 3.13 stays on
+  `ubuntu-latest` / `macos-latest`; Windows stays experimental for both. A first step asserts the
+  interpreter's major.minor matches the matrix. The slow workflow runs 3.9 on `ubuntu-22.04`.
+  Actions stay pinned by SHA. The image contents are taken from their documentation, not checked
+  online.
+- Tests: `tests/unit/test_gitutil.py` `FakeGitStderrTests` (every variant above with fake stderr,
+  cut tail, ownership, diagnostics redaction/path stripping); `tests/unit/test_isolation.py` probe
+  shape, namespace-denied reasons, timeout/missing backend, run-time setup failure.
+
 ### T62 — case-set runner for real-world failure cases (C35)
 
 - `python3 tests/tools/run_cases.py CASES_DIR [--json] [--keep DIR]` runs every `case.json`

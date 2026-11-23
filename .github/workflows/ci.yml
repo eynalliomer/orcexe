@@ -36,19 +36,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.9", "3.13"]
+        # T63b: actions/setup-python no longer finds 3.9 on ubuntu-latest (24.04).
+        # 3.9 runs where the image itself provides it: the ubuntu-22.04 toolcache,
+        # and macOS's own /usr/bin/python3 (Command Line Tools Python 3.9.6, the
+        # interpreter developers run locally), so no 3.9 download is needed.
         include:
-          - os: ubuntu-latest
-            experimental: false
-          - os: macos-latest
-            experimental: false
-          - os: windows-latest
-            experimental: true
+          - {os: ubuntu-22.04, python: "3.9", experimental: false, system_python: false}
+          - {os: ubuntu-latest, python: "3.13", experimental: false, system_python: false}
+          - {os: macos-latest, python: "3.9", experimental: false, system_python: true}
+          - {os: macos-latest, python: "3.13", experimental: false, system_python: false}
+          - {os: windows-latest, python: "3.9", experimental: true, system_python: false}
+          - {os: windows-latest, python: "3.13", experimental: true, system_python: false}
+    env:
+      PY: ${{ matrix.system_python && '/usr/bin/python3' || 'python' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: ${{ !matrix.system_python }}
         with:
           python-version: ${{ matrix.python }}
-      - run: python scripts/check_marketplace.py
-      - run: python tests/tools/run_tests.py
+      # Fail early if the runner gave a different interpreter than the matrix names.
+      - run: ${{ env.PY }} -c "import sys; v = '%d.%d' % sys.version_info[:2]; print(sys.version); assert v == '${{ matrix.python }}', v"
+      - run: ${{ env.PY }} scripts/check_marketplace.py
+      - run: ${{ env.PY }} tests/tools/run_tests.py
