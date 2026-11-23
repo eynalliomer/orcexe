@@ -183,6 +183,21 @@ class PlanChecks(unittest.TestCase):
         self.assertEqual(planning.task_lane(task(), p)[0], 'fast')
         self.assertEqual(planning.task_lane(task(files={'allow': ['src/auth/new.py']}), project())[0], 'risky')
 
+    def test_lane_v2_done_and_notes_raise_with_field_basis(self):
+        # T58: every task's lane comes from goal + done + notes (lane.v2).
+        lane, basis = planning.task_lane(task(done=['The spelling is corrected.',
+                                                    'The branch is pushed to origin.']), project())
+        self.assertEqual(lane, 'risky')
+        self.assertIn('cli:done[1]:A8:pushed', basis)
+        lane, basis = planning.task_lane(task(notes='Cleanup uses shutil.rmtree(path).'), project())
+        self.assertEqual(lane, 'risky')
+        self.assertIn('cli:notes:A2:shutil.rmtree', basis)
+        lane, basis = planning.task_lane(task(goal='Count fixes in fix_commits'), project())
+        self.assertEqual(lane, 'risky')
+        self.assertIn('cli:goal:outward_action:commit', basis)
+        self.assertEqual(planning.task_lane(task(), project())[0], 'fast')
+        self.assertEqual(planning.task_lane(task(notes='Remove the stale draft.'), project())[0], 'standard')
+
     def test_documented_p3_violations_match_constants(self):
         tables = []
         for path in (ROOT / 'README.md', ROOT / 'plugins/orcexe/skills/orcexe/SKILL.md'):
@@ -268,6 +283,15 @@ class PlanCLI(GitFixture):
         self.assertNotIn('That is all', published)
         brief = next((self.home / 'state/runs').glob('*/brief-source.md')).read_text()
         self.assertIn('no text before or after it', brief)
+
+    def test_plan_records_classifier_version_bound_by_digest(self):
+        from orcexe import classify
+        result = self.proposed()
+        self.assertEqual(result['classifier'], classify.CLASSIFIER_VERSION)
+        self.assertEqual(result['classifier'], 'lane.v2')
+        self.assertEqual(fsio.read_json(self.state / 'plan.json')['classifier'], 'lane.v2')
+        changed = dict(result, classifier='lane.v1')
+        self.assertNotEqual(planning.content_sha256(changed), result['content_sha256'])
 
     def test_state_dir_inside_repository_is_reported_without_model_call_or_plan(self):
         for inside in (self.main / 'state-inside', self.main / 'deep/er/state', self.main):

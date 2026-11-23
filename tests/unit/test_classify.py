@@ -715,7 +715,9 @@ class RiskMapTests(GitFixture):
             result = classify_repo(str(self.main), "Fix README.md")
             self.assertEqual(result.lane, "standard")
             self.assertIn("risk_map_invalid", {s.id for s in result.signals})
-            self.assertEqual(classify_repo(str(self.main), "auth README.md").lane, "standard")
+            # T58 (P1-3): an unusable map never lowers a text-derived lane
+            # (this asserted "standard" before T58).
+            self.assertEqual(classify_repo(str(self.main), "auth README.md").lane, "risky")
             self.write_map("version: [\n")
             self.assertEqual(classify_repo(str(self.main), "Fix README.md").lane, "standard")
             self.assertEqual(classify_repo(str(self.home), "Help me").mode, "everyday")

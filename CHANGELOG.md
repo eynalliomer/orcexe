@@ -1,5 +1,38 @@
 ## Unreleased
 
+### T58 — lane classifier v2: goal + done + notes, the lane only rises; a broken risk map never lowers
+
+- `classify.task_lane(goal, done, notes, files)` (T57 r2 §1.2, decision 027 Ş1). The goal keeps
+  every `classify()` rule (union), so `lane_v2 >= lane_v1` for every goal; K-2 narrows identifier
+  hiding: a stem is hidden only by an identifier that resolves to a tracked file (full path or
+  basename with extension, `:line` suffixes dropped) outside call context (a run verb anywhere in
+  the sentence, a `(`, or a `.sh .bash .zsh .ps1 .bat .cmd` extension). Dotted names hide only the
+  tracked `.py` module part; `word(s)`, `word(es)` and `word(1)` are words, not calls (F10, P2-4).
+- Action-shape rules A1–A8 apply to every field: command spans (spaced backticks, double
+  backticks, fences; no length or `. ` exception), calls, command names, EN/TR imperatives,
+  run verb + outward part, hard destructive words (`rm rmtree rmdir unlink shred mkfs truncate
+  purge wipe erase`, `reset --hard`, `git clean`, `drop table`, `delete from`, `yok et`,
+  `find … -delete`), uppercase HTTP methods, and directed verb forms ("is pushed to origin").
+  Done items and notes add the narrow exact-word risk subset (K-4); other risk words are recorded
+  as information only, soft destructive words keep `standard`, and only the goal can yield fast.
+  Words from a project's `risk-map.yaml` also raise in done/notes.
+- Signals name their field (`goal:A2`, `done[1]:A8`, `notes:K4`, `notes:risk_word`);
+  `lane_basis` lines become `cli:done[1]:A8:pushed` etc. Today's goal signals keep their ids.
+- `classify.CLASSIFIER_VERSION = "lane.v2"`; `orcexe plan` computes every task lane with
+  `task_lane` (via `task_lane_repo`) and records `"classifier": "lane.v2"` in the plan (bound by
+  `content_sha256`). The version check at approval/dispatch is T59.
+- P1-3: `_blocked` no longer lowers a text-derived `risky` to `standard` when
+  `.orcexe/risk-map.yaml` is unusable (corrupt, wrong type, unknown key, unsupported version,
+  dangling symlink, unreadable; `TypeError`/`RecursionError` are now caught too); every unusable
+  input floors the lane at `standard` and never yields fast. `test_classify` previously asserted
+  `standard` for `auth README.md` with a broken map; it now asserts `risky`.
+- Deviation: the interpreter names `sh bash zsh node npx` in the run-verb list match whole words
+  only (as prefixes, `sh` turned every "should"/"show" sentence into call context).
+- Tests: `test_classify_v2` (every A-rule in done and notes, quiet twins, the P2-4 nine, call
+  forms, dotted names, F10 nouns, uppercase/Turkish inflections, backtick rules, risk-map floors,
+  and the `lane_v2 >= lane_v1` differential over today's test texts); `test_planning` field basis
+  and recorded classifier version.
+
 ### T55 — ledger authority: writes during a run are tamper, a CAS head ref, a repairable tail
 
 - P2-2: new `runguard.Guard` observes, before and after every external model run, the ledger

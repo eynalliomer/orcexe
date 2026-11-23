@@ -25,7 +25,7 @@ def repository_areas(repo=None, project=None):
     try:
         local = classify.repository_risk_map(repo) if repo is not None else classify.RiskMap()
         areas.extend(RiskArea(p, 'cli:risk_path:' + p) for p in local.risky_paths)
-    except (ValueError, OSError):
+    except classify._RISK_MAP_ERRORS:
         areas.append(RiskArea(None, 'cli:risk_map_invalid:unavailable', 'standard'))
     try:
         if project is None:

@@ -449,6 +449,31 @@ raise the lane to risky. An unusable risk/do-not-touch glob conservatively raise
 the lane and records `cli:risk_glob_unusable:<glob>` in `lane_basis`.
 The Markdown approval form shows each task's lane basis, including the risk class
 and area or do-not-touch area that raised its lane.
+
+Plan lanes use classifier `lane.v2`, recorded as `"classifier": "lane.v2"` in
+`plan.json` (bound by `content_sha256`). The goal keeps every `do` rule, so no
+goal gets a lower lane than `do` gives it; in addition an identifier hides an
+action word only when it names a tracked file (full path or file name with
+extension) and the sentence does not run it (`run`, `execute`, `launch`,
+`python`, `çalıştır`…, a `(` or a `.sh`-style extension). Dotted names hide only
+their tracked module part (`gitutil.push` still says `push`), and `commit(s)` or
+`curl(1)` are words, not calls. Each done item and the notes are classified too,
+and the task lane is the highest of the fields: action shapes (spaced backticks
+and fences as commands, calls such as `os.remove(` or `requests.put(`, command
+names such as `curl` or `git push`, imperatives, run-verb sentences, hard
+destructive words such as `rmtree` or `rm`, uppercase HTTP methods, and state
+sentences such as "is pushed to origin" or "dalı origin'e gönder") make a task
+risky; a narrow set of exact risk words (`password`, `secret`, `payment`,
+`migration`, `production`, `şifre`…) raises too, while other risk words are
+only recorded. Soft destructive words (`remove`, `sil`…) keep standard. Basis
+lines name their field: `cli:goal:A2:git.push`, `cli:done[1]:A8:pushed`,
+`cli:notes:risk_word:token`. Only the goal can produce fast. An unusable
+`risk-map.yaml` (corrupt, wrong type, unknown key, unsupported version, dangling
+symlink, unreadable) never lowers a text-derived lane and never gives fast.
+The classifier is a word list, not an understanding of intent: actions it has
+no word for (`aws s3 sync`, `pip install`, `vercel --prod`, `npm run ship`, a
+pull request or Slack message, turning off TLS checks, `subprocess.run(cmd)`
+with a variable) are not recognized and stay standard.
 One access snapshot routes every task through the
 `executor` stage. No eligible executor leaves `route.tool: null` and its reason;
 it does not reject the plan. Routes include tool, model, effort, confidence and basis.

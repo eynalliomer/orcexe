@@ -181,8 +181,10 @@ def clean_tasks(tasks, clean):
 def task_lane(task, project, repo=None):
     allowed = task['files']['allow']
     files = sorted({path for pattern in allowed for path in expand(pattern)})
-    classified = (classify.classify_repo(str(repo), task['goal']) if repo is not None
-                  else classify.classify(task['goal'], files))
+    # lane.v2: goal + done + notes; the result is the field maximum.
+    done, notes = task['done'], task.get('notes', '')
+    classified = (classify.task_lane_repo(str(repo), task['goal'], done, notes) if repo is not None
+                  else classify.task_lane(task['goal'], done, notes, files))
     cli_lane = classified.lane
     areas = risk_areas.repository_areas(repo, project)
     scopes = allowed + [area.pattern for area in areas if area.pattern is not None]
@@ -533,7 +535,8 @@ def _plan_command(args):
                 task['route'] = route.route('executor', task['lane'], access, roles)
             mark_lanes(tasks)
             step = 'build_plan'
-            result = dict(schema='orcexe.plan.v1', head=head,
+            # Recorded (and bound by content_sha256); checked at dispatch by T59.
+            result = dict(schema='orcexe.plan.v1', head=head, classifier=classify.CLASSIFIER_VERSION,
                           goal=form['goal'], status='proposed', decisions=sorted(used),
                           assumptions=form['assumptions'], tasks=tasks)
             result['content_sha256'] = content_sha256(result)

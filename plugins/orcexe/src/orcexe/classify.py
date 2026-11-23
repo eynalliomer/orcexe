@@ -558,12 +558,466 @@ def classify(task: str, files: Sequence[str] | None,
                           tuple(sorted(signals, key=lambda s: (s.id, s.detail))))
 
 
+# --------------------------------------------------------------------------
+# lane.v2 (T58): goal + done + notes, the lane only rises.
+#
+# Normative source: T57 lane design r2 §1.2 and decision 027 Ş1. classify()
+# above is lane.v1 and stays unchanged; task_lane() is its union with:
+#   K-2  goal identifiers hide an action stem only when they resolve to a
+#        tracked file (full path or basename with extension) outside call
+#        context; dotted names hide only their tracked .py module part.
+#   K-3  action-shape rules A1-A8, in every field.
+#   K-4  done/notes: a narrow exact-word risk subset raises; other risk words
+#        are informational.
+# Fast is produced only by the goal (v1); done/notes can only raise.
+
+CLASSIFIER_VERSION = "lane.v2"
+
+
+def _folded(text):
+    return tuple(_fold(word) for word in text.split())
+
+
+_A_VERBS = _folded("push publish deploy commit merge rebase tag upload send email mail post")
+_A_TOOLS = _folded("curl wget ssh scp rsync kubectl terraform helm twine gh")
+_A_HARD = _folded("rm rmtree rmdir unlink shred mkfs truncate purge wipe erase")
+_A_SOFT = _folded("delete remove drop sil kaldır temizle boşalt")
+_A_CALL_EXTRA = _folded("put patch delete remove urlopen sendmail create_connection")
+_A_NET = frozenset(_folded("requests httpx urllib aiohttp smtplib socket boto3 paramiko ftplib"))
+_A_GIT = frozenset(_folded("push commit tag merge rebase reset clean"))
+_A_PAIRS = (("docker", "push"), ("npm", "publish"), ("pip", "upload"), ("force", "push"))
+_RUN_VERBS = _folded("""run execut exec call invok launch start trigger spawn schedul
+source python çalıştır koş başlat tetikle""")
+# Interpreter names match as whole words: as prefixes, sh would make every
+# "should"/"show"/"share" sentence a call context.
+_RUN_WORDS = frozenset(_folded("sh bash zsh node nodejs npx"))
+_CALL_EXTENSIONS = (".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd")
+_A4_LEADS = frozenset(_folded("also finally please then and afterwards next now"))
+_A4_VERBS = frozenset(_A_VERBS)
+_A4_TR = _folded("gönder yayınla yükle paylaş birleştir pushla commitle")
+_A4_TR_NEXT = frozenset(_folded("ve sonra"))
+_A8_TARGETS = frozenset(_folded("to into onto"))
+
+
+def _inflections(verbs):
+    forms = set()
+    for verb in verbs:
+        forms.update(verb + suffix for suffix in ("s", "es", "ed", "d", "ing"))
+        if verb.endswith("e"):
+            forms.add(verb[:-1] + "ing")
+        if verb.endswith("t"):
+            forms.update((verb + "ted", verb + "ting"))
+    return forms
+
+
+_A8_FORMS = frozenset(_inflections(_folded(
+    "push publish upload deploy send email mail merge rebase commit")) | {"sent"})
+# Outward words for part scans: stem prefix or a known inflection (merging).
+_OUTWARD_FORMS = _A8_FORMS | _inflections(_A_VERBS)
+
+
+def _plurals(nouns):
+    forms = set(nouns)
+    for noun in nouns:
+        forms.update((noun + "s", noun + "es"))
+        if noun.endswith("y"):
+            forms.add(noun[:-1] + "ies")
+    return forms
+
+
+_A8_NOUNS = frozenset(_plurals(_folded(
+    "branch tag commit package wheel release image changes report email message summary artifact")))
+_NARROW_RISK = frozenset(_folded("""auth login oauth sso password secret credential apikey
+payment billing invoice stripe migration production encrypt pii gdpr kvkk"""))
+_NARROW_RISK_PREFIX = _folded("şifre parola ödeme fatura")
+
+_PLURAL_CALL = re.compile(r"(?<=[^\W_])\((?:s|es|\d+)\)", re.UNICODE | re.IGNORECASE)
+_FENCE = re.compile(r"(`{3,})(.*?)\1", re.S)
+_DOUBLE = re.compile(r"``(.+?)``", re.S)
+_SINGLE = re.compile(r"`([^`]+)`")
+_BULLET = re.compile(r"^\s*(?:(?:[-*+•]|\d+[.)]|\[[ xX]\])\s+)+")
+# A chained call (x(...).sendmail() keeps its own name after the ").".
+_CALLS = re.compile(r"(?:(?<![\w.])|(?<=\)\.))([^\W\d][\w]*(?:\.[^\W\d][\w]*)*)\(", re.UNICODE)
+_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"|“([^”]*)”|‘([^’]*)’")
+_HTTP = re.compile(r"(?<![A-Za-z0-9_])(POST|PUT|PATCH|DELETE)(?![A-Za-z0-9_])")
+_LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?$")
+_SENTENCE_END = ".;!?"
+_CLOSERS = "\"'’”)]}*_"
+
+
+@dataclass(frozen=True)
+class _Index:
+    paths: frozenset
+    basenames: frozenset
+
+
+def _index(files):
+    paths, basenames = set(), set()
+    for path in files or ():
+        if isinstance(path, str) and path and "\0" not in path:
+            key = globs.path_key(path)
+            paths.add(key)
+            basenames.add(key.rsplit("/", 1)[-1])
+    return _Index(frozenset(paths), frozenset(basenames))
+
+
+def _pieces(text):
+    """K-1: fences, then double, then single backticks; odd leftovers are prose."""
+    out = []
+
+    def singles(raw):
+        if raw.count("`") % 2:
+            out.append(("prose", raw.replace("`", " ")))
+            return
+        for i, part in enumerate(_SINGLE.split(raw)):
+            if i % 2:
+                out.append(("cmd" if any(c.isspace() for c in part) else "code", part))
+            elif part:
+                out.append(("prose", part))
+
+    def doubles(raw):
+        last = 0
+        for match in _DOUBLE.finditer(raw):
+            singles(raw[last:match.start()])
+            part = match.group(1).strip()
+            out.append(("cmd" if any(c.isspace() for c in part) else "code", part))
+            last = match.end()
+        singles(raw[last:])
+
+    last = 0
+    for match in _FENCE.finditer(text):
+        doubles(text[last:match.start()])
+        out.append(("fence", match.group(2)))
+        last = match.end()
+    doubles(text[last:])
+    return out
+
+
+def _sentences(text):
+    """Split one field into sentences of (kind, raw) tokens."""
+    sentences, current = [], []
+    line_start = True
+
+    def close():
+        if current:
+            sentences.append(list(current))
+            current.clear()
+
+    for kind, raw in _pieces(text):
+        if kind == "fence":
+            close()
+            sentences.append([("cmd", raw)])
+            line_start = False
+            continue
+        if kind != "prose":
+            current.append((kind, raw))
+            line_start = False
+            continue
+        lines = raw.split("\n")
+        for n, line in enumerate(lines):
+            if n:
+                close()
+                line_start = True
+            if line_start:
+                line = _BULLET.sub("", line)
+            for chunk in line.split():
+                current.append(("prose", chunk))
+                if chunk.rstrip(_CLOSERS)[-1:] in _SENTENCE_END:
+                    close()
+            if line.strip():
+                line_start = False
+    close()
+    return sentences
+
+
+def _identifier_chunk(chunk):
+    core = chunk.strip(_EDGE)
+    return bool(core) and bool(_IDENTIFIER_SHAPE.search(core) or _CALL.search(chunk) or _camel(core))
+
+
+def _resolved(core, index):
+    """K-2 (ii): full tracked path, or tracked basename with an extension."""
+    while core.startswith("./"):
+        core = core[2:]
+    core = _LINE_SUFFIX.sub("", core)
+    if not core:
+        return False
+    key = globs.path_key(core)
+    if key in index.paths:
+        return True
+    name = key.rsplit("/", 1)[-1]
+    return "/" not in key and "." in name.strip(".") and key in index.basenames
+
+
+def _exposed(core, chunk, context, index):
+    """Identifier parts an action stem may come from (empty = hidden)."""
+    called = context or "(" in chunk or _fold(core).endswith(_CALL_EXTENSIONS)
+    if not called and _resolved(core, index):
+        return [], []
+    if not called and "/" not in core and "." in core:
+        components = core.split(".")
+        kept = [c for c in components if globs.path_key(c + ".py") not in index.basenames]
+        if len(kept) < len(components):
+            core = " ".join(kept)
+    return _words(core), _camel_words(core)
+
+
+def _starts(word, stems):
+    return any(word.startswith(stem) for stem in stems)
+
+
+def _outward_word(word):
+    return _starts(word, _A_VERBS) or word in _OUTWARD_FORMS
+
+
+def _command_hits(text):
+    """A1 over a command span (and A2's quoted arguments)."""
+    folded = _fold(text)
+    words = _words(text)
+    hits = set()
+    for word in words:
+        if _starts(word, _A_VERBS + _A_TOOLS + _A_HARD) or word in _OUTWARD_FORMS:
+            hits.add(word[:40])
+    for first, second in (("drop", "table"), ("alter", "table")):
+        if any(a == first and b.startswith(second) for a, b in zip(words, words[1:])):
+            hits.add(first + " " + second)
+    if "grant" in words and "on" in words[words.index("grant") + 1:]:
+        hits.add("grant … on")
+    raw = folded.split()
+    if "-delete" in raw:
+        hits.add("-delete")
+    hits.update(_hard_phrases(words, folded))
+    return hits
+
+
+def _hard_phrases(words, folded):
+    hits = set()
+    if re.search(r"\breset\s+--hard\b", folded):
+        hits.add("reset --hard")
+    pairs = list(zip(words, words[1:]))
+    for first, second in (("git", "clean"), ("drop", "table"), ("delete", "from")):
+        if (first, second) in pairs:
+            hits.add(first + " " + second)
+    if any(a == "yok" and b.startswith("et") for a, b in pairs):
+        hits.add("yok et")
+    if "find" in words and "-delete" in folded.split():
+        hits.add("find … -delete")
+    return hits
+
+
+def _call_hits(text):
+    """A2: call shapes plus their quoted arguments, scanned like A1."""
+    hits = set()
+    for match in _CALLS.finditer(text):
+        components = [_fold(c) for c in match.group(1).split(".")]
+        last, first = components[-1], components[0]
+        if (_starts(last, _A_VERBS + _A_HARD + _A_CALL_EXTRA) or last in _OUTWARD_FORMS
+                or first in _A_TOOLS or first in _A_NET):
+            hits.add(".".join(components)[:60])
+        depth, end = 0, len(text)
+        for i in range(match.end() - 1, len(text)):
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            if depth == 0:
+                end = i
+                break
+        quoted = " ".join(next(g for g in m.groups() if g is not None)
+                          for m in _QUOTED.finditer(text[match.end():end]))
+        if quoted.strip():
+            hits.update(_command_hits(quoted))
+    return hits
+
+
+def _call_names(text):
+    return [_fold(c) for m in _CALLS.finditer(text) for c in m.group(1).split(".")]
+
+
+def _field_signals(field, text, index, risk_map, goal):
+    """Signals of one field; ids are '<field>:<rule>', details are stems only."""
+    signals = set()
+
+    def add(rule, detail):
+        detail = "".join(c if c.isprintable() else "?" for c in str(detail))[:200]
+        signals.add(Signal(field + ":" + rule, detail))
+
+    text = _PLURAL_CALL.sub("", _visible(text))
+    for match in _HTTP.finditer(text):
+        add("A7", match.group(1))
+    for hit in _call_hits(text):
+        add("A2", hit)
+    for sentence in _sentences(text):
+        raw = " ".join(t for _, t in sentence)
+        prose, stream, commands = [], [], []
+        for kind, token in sentence:
+            if kind == "prose" and not _identifier_chunk(token):
+                words = _words(token)
+                prose.extend(words)
+                stream.extend(("w", w) for w in words)
+            elif kind == "cmd":
+                commands.append(token)
+                stream.append(("cmd", ""))
+            else:
+                stream.append(("id", ""))
+        context = any(_starts(w, _RUN_VERBS) or w in _RUN_WORDS
+                      for w in prose + _call_names(raw))
+        exposed, identifiers = [], []
+        for kind, token in sentence:
+            if kind == "code" or (kind == "prose" and _identifier_chunk(token)):
+                core = token if kind == "code" else token.strip(_EDGE)
+                plain, camel = _exposed(core, token, context, index)
+                exposed.extend(plain)
+                identifiers.append(plain)
+                identifiers.append(camel)
+            elif kind == "prose":
+                exposed.extend(_words(token))
+        camel_parts = [w for parts in identifiers for w in parts]
+        command_words = [w for c in commands for w in _words(c)]
+        everything = exposed + camel_parts + command_words
+
+        # A1: command spans.
+        for command in commands:
+            for hit in _command_hits(command):
+                add("A1", hit)
+        # A3: command names (exact words / phrases); hidden tracked paths are out.
+        for word in exposed + camel_parts:
+            if word in _A_TOOLS:
+                add("A3", word)
+        pairs = set(zip(exposed, exposed[1:]))
+        for first, second in pairs:
+            if first == "git" and second in _A_GIT:
+                add("A3", "git " + second)
+        for pair in _A_PAIRS:
+            if pair in pairs:
+                add("A3", " ".join(pair))
+        # A4: imperative at sentence start (after optional leads) or after a lead.
+        words = [w for k, w in stream]
+        position = 0
+        while position < len(stream) and stream[position][0] == "w" and words[position] in _A4_LEADS:
+            position += 1
+        if position < len(stream) and stream[position][0] == "w" and words[position] in _A4_VERBS:
+            add("A4", words[position])
+        for i in range(1, len(stream)):
+            if (stream[i][0] == "w" and words[i] in _A4_VERBS
+                    and stream[i - 1][0] == "w" and words[i - 1] in _A4_LEADS):
+                add("A4", words[i])
+        # A4-TR: verb + bounded suffix, then sentence end, ve or sonra.
+        for i, (kind, word) in enumerate(stream):
+            if kind != "w":
+                continue
+            for stem in _A4_TR:
+                if word.startswith(stem) and len(word) - len(stem) <= 8:
+                    following = stream[i + 1] if i + 1 < len(stream) else None
+                    if following is None or (following[0] == "w" and following[1] in _A4_TR_NEXT):
+                        add("A4-TR", stem)
+        # A5: run verb plus an outward or hard destructive part anywhere.
+        if context:
+            for word in everything:
+                if _outward_word(word) or _starts(word, _A_HARD):
+                    add("A5", word[:40])
+        # A6: hard destructive words and phrases.
+        for word in everything:
+            if word in _A_HARD:
+                add("A6", word)
+        for hit in _hard_phrases(exposed + command_words, _fold(raw)):
+            add("A6", hit)
+        # A8: directed verb forms (state / third person sentences).
+        for i, (kind, word) in enumerate(stream):
+            if kind == "w" and word in _A8_FORMS:
+                near = [w for k, w in stream[i + 1:i + 7] if k == "w"]
+                close = [w for k, w in stream[i + 1:i + 4] if k == "w"]
+                if any(w in _A8_TARGETS for w in near) or any(w in _A8_NOUNS for w in close):
+                    add("A8", word)
+
+        if goal:
+            # K-2: stems from identifiers that no longer hide them (union with v1).
+            prose_words = list(prose)
+            for parts in identifiers + [prose_words]:
+                for stem in _OUTWARD:
+                    if _contains(parts, stem):
+                        add("outward_action", stem)
+                for stem in _DESTRUCTIVE:
+                    if _contains(parts, stem):
+                        add("destructive", stem)
+        else:
+            # K-4: narrow exact-word subset raises; the rest is informational.
+            for word in prose:
+                if (word in _NARROW_RISK or (word.endswith("s") and word[:-1] in _NARROW_RISK)
+                        or _starts(word, _NARROW_RISK_PREFIX)):
+                    add("K4", word[:40])
+            for stem in risk_map.risky_words:
+                if _contains(prose, stem):
+                    add("K4", stem)
+            for stem in _RISK_WORDS:
+                if _contains(prose, stem):
+                    add("risk_word", stem)
+            for stem in _A_SOFT:
+                if _contains(prose, stem):
+                    add("destructive", stem)
+    return signals
+
+
+_FIELD_RISKY = frozenset("A1 A2 A3 A4 A4-TR A5 A6 A7 A8 K4 outward_action".split())
+
+
+def task_lane(goal: str, done, notes, files: Sequence[str] | None,
+              risk_map: RiskMap | None = None) -> Classification:
+    """lane.v2: max of the goal lane and each done item / notes lane.
+
+    The goal keeps every lane.v1 rule (classify()) and adds K-2/K-3 signals,
+    so no goal can get a lower lane than classify(goal, files). Done items and
+    notes use A1-A8 and the narrow K-4 risk words; signals name their field
+    (goal:A2, done[2]:A8, notes:K4). Soft destructive words only floor the
+    lane at standard; informational risk words never change it.
+    """
+    if not isinstance(goal, str):
+        raise TypeError("goal must be a string")
+    if isinstance(done, (str, bytes)) or not isinstance(done, Sequence):
+        raise TypeError("done must be a sequence of strings")
+    if any(not isinstance(item, str) for item in done):
+        raise TypeError("done must contain strings")
+    if notes is None:
+        notes = ""
+    if not isinstance(notes, str):
+        raise TypeError("notes must be a string or None")
+    base = classify(goal, files, risk_map)
+    risk_map = risk_map or RiskMap()
+    index = _index(files)
+    fields = [("goal", goal, True)] + [("done[{}]".format(i), item, False) for i, item in enumerate(done)]
+    if notes:
+        fields.append(("notes", notes, False))
+    existing = {(s.id, s.detail) for s in base.signals}
+    extra = set()
+    for name, text, is_goal in fields:
+        for found in _field_signals(name, text, index, risk_map, is_goal):
+            rule = found.id.split(":", 1)[1]
+            # Goal stems v1 already reported stay under their v1 id only.
+            if is_goal and rule in ("outward_action", "destructive") and (rule, found.detail) in existing:
+                continue
+            extra.add(found)
+    lane = base.lane
+    if any(s.id.split(":", 1)[1] in _FIELD_RISKY for s in extra):
+        lane = "risky"
+    elif lane == "fast" and any(s.id.split(":", 1)[1] == "destructive" for s in extra):
+        lane = "standard"
+    signals = tuple(sorted(set(base.signals) | extra, key=lambda s: (s.id, s.detail)))
+    return Classification(base.mode, lane, base.targets, signals)
+
+
 def _blocked(result, name):
+    """An unavailable input never lowers the text lane and never grants fast.
+
+    T58 (P1-3): this used to turn a text-derived risky lane into standard when
+    the local risk map was unusable; every unavailable input is now a floor.
+    """
     signals = tuple(sorted(result.signals + (Signal(name, "unavailable"),),
                            key=lambda s: (s.id, s.detail)))
-    lane = "risky" if result.lane == "risky" and name != "risk_map_invalid" else "standard"
+    lane = "risky" if result.lane == "risky" else "standard"
     return Classification(result.mode, lane,
                           result.targets, signals)
+
+
+# Any unusable local map (corrupt, wrong type, unknown key, unsupported version,
+# dangling/looping symlink, unreadable) is the same fail-closed floor.
+_RISK_MAP_ERRORS = (ValueError, OSError, TypeError, RecursionError)
 
 
 def repository_risk_map(root):
@@ -587,6 +1041,22 @@ def classify_repo(workdir: str, task: str) -> Classification:
         return _blocked(classify(task, None), "git_unavailable")
     try:
         risk_map = repository_risk_map(root)
-    except (ValueError, OSError):
+    except _RISK_MAP_ERRORS:
         return _blocked(classify(task, files), "risk_map_invalid")
     return classify(task, files, risk_map)
+
+
+def task_lane_repo(workdir: str, goal: str, done, notes) -> Classification:
+    """task_lane with the same repository inputs and failure floors as classify_repo."""
+    try:
+        if not gitutil.is_repo(workdir):
+            return task_lane(goal, done, notes, None)
+        root = gitutil.main_worktree(workdir)
+        files = gitutil.ls_files(root)
+    except gitutil.GitError:
+        return _blocked(task_lane(goal, done, notes, None), "git_unavailable")
+    try:
+        risk_map = repository_risk_map(root)
+    except _RISK_MAP_ERRORS:
+        return _blocked(task_lane(goal, done, notes, files), "risk_map_invalid")
+    return task_lane(goal, done, notes, files, risk_map)
