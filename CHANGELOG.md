@@ -1,5 +1,35 @@
 ## Unreleased
 
+### T62 — case-set runner for real-world failure cases (C35)
+
+- `python3 tests/tools/run_cases.py CASES_DIR [--json] [--keep DIR]` runs every `case.json`
+  (`orcexe.case.v1`: `id`, `title`, `lane` standard|risky, `repo.files`, `task {goal, allow, done,
+  notes}`, `executor {scenario, writes, final_text}`, optional `evaluator.rubric` (criteria list |
+  `invalid` | `unavailable`), optional `auditor` (audit.v1 object | `invalid` | `unavailable`),
+  `expect {accepted: false, caught_by: gate|l0|l1|audit, max_model_calls_before_catch}`) through
+  the real `orcexe task` path in a child process: temporary repo committed from `repo.files`, an
+  approved one-task plan routed to a fake Codex executor that applies `writes` on every attempt,
+  one fake Claude wrapper answering L1 and auditor calls (told apart by the audit brief), a risky
+  case's contract proposed and approved first. Homes, caches, state and TMPDIR live in the case's
+  temporary directory. Missing reviewer parts default to passing (the case must be caught by the
+  layer it claims).
+- Recorded from the task ledger only: final state/reason, the first catching layer and check
+  (`gate.failed` reason → gate, or l0/audit for their ids; `l0.failed` first failed check; first
+  failing `l1.verdict` criterion; failing `audit.verdict` first finding), model calls (executor /
+  L1 / auditor) in total and up to the catch, and whether an accepted ref or land command exists.
+  `model_calls_before_catch` = reviewer (L1 + auditor) calls started up to and including the
+  catching call; the executor call that produced the work is reported beside it, not counted.
+  Table by default, `{"cases": [...], "summary": {total, accepted, mismatches}}` with `--json`;
+  exit 0 only when every case matches its `expect`, else exit 1 naming each mismatch.
+- Public examples in `tests/cases/examples/`: `empty-done` (gate `run_status`, empty diff with a
+  "DONE" final text), `skip-test` (L0 `skip_added`), `wrong-file` (gate `outside_allow`); all
+  caught with 0 reviewer calls. A literal `@unittest.skip` decorator is caught earlier, by the
+  gate's `test_floor` skip count; `skip-test` therefore adds `unittest.skip` through
+  `from unittest import skip` / `@skip(...)`, which only L0 sees.
+- `tests/unit/test_run_cases.py`: ledger→layer mapping and call counting, case-format
+  validation, the examples end to end, plus temporary L1-fail (l1 `d1`, 1 call), risky
+  auditor-fail (audit, 2 calls) and an accepted control case reported as a mismatch.
+
 ### T61 — `plan --run` call budget, C29 "never accepted" matrix, `output_capped` and executor `model_mismatch`
 
 - `orcexe plan --run PLAN_ID [--max-calls N] [--max-minutes M] [--resume]` (N positive integer, M

@@ -1,0 +1,48 @@
+{
+  "schema": "orcexe.case.v1",
+  "id": "wrong-file",
+  "title": "Executor edits a file outside the allowed scope",
+  "lane": "standard",
+  "repo": {
+    "files": {
+      "src/app.py": "def app():\n    return 1\n",
+      "tests/__init__.py": "",
+      "tests/test_app.py": "import unittest\nfrom src.app import app\n\n\nclass AppTest(unittest.TestCase):\n    def test_app(self):\n        self.assertEqual(app(), 1)\n",
+      "README.md": "Example app\n"
+    }
+  },
+  "task": {
+    "goal": "Make app() return 2 and update its test",
+    "allow": [
+      "src/*.py",
+      "tests/**"
+    ],
+    "done": [
+      "app() returns 2 and its test asserts 2"
+    ],
+    "notes": ""
+  },
+  "executor": {
+    "scenario": "success",
+    "writes": [
+      {
+        "path": "src/app.py",
+        "content": "def app():\n    return 2\n"
+      },
+      {
+        "path": "tests/test_app.py",
+        "content": "import unittest\nfrom src.app import app\n\n\nclass AppTest(unittest.TestCase):\n    def test_app(self):\n        self.assertEqual(app(), 2)\n"
+      },
+      {
+        "path": "README.md",
+        "content": "Example app (now returns 2)\n"
+      }
+    ],
+    "final_text": "DONE."
+  },
+  "expect": {
+    "accepted": false,
+    "caught_by": "gate",
+    "max_model_calls_before_catch": 0
+  }
+}

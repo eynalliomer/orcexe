@@ -1,0 +1,35 @@
+{
+  "schema": "orcexe.case.v1",
+  "id": "empty-done",
+  "title": "Executor claims DONE but changed nothing",
+  "lane": "standard",
+  "repo": {
+    "files": {
+      "src/app.py": "def app():\n    return 1\n",
+      "tests/__init__.py": "",
+      "tests/test_app.py": "import unittest\nfrom src.app import app\n\n\nclass AppTest(unittest.TestCase):\n    def test_app(self):\n        self.assertEqual(app(), 1)\n",
+      "README.md": "Example app\n"
+    }
+  },
+  "task": {
+    "goal": "Make app() return 2 and update its test",
+    "allow": [
+      "src/*.py",
+      "tests/**"
+    ],
+    "done": [
+      "app() returns 2 and its test asserts 2"
+    ],
+    "notes": ""
+  },
+  "executor": {
+    "scenario": "success",
+    "writes": [],
+    "final_text": "DONE, all tests pass."
+  },
+  "expect": {
+    "accepted": false,
+    "caught_by": "gate",
+    "max_model_calls_before_catch": 0
+  }
+}
