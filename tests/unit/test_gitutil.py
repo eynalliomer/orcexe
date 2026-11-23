@@ -256,6 +256,10 @@ class FakeGitStderrTests(unittest.TestCase):
             "plain": "fatal: not a git repository (or any of the parent directories): .git\n",
             "invalid gitfile": "fatal: not a git repository: (null)\n",
             "gitfile path": "fatal: not a git repository: '/work/x/not-a-repository'\n",
+            "upstream invalid gitfile": ("fatal: gitfile does not point to a valid repository: "
+                                         "/tmp/tmpab12cd/.git\n"),
+            "upstream invalid gitfile format": "fatal: invalid gitfile format: /tmp/tmpab12cd/.git\n",
+            "not a valid repository": "fatal: '/work/x/not-a-repository' not a valid repository\n",
             "case and wrapping": "FATAL: Not a Git\n  repository (or any parent up to mount point /)\n",
             "filesystem boundary": ("fatal: not a git repository (or any parent up to mount point /mnt)\n"
                                     "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"),
@@ -287,8 +291,13 @@ class FakeGitStderrTests(unittest.TestCase):
         self.assertEqual(caught.exception.returncode, 128)
         self.assertIn("dubious ownership in repository at '<path>'", str(caught.exception))
         self.assertNotIn("/work/repo", str(caught.exception))
+        # Ownership wins even when the same stderr also names an invalid gitfile.
+        with self.assertRaises(gitutil.GitError) as caught:
+            self.classify(128, dubious + "fatal: gitfile does not point to a valid repository: x\n")
+        self.assertEqual(caught.exception.reason, "Repository ownership is not trusted (safe.directory)")
         for returncode, stderr in ((128, "fatal: unable to read current working directory\n"),
                                    (128, ""), (1, "fatal: not a git repository\n"),
+                                   (1, "fatal: gitfile does not point to a valid repository: x\n"),
                                    (129, "usage: git rev-parse\n")):
             with self.subTest(returncode=returncode, stderr=stderr), \
                     self.assertRaises(gitutil.GitError) as caught:

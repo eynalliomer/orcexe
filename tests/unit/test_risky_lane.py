@@ -23,7 +23,7 @@ from tests.unit.test_planning import manager, task as plan_task
 from tests.unit.test_questions import project
 from tests.unit.test_task import TaskFixture, APP, TEST, ROOT, write_approved
 from tests.unit.test_task_l1 import rubric
-from orcexe import cli, fsio, ledger, mapping, planning, planrun, risky, route, task, task_l1
+from orcexe import cli, fsio, isolation, ledger, mapping, planning, planrun, risky, route, task, task_l1
 from orcexe.adapters.codex import CodexAdapter
 
 
@@ -47,11 +47,24 @@ def roles_without(stage=None, auditor=None):
 ORIGINAL_LOAD_ROLES = route.load_roles
 
 
+def simulate_isolation(case):
+    """T63c: these tests assert lane logic (auditor, L1 basis, never-accepted), not the host's
+    OS sandbox. Real project gates and fake tool wrappers still run on every host; only the
+    isolation evidence is simulated (as in test_planrun). OS policy has its own tests
+    (test_isolation, slow/test_isolation); hosts without a usable sandbox (e.g. ubuntu-22.04
+    runners) would otherwise end every passing attempt as isolation_unavailable."""
+    patcher = mock.patch.object(isolation, 'evidence', return_value='seatbelt')
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    case.accepted_state = 'accepted'
+
+
 class RiskyFixture(TaskFixture):
     reviewer = test_task_l1.EvaluatorTests.evaluator
 
     def setUp(self):
         super().setUp()
+        simulate_isolation(self)
         self.saved = self.save([plan_task(goal='Return two and update its test', lane='risky',
                                           files={'allow': ['src/*.py', 'tests/**']},
                                           done=['app returns 2 and its test passes'],
@@ -788,6 +801,7 @@ class RiskyPlanTests(TaskFixture):
 
     def setUp(self):
         super().setUp()
+        simulate_isolation(self)
         self.state = self.main / '.orcexe'
         fsio.atomic_write_json(self.state / 'project-map.json', project(self.head))
         self.final = self.directory / 'manager-final'

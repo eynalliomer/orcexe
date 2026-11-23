@@ -106,8 +106,13 @@ def resolve_repo_path(path):
 _UNTRUSTED = ("dubious ownership", "safe.directory")
 # Discovery found no repository: plain, ceiling directories, filesystem boundary
 # (GIT_DISCOVERY_ACROSS_FILESYSTEM), or a gitfile naming a missing directory.
+# An invalid `.git` gitfile is not a usable repository either: Apple git says
+# "not a git repository: (null)", upstream git (Homebrew, Ubuntu) says "gitfile
+# does not point to a valid repository" or "invalid gitfile format" (T63c).
 _NOT_A_REPOSITORY = ("not a git repository", "stopping at filesystem boundary",
-                     "git_discovery_across_filesystem")
+                     "git_discovery_across_filesystem",
+                     "gitfile does not point to a valid repository",
+                     "invalid gitfile format", "not a valid repository")
 # Only when the runner cut the start of stderr: the remaining discovery suffix.
 _CUT_SUFFIXES = ("git repository", "(or any of the parent directories)",
                  "(or any parent up to mount point")

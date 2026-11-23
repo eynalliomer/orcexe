@@ -1,5 +1,26 @@
 ## Unreleased
 
+### T63c — the two remaining CI-only failures (C15)
+
+- `is_repo`: an invalid `.git` gitfile is not a usable repository. Exit 128 with `gitfile does not
+  point to a valid repository` (upstream git: Homebrew, Ubuntu), `invalid gitfile format` or
+  `not a valid repository` now returns False, like Apple git's `not a git repository: (null)`.
+  `dubious ownership` / `safe.directory` still win and raise their own error, even when the same
+  stderr also names an invalid gitfile; a non-128 exit with these words still raises. The test
+  fixture `non_repository_root` (a `.git` file pointing nowhere) therefore behaves the same under
+  every git; this is what `test_codex_adapter.test_trust_header_hash_only_for_write_in_git` (via
+  `CodexAdapter`'s `gitutil.is_repo(req.workdir)`) and the six non-git `test_run_fake` cases (via
+  `run.py`'s `gitutil.is_repo(workdir)`) went through. `FakeGitStderrTests` gains these exact
+  messages. Upstream git was not available locally: GÖRÜLMEDİ beyond the fake stderr (local git is
+  Apple Git-157, `not a git repository: (null)`); the next CI run shows it.
+- `tests/unit/test_risky_lane.py`: `RiskyFixture` and `RiskyPlanTests` simulate isolation evidence
+  (`isolation.evidence` → `seatbelt`, `accepted_state = 'accepted'`), as `test_planrun` already
+  does. Real gates and fake CLIs still run; only the evidence is simulated, and no assertion
+  changed. On a host without a usable sandbox (ubuntu-22.04 + 3.9 in CI) every passing risky
+  attempt otherwise ended `gate_passed` / `isolation_unavailable` instead of the auditor/L1 reason
+  under test. A local run with the probe forced to `none` failed 9 risky-lane tests before (the 3
+  seen in CI plus 6 more) and 0 after.
+
 ### T63b — diagnosable CI failures, CI-only breaks fixed (C15)
 
 - `gitutil.GitError` carries `reason`, the git `returncode` and a short (≤240 chars), single-line,
