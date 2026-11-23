@@ -58,6 +58,9 @@ _IDS = ("run_status", "controls", "diff_collect", "diff_check", "scope", "size",
         "code_unchanged", "secrets", "test_floor", "project_checks")
 _FAIL = dict(zip(_IDS, ("failed", "escalated", "failed", "needs_fix", "escalated",
                        "escalated", "escalated", "needs_fix", "needs_fix", "needs_fix")))
+# T61: run warnings that make a completed run unacceptable in every lane: output over the
+# adapter's line cap (events lost or raw) and an executor that ran a different model than routed.
+UNCLEAN_RUN_WARNINGS = ("output_capped", "model_mismatch")
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCES = {".orcexe/commands.yaml", "package.json", "pnpm-lock.yaml",
@@ -1138,6 +1141,11 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                             status, detail = 'fail', run_result['status']
                         elif 'empty_diff' in run_result['warnings'] and not retry:
                             status, detail = 'fail', 'empty_diff'
+                        else:
+                            # T61: capped output or another model's work is never a clean run.
+                            unclean = [w for w in UNCLEAN_RUN_WARNINGS if w in run_result['warnings']]
+                            if unclean:
+                                status, detail = 'fail', unclean[0]
                 elif check == 'controls':
                     if controls_before is None:
                         status, detail = 'not_seen', 'controls_before_missing'

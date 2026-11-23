@@ -86,9 +86,12 @@ def standard_gate(*, repo_path, worktree, run_result, run_dir, controls_before,
         validate_run_result(run_result)
         if type(retry) is not bool:
             raise ValueError('retry')
+        unclean = [w for w in gate_lite.UNCLEAN_RUN_WARNINGS if w in run_result['warnings']]
         check('run_status', run_result['status'] == 'completed'
               and (retry or 'empty_diff' not in run_result['warnings'])
-              and 'pipes_held' not in run_result['warnings'], run_result['status'])
+              and 'pipes_held' not in run_result['warnings'] and not unclean,
+              # T61: the routed contract named a model and an uncut output; say which broke.
+              unclean[0] if run_result['status'] == 'completed' and unclean else run_result['status'])
         check('controls', gate_lite.snapshot_controls(repo_path, worktree) == controls_before,
               'git_controls_changed')
         _, base_tree = gate_lite._git(repo_path, 'rev-parse', worktree.base_commit + '^{tree}',

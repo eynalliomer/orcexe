@@ -20,6 +20,16 @@ def _timeout(value):
     raise argparse.ArgumentTypeError("timeout must be finite and positive")
 
 
+def _positive_int(value):
+    try:
+        result = int(value)
+        if result > 0 and str(result) == value.strip():
+            return result
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("must be a positive integer")
+
+
 def _task_ids(value):
     """T59: a comma-separated list of plan task ids, each once (T2 or T2,T5); ``none`` is empty."""
     if value == "none":
@@ -206,6 +216,10 @@ def main(argv=None):
     plan_action.add_argument("--approve", metavar="PLAN_ID")
     plan_action.add_argument("--run", metavar="PLAN_ID")
     plan_parser.add_argument("--resume", action="store_true")
+    plan_parser.add_argument("--max-calls", type=_positive_int, metavar="N",
+                             help="With --run: start at most N model calls in this invocation (T61)")
+    plan_parser.add_argument("--max-minutes", type=_timeout, metavar="M",
+                             help="With --run: start no model call after M minutes of wall-clock time (T61)")
     plan_parser.add_argument("--defer", type=_task_ids, metavar="T2[,T5]",
                              help="With --approve: also defer these tasks (and their dependants)")
     plan_parser.add_argument("--open", type=_task_ids, metavar="T3[,T4]",
@@ -325,6 +339,8 @@ def main(argv=None):
     if args.command == "plan":
         if args.resume and args.run is None:
             parser.error("--resume requires --run")
+        if (args.max_calls is not None or args.max_minutes is not None) and args.run is None:
+            parser.error("--max-calls and --max-minutes require --run")
         if (args.defer is not None or args.open) and args.approve is None:
             parser.error("--defer and --open require --approve")
         if args.open == []:

@@ -469,6 +469,10 @@ class CursorAdapter(Adapter):
                     status = "failed"
             if observed.pipes_held:
                 warnings.append("pipes_held")
+            if observed.truncated_lines:
+                # T61: a line over the output cap was cut (its event is lost or raw); the
+                # run never counts as a clean completion for acceptance.
+                warnings.append("output_capped")
             if shell_calls:
                 warnings.append('shell_used:{}'.format(shell_calls))
         after = gitutil.changed_since(req.workdir, before_head, before_dirty, before_fingerprints)

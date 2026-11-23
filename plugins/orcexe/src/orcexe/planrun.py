@@ -7,6 +7,7 @@ import shlex
 import signal
 import sys
 import threading
+import time
 
 from orcexe import do, fsio, gitutil, intake, isolation, ledger, redact, runguard
 
@@ -19,6 +20,51 @@ EXIT_REASONS = {'completed': 0, 'partial': 1, 'interrupted': 130,
                 'dependency_failed': 1, 'lane_not_supported': 1,
                 'run_interrupted': 2, 'task_running': 2, 'internal_error': 70,
                 'ledger_corrupt': 2, 'ledger_head_mismatch': 2}
+
+
+class BudgetStop(Exception):
+    """T61: the plan run's budget refuses the next model call (reason max_calls|max_minutes)."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class Budget:
+    """T61: calls the orchestrator starts in one ``plan --run`` and its wall clock.
+
+    Every model call is counted when it starts (executor, each L1 candidate, each auditor
+    call; failed, unavailable and invalid ones included). A call that would make the count
+    exceed ``max_calls``, or any call after ``max_minutes`` of wall-clock time since the run
+    began, is refused: nothing new starts. A resumed run gets a fresh budget.
+    """
+
+    def __init__(self, max_calls=None, max_minutes=None, clock=time.monotonic):
+        self.max_calls, self.max_minutes, self.clock = max_calls, max_minutes, clock
+        self.calls, self.reason, self.started = 0, None, clock()
+
+    def elapsed_ms(self):
+        return max(0, int((self.clock() - self.started) * 1000))
+
+    def refusal(self):
+        """The reason the next call would be refused, or None."""
+        if self.max_calls is not None and self.calls + 1 > self.max_calls:
+            return 'max_calls'
+        if self.max_minutes is not None and self.clock() - self.started > self.max_minutes * 60:
+            return 'max_minutes'
+        return None
+
+    def take(self):
+        reason = self.refusal()
+        if reason is not None:
+            self.reason = reason
+            raise BudgetStop(reason)
+        self.calls += 1
+
+    def event(self, plan_id):
+        return dict(plan_id=plan_id, max_calls=self.max_calls, calls=self.calls,
+                    max_minutes=None if self.max_minutes is None else repr(float(self.max_minutes)),
+                    elapsed_ms=self.elapsed_ms(), reason=self.reason)
 
 
 def task_records(plan, log):
@@ -274,9 +320,11 @@ def _order(plan):
 
 
 @ledger.in_session
-def run_plan(identifier, repo=None, *, resume=False):
+def run_plan(identifier, repo=None, *, resume=False, max_calls=None, max_minutes=None, _clock=time.monotonic):
     from orcexe import task
     result = dict(schema='orcexe.planrun.v1', plan_id=identifier, state='partial', tasks=[], land=None)
+    # T61: without --max-calls/--max-minutes nothing is counted and the result is unchanged.
+    budget = Budget(max_calls, max_minutes, _clock) if max_calls is not None or max_minutes is not None else None
     main = plan = log = lock_path = lock_info = None
     handlers = {}
 
@@ -322,8 +370,12 @@ def run_plan(identifier, repo=None, *, resume=False):
             if reason:
                 log.append('task.state', key, dict(plan_id=identifier, **{'from': records[key]['state'],
                            'to': 'blocked'}, reason=reason))
+            elif budget is not None and budget.refusal() is not None:
+                # T61: no call can start, so this task (and every later one) stays pending.
+                budget.reason = budget.refusal() or 'max_minutes'
+                break
             else:
-                outcome = task.run_task(identifier, key, main, _context=plan, _resume=resume)
+                outcome = task.run_task(identifier, key, main, _context=plan, _resume=resume, _budget=budget)
                 if outcome['reason'] == 'state_tampered':
                     # P2-2: never read (or dispatch dependants from) a ledger written during a run.
                     raise isolation.StateTampered()
@@ -337,9 +389,17 @@ def run_plan(identifier, repo=None, *, resume=False):
                 # P3-1 (§4): a decision forged during that task's executor window stops the run
                 # here (and revokes the approval), before any later task is dispatched.
                 task._read_plan(main, identifier, None, log)
+                if budget is not None and budget.reason is not None:
+                    break  # T61: the task was left interrupted (resumable); later tasks stay pending.
             write_status(main, plan, log)
         records = task_records(plan, log)
         result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
+        if budget is not None:
+            result['calls'] = budget.calls
+            if budget.reason is not None:
+                log.append('plan.budget', 'plan', budget.event(identifier))
+                # A budget stop is partial (exit 1), even with a task left interrupted for --resume.
+                result.update(state='partial', stop_reason='budget')
         approvals = contract_approvals(plan, records)
         if approvals:
             result['contract_approvals'] = approvals
@@ -380,6 +440,9 @@ def _print(result, code, json_output):
                                                             item['reason'] or '')))
         for line in _approval_lines(clean):
             print(one_line(line))
+        if clean.get('stop_reason'):
+            print('Stopped: budget ({} model calls); continue with `orcexe plan --run {} --resume` and a new '
+                  'budget.'.format(clean.get('calls'), clean['plan_id']))
         if clean['land']:
             print('Human landing command:\n' + clean['land']['command'])
             for line in _basis_lines(clean['land'])[1:]:
@@ -400,7 +463,8 @@ def _print(result, code, json_output):
 
 
 def run_command(args):
-    result, code = run_plan(args.run, args.repo, resume=args.resume)
+    result, code = run_plan(args.run, args.repo, resume=args.resume, max_calls=getattr(args, 'max_calls', None),
+                            max_minutes=getattr(args, 'max_minutes', None))
     return _print(result, code, args.json)
 
 

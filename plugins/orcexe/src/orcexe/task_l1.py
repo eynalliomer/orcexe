@@ -251,7 +251,8 @@ def evaluate(*, repo_path, tree, contract, gate, l0, selection, adapter, run_dir
             validate_run_result(receipt, run_dir=directory)
             safe_write_json(directory / 'result.json', receipt)
             if (receipt['status'] != 'completed' or receipt['exit_code'] != 0
-                    or 'pipes_held' in receipt['warnings'] or 'model_mismatch' in receipt['warnings']):
+                    or 'pipes_held' in receipt['warnings']
+                    or any(w in receipt['warnings'] for w in gate_lite.UNCLEAN_RUN_WARNINGS)):
                 return dict(reason='l1_unavailable', rubric=None)
             # T55 (P1-1): the verdict comes from the text the adapter captured in memory when
             # the run ended; final.md on disk is evidence only and is never re-read.

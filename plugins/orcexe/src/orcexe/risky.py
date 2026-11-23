@@ -520,7 +520,8 @@ def audit(*, repo_path, tree, contract, notes, gate, l0, l1, selection, adapter,
             validate_run_result(receipt, run_dir=directory)
             safe_write_json(directory / 'result.json', receipt)
             if (receipt['status'] != 'completed' or receipt['exit_code'] != 0
-                    or 'pipes_held' in receipt['warnings'] or 'model_mismatch' in receipt['warnings']):
+                    or 'pipes_held' in receipt['warnings']
+                    or any(w in receipt['warnings'] for w in gate_lite.UNCLEAN_RUN_WARNINGS)):
                 return dict(outcome='unavailable', verdict=None, reason='auditor_unavailable')
             # The verdict comes from the text captured in memory when the run ended (T55 P1-1).
             final = getattr(adapter, 'final_text', lambda run_id: None)(req.run_id)

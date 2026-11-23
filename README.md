@@ -643,7 +643,7 @@ SIGINT/SIGTERM return `128 + signal` after cleanup.
 ## `plan --run`, `--resume` and `orcexe status`
 
 ```sh
-orcexe plan --run PLAN_ID [--resume] [--json] [--repo PATH]
+orcexe plan --run PLAN_ID [--max-calls N] [--max-minutes M] [--resume] [--json] [--repo PATH]
 orcexe status [--repo PATH] [--json]
 ```
 
@@ -682,8 +682,25 @@ three-attempt budget, using the same frozen contract and SHA-256. Interrupted
 attempts consume budget. A finished plan re-run does nothing and returns the
 same final outcome. Only one plan/task/do dispatch can run per repository.
 
+**Call budget (T61).** `--max-calls N` (positive integer) and `--max-minutes M`
+(positive number) bound one `plan --run` invocation. The orchestrator counts every
+model call it starts in this invocation, around the call and never from tool
+output: each executor attempt, each L1 call (fallback candidates included) and each
+auditor call, failed, unavailable and invalid ones included. A call that would make
+the count exceed N, or any call once more than M minutes of wall-clock time have
+passed since the run began, is not started: the task in progress is left
+`interrupted` with reason `budget` (resumable; never `accepted`, no accepted ref, no
+chain advance), later tasks stay `pending`, the run ends `partial` (exit 1) with
+`stop_reason: "budget"` and `calls` in the JSON, and the ledger records
+`plan.budget` (`max_calls`, `calls`, `max_minutes` as decimal text or null,
+`elapsed_ms`, `reason` = `max_calls`|`max_minutes`). A call already running is never
+cut. `--resume` with a new budget continues: attempt numbers continue and spent
+attempts are not refunded. Without either flag nothing is counted and the output is
+unchanged (with a flag, `calls` is always reported).
+
 `--json` returns `orcexe.planrun.v1` with `plan_id`, `state`
-(`completed|partial|interrupted`), `tasks` and nullable `land` (`ref`, `command`).
+(`completed|partial|interrupted`), `tasks` and nullable `land` (`ref`, `command`),
+plus `calls` (with a budget flag) and `stop_reason: "budget"` (budget stop only).
 Each task item has `task_id`, `state`, nullable `reason`, and `attempts`.
 Exit 0 requires every task accepted; a finished run with any non-accepted task
 exits 1; preconditions exit 2. Internal failures exit 70.
@@ -923,6 +940,14 @@ Other gate failures give feedback and retry, up to three
 attempts, then end as `exhausted`. Escaped processes (`pipes_held`) and changed
 controls/main repository stop the run.
 
+An executor run whose output exceeded orcexe's line cap (run warning
+`output_capped`: a cut line loses or garbles its event) or whose actual model
+differs from the routed one (`model_mismatch`: a different model's work is not the
+contract's work) never counts as a clean completion (T61): in every lane the
+attempt fails `run_status` with that warning as its detail (a real failure of the
+attempt, not quota), `do` ends `failed` with `failed_check: run_status`, and an L1
+or auditor receipt with either warning is unavailable.
+
 Every gate checks the cumulative worktree against the task base, not just the
 latest attempt's edits. A retry that finds the work already done and edits nothing
 (the executor reports `empty_diff`) is therefore gated on that tree: scope, text,
@@ -1039,6 +1064,7 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `audit_invalid` | 0 | Risky lane: the auditor reply was invalid twice (strict `orcexe.audit.v1`); not landable. |
 | `auditor_unavailable` | 0 | Risky lane: no eligible cross-family auditor (run-time family), it failed, or its call budget is spent; no ref, no landing command. |
 | `auditor_wrote` | 1 | Risky lane: the read-only auditor changed its own throwaway copy. |
+| `budget` | 1 | `plan --run` with `--max-calls`/`--max-minutes`: the next model call was refused; the task stays interrupted for `--resume`. |
 | `cancelled` | 130 | Task execution was interrupted. |
 | `contract_tampered` | 1 | The frozen contract changed after dispatch. |
 | `contract_unapproved` | 2 | Risky lane: the contract proposal awaits the user's `task --approve-contract` (or the hash is not the current proposal's, `detail: proposal_changed`). |

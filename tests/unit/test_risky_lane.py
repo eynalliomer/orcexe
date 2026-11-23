@@ -534,11 +534,16 @@ class CursorFamilyTests(RiskyFixture):
 
     def setUp(self):
         super().setUp()
+        self.use_route('composer-2.5')
+
+    def use_route(self, model):
+        # T61: an executor attempt whose actual model differs from the routed one fails run_status,
+        # so a model that must reach L1 is the routed model itself.
         self.saved = self.save([plan_task(goal='Return two and update its test', lane='risky',
                                           files={'allow': ['src/*.py', 'tests/**']},
                                           done=['app returns 2 and its test passes'],
                                           lane_basis=['manager:risky', 'cli:classify:risky'],
-                                          route=dict(tool='cursor', model='composer-2.5', effort='medium'))])
+                                          route=dict(tool='cursor', model=model, effort='medium'))])
         self.plan_id = self.saved['plan_id']
 
     def run_cursor(self, actuals):
@@ -578,7 +583,13 @@ class CursorFamilyTests(RiskyFixture):
             {'src/app.py': APP.replace('1', '2'), 'tests/test_app.py': TEST.replace('1', '2')},
             {'src/app.py': APP.replace('1', '2') + '# validated\n'}]))
         self.evaluator([rubric(), audit('fail', [BLOCKER]), rubric(), audit()])
+        # T61: attempt 1 (gpt, not the routed model) fails run_status but stays in the cumulative
+        # tree; attempt 2 is the routed Claude model, so L1 is recomputed over both families.
+        self.use_route('claude-opus-5-thinking-high')
         code, result, error = self.approve_cursor(['gpt-6-turbo', 'claude-opus-5-thinking-high'])
+        self.assertNotIn(1, [r['data']['attempt'] for r in self.log().records(event='l1.started')])
+        failed = [r['data'] for r in self.log().records(event='gate.failed') if r['data']['attempt'] == 1]
+        self.assertEqual([f['reason'] for f in failed], ['run_status'])
         attempt_two = [(r['data']['model'], r['data'].get('basis')) for r in self.log().records(event='l1.started')
                        if r['data']['attempt'] == 2]
         self.assertFalse([m for m, b in attempt_two if m.startswith('claude') and b == 'cross_family'], attempt_two)
@@ -587,12 +598,14 @@ class CursorFamilyTests(RiskyFixture):
 
     def test_unprefixed_claude_slug_is_anthropic(self):
         self.evaluator([rubric(), audit()])
+        self.use_route('sonnet-4.5-thinking')
         code, result, error = self.approve_cursor(['sonnet-4.5-thinking'])
         self.assertEqual(self.claude_cross_family(), [], (result, error))
         self.assertEqual(self.accepted_refs(), '')
 
     def test_unrecognised_slug_fails_closed(self):
         self.evaluator([rubric(), audit()])
+        self.use_route('mystery-model-9')
         code, result, error = self.approve_cursor(['mystery-model-9'])
         self.assertEqual((result['state'], result['reason']), ('gate_passed', 'l1_basis_insufficient'), (result, error))
         self.assertEqual(self.accepted_refs(), '')

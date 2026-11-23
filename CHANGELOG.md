@@ -1,5 +1,35 @@
 ## Unreleased
 
+### T61 — `plan --run` call budget, C29 "never accepted" matrix, `output_capped` and executor `model_mismatch`
+
+- `orcexe plan --run PLAN_ID [--max-calls N] [--max-minutes M] [--resume]` (N positive integer, M
+  positive number). The orchestrator counts every model call it starts in the invocation, around
+  the call (never from tool output): each executor attempt, each L1 call including fallback
+  candidates, each auditor call; failed, unavailable and invalid calls included. A call that would
+  exceed N, or any call after M minutes of wall-clock time, is not started: the task in progress
+  ends `interrupted` with reason `budget` (task reason table, exit 1; resumable; never accepted, no
+  accepted ref, no chain advance), later tasks stay `pending`, the run ends `partial` (exit 1) with
+  `stop_reason: "budget"` and `calls`, and the ledger records `plan.budget {plan_id, max_calls,
+  calls, max_minutes (decimal text or null), elapsed_ms, reason: max_calls|max_minutes}`. A
+  running call is never cut. `--resume` with a new budget continues; attempt numbers continue
+  (no refund). Without either flag nothing is counted and the result is unchanged.
+- Hole closed (cap_reached): every adapter (Codex, Claude Code, Cursor) adds the run warning
+  `output_capped` when a stdout/stderr line exceeded the 1 MiB line cap; measured on main, a Codex
+  `big-line` run with a real edit was `completed` with no warning and accepted in all three lanes.
+- Hole closed (model_mismatch): an executor run with `model_mismatch` was accepted by `do` and
+  `task`. `gate_lite.UNCLEAN_RUN_WARNINGS = (output_capped, model_mismatch)`: either warning fails
+  `run_status` in `do` (detail = the warning) and in the standard/risky gate (a real failure of
+  the attempt, not environmental/quota), and makes an L1 or auditor receipt unavailable.
+  Standard-lane `gate_passed` for `l1_invalid`/`l1_unavailable` is unchanged (frozen ref + human
+  land command).
+- C29 matrix (`tests/unit/test_never_accepted_matrix.py`): rows empty_diff, quota, cap_reached,
+  timeout, pipes_held, model_mismatch, l1_invalid, l1_unavailable, no auditor, budget × fast
+  (`do`; budget via a fast-lane `plan --run` task), standard, risky; 26 applicable cells, each
+  built independently with fake CLIs, none ends `accepted`. The module prints the observed matrix
+  and the cell count (and writes JSON to `ORCEXE_MATRIX_OUT` when set).
+- Changed tests: `CursorFamilyTests` route the model that must reach L1 (an off-route actual model
+  now fails `run_status`); the full adapter contract expects `output_capped` for Codex `big-line`.
+
 ### T60 — minimal risky lane: `contract.v1`, per-task contract approval, cross-family auditor, `diagnosing`
 
 - `risky` is a supported lane (K18 a; T57 r2 §3.1–§3.6, decision 027 Ş3). `plan --approve` defers a

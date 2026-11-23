@@ -191,6 +191,34 @@ class AdapterContract:
             self.assertEqual(call["argv"], expected)
             self.assertEqual(json.dumps(call["argv"]).encode(), json.dumps(expected).encode())
 
+    def test_output_over_the_line_cap_is_never_a_clean_completion(self):
+        # T61: one executor stdout line over orcexe's 1 MiB line cap (fake big-line shape for every
+        # adapter): the run carries output_capped, so no gate counts it as a clean completion.
+        if os.name == "nt":
+            return
+        real = Path(self.env[self.bin_env])
+        wrapper = self.directory / ("big-line-" + self.adapter_name)
+        wrapper.write_text("#!" + os.sys.executable + "\n"
+            "import runpy, sys\n"
+            "if " + repr(self.exec_token) + " in sys.argv:\n"
+            "    sys.stdout.write('x' * (2 * 1024 * 1024) + '\\n'); sys.stdout.flush()\n"
+            "sys.path.insert(0, " + repr(str(real.parent)) + ")\n"
+            "runpy.run_path(" + repr(str(real)) + ", run_name='__main__')\n")
+        wrapper.chmod(0o700)
+        self.env[self.bin_env] = str(wrapper)
+        adapter = self.make_adapter()
+        req = self.request("capped")
+        result = adapter.run(req)
+        self.assert_result(req, result)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertIn("output_capped", result["warnings"])
+        from orcexe import gate_lite
+        self.assertIn("output_capped", gate_lite.UNCLEAN_RUN_WARNINGS)
+        # Without the oversized line the same fake run is clean (no false alarm).
+        self.env[self.bin_env] = str(real)
+        clean = self.make_adapter().run(self.request("uncapped"))
+        self.assertNotIn("output_capped", clean["warnings"])
+
     def test_main_worktree_write_refused_and_attempts_append_only(self):
         req = self.request("refused", "write", self.main)
         result = self.adapter.run(req)

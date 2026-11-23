@@ -72,8 +72,10 @@ def expected_outcome(adapter, scenario, request):
                      "shell-blocked": ["shell_blocked"], "model-mismatch": ["model_mismatch"]}.get(scenario, [])
     if adapter == "codex":
         status = {"auth-401": "auth", "quota": "quota"}.get(scenario, status)
+        # T61: the 5 MiB reasoning line is cut at the 1 MiB line cap.
         warnings = warnings + {"invalid-model": ["model_not_found"],
-                               "quota-unconfirmed": ["quota_suspected"]}.get(scenario, [])
+                               "quota-unconfirmed": ["quota_suspected"],
+                               "big-line": ["output_capped"]}.get(scenario, [])
         if scenario in ("write", "commit", "empty-write"):
             header = "[projects.{}]".format(json.dumps(str(Path(request.workdir).resolve()), ensure_ascii=False))
             warnings = warnings + ["trust_entry_added:" + hashlib.sha256(header.encode()).hexdigest()[:12]]

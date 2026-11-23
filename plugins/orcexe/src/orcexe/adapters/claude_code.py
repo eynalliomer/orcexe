@@ -435,6 +435,10 @@ class ClaudeCodeAdapter(Adapter):
                     status = "failed"
             if observed.pipes_held:
                 warnings.append("pipes_held")
+            if observed.truncated_lines:
+                # T61: a line over the output cap was cut (its event is lost or raw); the
+                # run never counts as a clean completion for acceptance.
+                warnings.append("output_capped")
         after = gitutil.changed_since(req.workdir, before_head, before_dirty, before_fingerprints)
         after["diff_files"] = repository_files(after["diff_files"])
         after["untracked"] = repository_files(after["untracked"])

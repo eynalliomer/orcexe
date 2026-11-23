@@ -26,6 +26,8 @@ EXIT_REASONS = {
     'isolation_unavailable': 0,
     # T60 risky lane (T57 §3.6): never accepted, never landable.
     'l1_basis_insufficient': 0, 'auditor_unavailable': 0, 'audit_invalid': 0,
+    # T61: `plan --run --max-calls/--max-minutes` refused the next model call; resumable.
+    'budget': 1,
     'auditor_wrote': 1, 'same_failure': 1, 'state_tampered': 1, 'exhausted': 1, 'outside_allow': 1, 'risk_path_touched': 1,
     'contract_tampered': 1, 'main_repository_changed': 1, 'git_controls_changed': 1,
     'pipes_held': 1, 'observation_unavailable': 1,
@@ -312,8 +314,13 @@ def _marks(rubric):
 
 
 @ledger.in_session
-def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False, constraints=None):
-    """Return a task.v1 summary plus an internal exit_code; never land or print."""
+def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resume=False, constraints=None,
+             _budget=None):
+    """Return a task.v1 summary plus an internal exit_code; never land or print.
+
+    ``_budget`` (T61, plan runner only) is asked before every model call this task starts
+    (executor, each L1 candidate, each auditor call); a refusal leaves the task interrupted.
+    """
     summary = dict(schema='orcexe.task.v1', task_id=task_id, plan_id=plan_id,
                    state='blocked', reason=None, attempts=0, contract_sha256=None,
                    escalation=None, land=None, l1=None, exit_code=2)
@@ -369,6 +376,11 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
         summary.update(state=final, reason=reason,
                        exit_code=130 if received is not None else EXIT_REASONS.get(reason or final, 1))
         return summary
+
+    def start_call():
+        # T61: counted by the orchestrator around the call, never from tool output.
+        if _budget is not None:
+            _budget.take()
 
     def on_signal(signum, frame):
         nonlocal received
@@ -581,6 +593,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                         chosen = None
                 if chosen is None:
                     return dict(outcome='unavailable', findings=None, reason='auditor_unavailable', tree=tree)
+                start_call()
                 audit_calls += 1
                 call += 1
                 log.append('audit.started', task_id, dict(plan_id=plan_id, run_id=run_id, attempt=attempt,
@@ -619,6 +632,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 tried.append(chosen['model'])
 
         for attempt in range(start + 1, contract['budget']['attempts'] + 1):
+            start_call()
             contract = read_contract(contract_path, digest)
             run_id = dispatch_id + '-r' + str(attempt)
             adapter, active_run_id = executor_adapter, run_id
@@ -785,6 +799,7 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                                 # T57 §3.3: the risky lane skips cursor_read_only and same_family.
                                 weaker = True
                                 continue
+                            start_call()
                             call += 1
                             log.append('l1.started', task_id, dict(plan_id=plan_id, run_id=run_id,
                                 attempt=attempt, tool=candidate['tool'], model=candidate['model'],
@@ -921,6 +936,10 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
     except (KeyboardInterrupt, do._Cancelled):
         summary['land'] = None
         return finish('interrupted', 'cancelled')
+    except planrun.BudgetStop:
+        # T61: no new call starts; the task stays resumable (never accepted, no ref, no chain advance).
+        summary['land'] = summary['l1'] = None
+        return finish('interrupted', 'budget')
     except ledger.LedgerError as error:
         summary['land'] = None
         reason = ledger.reason(error)

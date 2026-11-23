@@ -59,6 +59,10 @@ def register(ledger):
         'attempt.ended': _OptionalShape(ledger._SHAPES['attempt.ended'], model_actual='text?'),
         'task.state': _OptionalShape(ledger._SHAPES['task.state'], plan_id='text', commit='text',
                                      **{'class': 'text', 'attempts': 'positive'}),
+        # T61: a `plan --run` stopped by its call/time budget. max_minutes is the decimal text of
+        # the flag (the ledger stores no floats); a flag that was not given is null.
+        'plan.budget': dict(plan_id='text', max_calls='positive?', calls='counter', max_minutes='text?',
+                            elapsed_ms='counter', reason='text'),
         'lane.escalated': _OptionalShape(ledger._SHAPES['lane.escalated'],
                                          suggested_lane='lane', paths='list', plan_id='text'),
     })
