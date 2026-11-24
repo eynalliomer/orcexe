@@ -456,7 +456,10 @@ class ProcTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX escaped session and PID cleanup")
     def test_escaped_holder_drain_respects_remaining_timeout(self):
         result, _, _ = self.run_escaped_holder(timeout_s=scaled(.25))
-        self.assertLess(result.duration_s, scaled(.45))
+        # R8: a full 0.5 s drain past the 0.25 s timeout would take >= 0.75 s; the strict
+        # 0.45 s wall-clock bound flaked on loaded CI macOS (0.50, 0.54), so it is slow-only.
+        strict = os.environ.get("ORCEXE_SLOW_TESTS") == "1"
+        self.assertLess(result.duration_s, scaled(.45 if strict else .65))
 
     @unittest.skipIf(os.name == "nt", "POSIX escaped session and PID cleanup")
     def test_cancel_after_leader_exit_stops_escaped_holder_drain(self):
