@@ -271,7 +271,7 @@ class ProjectPolicyTests(PrivateHomes):
                     self.assertIn('(deny network-outbound)', argv[2])
                     self.assertIn('(deny file-write*)', argv[2])
                 else:
-                    self.assertIn('--unshare-net', argv)
+                    self.assertIn('--unshare-all', argv)
                     self.assertEqual(argv.count('--bind'), 2)
 
 

@@ -983,11 +983,16 @@ escaped. Linux uses `bwrap` with a read-only root, writable checkout/temp and pr
 network. Processes a step forks or execs inherit the policy; symlinks cannot grant
 outside writes. On macOS the profile also denies LaunchServices opens (`lsopen`,
 for example `/usr/bin/open -a App`) and sending Apple events (`appleevent-send`),
-because an app started that way runs outside the sandbox; the rest of the profile
-is `(allow default)`, so other mach/XPC services stay reachable. On Linux, `bwrap`
-unshares only the network namespace; other IPC with the host is not restricted.
-A narrower IPC policy (a macOS mach-lookup allow-list, `bwrap --unshare-all`) is
-planned for v0.3. `TMPDIR`/`TEMP`/`TMP` point to the fresh step temp. A denied write fails the
+because an app started that way runs outside the sandbox. Mach service lookups are
+denied except an allow-list of two: `com.apple.system.opendirectoryd.libinfo` and
+`com.apple.system.opendirectoryd.membership` (user/group lookups such as `getpwuid`).
+The clipboard (`pbcopy`/`pbpaste`) is therefore refused inside a step; `ps` was already refused (exec denied), so a step cannot read the parent's environment with `ps eww`.
+launchd also refuses `launchctl submit`/`bootstrap` requests from a sandboxed caller,
+so a step cannot start a job outside the profile. On Linux, `bwrap` runs with
+`--unshare-all` (all namespaces, network included) and a fresh `--tmpfs /run`, which
+hides the session bus (`/run/user/<uid>/bus`) and the docker socket; this is to be
+verified in CI on Linux hosts. Known limitation: Swift package builds (`swift build`)
+do not work inside the macOS sandbox. `TMPDIR`/`TEMP`/`TMP` point to the fresh step temp. A denied write fails the
 project check normally, with `write outside checkout denied` in feedback.
 
 If a backend is missing or the host refuses sandbox creation, steps still run, but

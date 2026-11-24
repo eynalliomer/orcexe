@@ -3,7 +3,8 @@
 Only checkout and fresh command scratch are writable. A missing backend is
 explicit evidence, never permission to accept. Child processes inherit policy.
 On macOS, LaunchServices opens and Apple events are denied because an app they
-start runs outside the profile (T48b); wider IPC confinement is planned for v0.3.
+start runs outside the profile (T48b). Mach lookups are an allow-list and bwrap
+unshares every namespace with a private /run (T56).
 """
 
 from contextvars import ContextVar
@@ -50,7 +51,10 @@ def unavailable_reason():
 def _bwrap_argv(bwrap, checkout, temporary):
     return [bwrap, '--die-with-parent', '--ro-bind', '/', '/',
             '--bind', str(checkout), str(checkout), '--bind', str(temporary), str(temporary),
-            '--dev', '/dev', '--unshare-net', '--chdir', str(checkout), '--']
+            '--dev', '/dev', '--tmpfs', '/run',
+            # T56: all namespaces (network included); /run hides the session bus
+            # (/run/user/<uid>/bus) and the docker socket.
+            '--unshare-all', '--chdir', str(checkout), '--']
 
 
 def _bwrap_setup_failed(result):
@@ -98,6 +102,12 @@ def profile(checkout, temporary):
             # LaunchServices (`open`) and Apple events start or drive processes
             # outside this profile, which would escape the write policy (T48b).
             '(deny lsopen)\n(deny appleevent-send)\n'
+            # T56: no mach service is reachable (pasteboard, ps via launchd, ...)
+            # except this allow-list, each needed by a measured tool.
+            '(deny mach-lookup)\n(allow mach-lookup\n'
+            # getpwuid / getgrgid (git, python, ssh resolve the user through these).
+            ' (global-name "com.apple.system.opendirectoryd.libinfo")\n'
+            ' (global-name "com.apple.system.opendirectoryd.membership"))\n'
             '(allow file-write* (subpath ' + _quote(checkout)
             + ') (subpath ' + _quote(temporary) + ')\n'
             ' (literal "/dev/null") (literal "/dev/tty")'

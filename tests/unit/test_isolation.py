@@ -41,6 +41,32 @@ class IsolationTests(unittest.TestCase):
         self.assertIn('(deny appleevent-send)', policy)
         self.assertIn('(allow default)', policy)
 
+    def test_profile_mach_lookup_is_an_allow_list(self):
+        # T56: pasteboard and other mach services are unreachable; only the
+        # opendirectoryd user/group lookups (getpwuid) stay allowed.
+        policy = isolation.profile('/var/tmp/checkout', '/var/tmp/scratch')
+        self.assertIn('(deny mach-lookup)', policy)
+        allowed = [line.split('"')[1] for line in policy.splitlines() if 'global-name' in line]
+        self.assertEqual(allowed, ['com.apple.system.opendirectoryd.libinfo',
+                                   'com.apple.system.opendirectoryd.membership'])
+        self.assertLess(policy.index('(deny mach-lookup)'), policy.index('(allow mach-lookup'))
+
+    def test_real_seatbelt_denies_pasteboard_and_ps_but_resolves_the_user(self):
+        if isolation.backend() != 'seatbelt':
+            self.skipTest('Seatbelt unavailable: ' + (isolation.unavailable_reason() or 'not macOS'))
+        with tempfile.TemporaryDirectory() as raw:
+            checkout = Path(raw).resolve()
+            script = ('import os,pwd,subprocess\n'
+                      'print(pwd.getpwuid(os.getuid()).pw_name)\n'
+                      'for argv in (["/usr/bin/pbpaste"], ["/bin/ps", "-p", str(os.getpid())]):\n'
+                      # Refused either at exec (EPERM) or by the mach-lookup deny.
+                      '    try: done = subprocess.run(argv, capture_output=True)\n'
+                      '    except PermissionError: continue\n'
+                      '    assert done.returncode != 0, argv\n')
+            result = isolation.run([sys.executable, '-c', script], cwd=checkout,
+                                   env=os.environ, timeout_s=20, stall_s=None)
+            self.assertEqual(result.returncode, 0, result.stderr_tail)
+
     def test_real_sandbox_denies_outside_writes_including_children_and_symlinks(self):
         if isolation.backend() == 'none':
             # Measured, not assumed per platform: the probe creates a real sandbox (T63b).
@@ -77,7 +103,10 @@ class IsolationTests(unittest.TestCase):
             isolation.run(['runner'], cwd=raw, env={})
             argv = run.call_args.args[0]
             self.assertEqual(argv[:5], ['/fake/bwrap', '--die-with-parent', '--ro-bind', '/', '/'])
-            self.assertIn('--unshare-net', argv)
+            self.assertIn('--unshare-all', argv)
+            self.assertNotIn('--share-net', argv)
+            run_at = argv.index('/run')
+            self.assertEqual(argv[run_at - 1], '--tmpfs')
             self.assertEqual(argv[-2:], ['--', 'runner'])
             self.assertEqual(argv.count('--bind'), 2)
 
@@ -98,7 +127,7 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual((mode, reason), ('bwrap', ''))
         argv = run.call_args.args[0]
         self.assertEqual(argv[:5], ['/fake/bwrap', '--die-with-parent', '--ro-bind', '/', '/'])
-        for flag in ('--dev', '--unshare-net', '--chdir'):
+        for flag in ('--dev', '--unshare-all', '--tmpfs', '--chdir'):
             self.assertIn(flag, argv)
         self.assertEqual(argv.count('--bind'), 2)
 

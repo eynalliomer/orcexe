@@ -1,5 +1,19 @@
 ## Unreleased
 
+### T56 — isolation remainder (C31): mach-lookup allow-list, bwrap --unshare-all
+
+- macOS `isolation.profile` adds `(deny mach-lookup)` with an allow-list of
+  `com.apple.system.opendirectoryd.libinfo` and `com.apple.system.opendirectoryd.membership`
+  (needed by `getpwuid`). The clipboard (`pbcopy`/`pbpaste`) and `ps` are refused in a step;
+  the `backend()` probe uses the new profile.
+- Linux `_bwrap_argv` replaces `--unshare-net` with `--unshare-all` (network stays off) and
+  mounts `--tmpfs /run`, hiding the session bus and docker socket. To be verified in CI.
+- Tests: `test_profile_mach_lookup_is_an_allow_list`,
+  `test_real_seatbelt_denies_pasteboard_and_ps_but_resolves_the_user` (skipped without
+  Seatbelt), bwrap argv/probe tests assert `--unshare-all` and `--tmpfs /run`.
+- README: isolation paragraph states the measured policy and the known limitation that
+  `swift build` does not work inside the macOS sandbox (v0.4 backlog).
+
 ### T68 — lane classifier v3: T58 L2 P2-1, P2-2, P2-4 and decision 028
 
 - `classify.CLASSIFIER_VERSION = "lane.v3"`. Plans recorded with `lane.v2` are `plan_stale`
