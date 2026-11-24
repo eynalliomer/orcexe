@@ -1,5 +1,40 @@
 ## Unreleased
 
+### T64b — slop precision on real repositories (C18 / K26)
+
+- Assertion helpers resolve transitively in Swift too: a test may call a helper from a module it
+  imports (a directory named like the import, e.g. `Sources/FooTestHelpers`) when that file itself
+  imports XCTest/Testing, including `extension XCTest` members and generic `func Name<T>(...)`
+  declarations. Every overload must check (a forwarding overload is judged by its sibling); a
+  same-named API of an imported product module is a known product call and supplies no check.
+  `#available` / `#unavailable` guards are masked, never checks.
+- The shared check vocabulary (`_check_call`, also used by L0) accepts any capitalisation of the
+  `assert` / `expect` / `verify` prefixes (`AssertHelp`, `VerifyX`); resolution still wins over the
+  name, so a resolved helper that does not assert stays a fake test.
+- Python tests are runner-collected names only: `test*` functions in `test*.py` / `*_test.py`
+  files (the names L0 counts) or `TestCase` methods. Product functions named `test_*`
+  (`task_l0.test_count`), functions nested in a function, and `@*.command` / `@*.group` /
+  `@*.fixture` callbacks are not tests. A nested callback's assertions count once the enclosing
+  test references it (`runner.invoke(cli)`) or registers it through a referenced callback
+  (`@cli.command()`); a never-referenced nested function still supplies nothing. An unresolved
+  `self.check_*` / `self.ensure_*` (mixin) counts as a check.
+- Stubs: methods decorated `@abstractmethod` or documented as a subclass duty ("must be
+  implemented by subclasses", "override") are not stubs; a defensive `else: raise
+  NotImplementedError(case)` in test code is not product code. An undecorated, undocumented ABC
+  method still is (the existing seeded case stays).
+- Imports under `if TYPE_CHECKING:` / `if t.TYPE_CHECKING:` are not dependencies.
+- Python runtime skips (`self.skipTest` / `pytest.skip`, not `xfail`) follow the marker rule: inside a
+  non-constant `if` body/`else` (`if isolation.backend() == 'none':`) or an `except` handler, up to
+  the nearest function boundary, they are `conditional_skip` (advisory). `if True:` and unconditional
+  skips stay scored `runtime_skip`. JS/Swift unchanged.
+- `missing_checks`: a committed `.swift-format` (or `.swiftlint.yml`) plus a committed script/CI
+  file running it (`swift format lint`, `swiftlint`) is a lint check; only small script/CI blobs
+  are read, through intake's bounded reader.
+- Measured scored (non-advisory) findings, before → after: swift-argument-parser 211 → 6
+  (fake_test 206 → 2, missing_checks 1 → 0, skipped_test 4 kept), click 79 → 52 (fake_test 27 → 4,
+  stub 3 → 0, dependency 1 → 0; 47 suppressions and 1 xfail kept), orcexe 30 → 9 (fake_test 8 → 3,
+  skipped_test 16 → 0 after r2; 6 `noqa` suppressions kept).
+
 ### T63c — the two remaining CI-only failures (C15)
 
 - `is_repo`: an invalid `.git` gitfile is not a usable repository. Exit 128 with `gitfile does not

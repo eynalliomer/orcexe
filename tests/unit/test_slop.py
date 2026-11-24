@@ -755,10 +755,48 @@ def test_disabled():
 '''})
         findings = self.findings('skipped_test')
         self.assertEqual([(v['path'], v['line']) for v in findings if v['advisory']],
-                         [('A.swift', 2), ('A.swift', 3)] + [('tests/test_skips.py', n) for n in (3, 6, 10, 12, 14)])
+                         [('A.swift', 2), ('A.swift', 3)] + [('tests/test_skips.py', n) for n in (3, 6, 10, 12, 14, 25)])
         self.assertTrue(all(v['signal'] == 'conditional_skip' for v in findings if v['advisory']))
         self.assertEqual([v['line'] for v in findings if not v['advisory']],
-                         [4, 5, 6, 16, 17, 18, 19, 20, 23, 25, 27, 28, 30])
+                         [4, 5, 6, 16, 17, 18, 19, 20, 23, 27, 28, 30])
+
+    def test_runtime_skip_under_non_constant_if_or_except_is_conditional(self):
+        self.commit({'tests/test_runtime_guards.py': '''import os, unittest
+from orcexe import isolation
+class Guards(unittest.TestCase):
+    def test_backend(self):
+        if isolation.backend() == 'none':
+            self.skipTest('no isolation backend')
+        assert product()
+    def test_verdict(self):
+        if self.accepted_verdict != 'accepted':
+            self.skipTest('no accepted verdict')
+        else:
+            assert product()
+    def test_symlink(self):
+        try:
+            os.symlink('a', 'b')
+        except OSError:
+            self.skipTest('symlinks unavailable')
+        assert product()
+    def test_constant(self):
+        if True:
+            self.skipTest('always')
+        assert product()
+    def test_unconditional(self):
+        self.skipTest('later')
+        assert product()
+    def test_try_body(self):
+        try:
+            self.skipTest('not guarded by the handler')
+        except OSError:
+            pass
+        assert product()
+'''})
+        self.assertEqual([(v['line'], v['signal'], v['advisory']) for v in self.findings('skipped_test')],
+                         [(6, 'conditional_skip', True), (10, 'conditional_skip', True),
+                          (17, 'conditional_skip', True), (21, 'runtime_skip', False),
+                          (24, 'runtime_skip', False), (28, 'runtime_skip', False)])
 
     def test_helper_and_conditional_skip_recount_is_deterministic(self):
         self.commit({'tests/support.py': 'def helper(value):\n    assert value\n',
@@ -932,3 +970,181 @@ test("mapped", () => { assertEquals(product(), 2); });
                          {'deno.json', 'package-lock.json', 'Pipfile.lock'})
         self.assertEqual([v['signal'] for v in report['findings'] if v['class'] == 'dependency'],
                          ['undeclared_import'])
+
+    # T64b: precision families measured on real repositories (synthetic fixtures).
+
+    def test_swift_imported_assertion_helpers_overloads_and_product_boundaries(self):
+        self.commit({'Sources/DemoTestSupport/Checks.swift': '''import XCTest
+import Demo
+public func AssertRender<T>(_ value: T, _ expected: String) {
+  XCTAssertEqual(String(describing: value), expected)
+}
+public func AssertHollow(_ value: Int) {
+  _ = value
+}
+extension XCTest {
+  public func AssertRun(command: String, expected: String? = nil) throws -> String {
+    try AssertRun(command: command.split(separator: " ").map(String.init), expected: expected)
+  }
+  public func AssertRun(command: [String], expected: String? = nil) throws -> String {
+    #if os(Windows)
+    throw XCTSkip("Unsupported on this platform")
+    #endif
+    let output = command.joined()
+    if let expected = expected { XCTAssertEqual(output, expected) }
+    return output
+  }
+  public func verifyManual(page: Int) throws {
+    _ = try AssertRun(command: "manual \\(page)")
+  }
+}
+''', 'Sources/DemoTestSupport/Overloads.swift': '''import XCTest
+public func AssertMaybe(_ value: Int) { XCTAssertEqual(value, 1) }
+public func AssertMaybe(_ value: String) { print(value) }
+''', 'Sources/Demo/Product.swift': '''public func AssertProduct(_ value: Int) {
+  assert(value > 0)
+}
+''', 'Tests/DemoTests/DemoTests.swift': '''import DemoTestSupport
+import XCTest
+@testable import Demo
+
+final class DemoTests: XCTestCase {
+  func testRender() {
+    AssertRender(1, "1")
+  }
+  func testRunString() throws {
+    try AssertRun(command: "demo 1 2", expected: "3")
+  }
+  func testManual() throws {
+    guard #available(macOS 12, *) else { return }
+    try verifyManual(page: 1)
+  }
+  func testHollowHelper() {
+    AssertHollow(product())
+  }
+  func testProductNamedAssert() {
+    AssertProduct(product())
+  }
+  func testUnresolvedCapitalised() {
+    VerifyExternal(product())
+  }
+  func testAvailabilityOnly() {
+    guard #available(macOS 12, *) else { return }
+    product()
+  }
+  func testOverloadUnchecked() {
+    AssertMaybe(product())
+  }
+}
+'''})
+        self.assertEqual([(v['line'], v['signal']) for v in self.findings('fake_test')
+                          if v['path'] == 'Tests/DemoTests/DemoTests.swift'],
+                         [(16, 'no_assertions'), (19, 'no_assertions'), (25, 'no_assertions'),
+                          (29, 'constant_assertions')])
+        # The platform skip inside the helper is still a scored skip.
+        self.assertEqual([(v['path'], v['line'], v['advisory']) for v in self.findings('skipped_test')],
+                         [('Sources/DemoTestSupport/Checks.swift', 15, False)])
+
+    def test_python_nested_callbacks_product_names_and_mixin_checks(self):
+        self.commit({'src/app/report.py': '''def test_count(text):
+    return text.count("ok")
+def test_commands(commands):
+    return [v for v in commands if v]
+''', 'tests/test_cli.py': '''import click
+
+def test_invoked_callback(runner):
+    @click.command()
+    def test(count):
+        assert count == 1
+    runner.invoke(test, ["1"])
+
+def test_outer_asserts(runner):
+    @click.command()
+    def test(count):
+        click.echo(count)
+    result = runner.invoke(test, ["1"])
+    assert result.output == "1\\n"
+
+def test_registered_subcommand(runner):
+    @click.group()
+    def cli():
+        pass
+    @cli.command()
+    def sub():
+        assert click.get_current_context() is not None
+    runner.invoke(cli, ["sub"])
+
+def test_never_referenced(runner):
+    @click.command()
+    def cli(name):
+        result = runner.invoke(cli, ["-"])
+        assert result.exception is None
+
+@click.command()
+def test_registered_at_top_level():
+    click.echo("not collected by the runner")
+
+class Scenarios:
+    def test_mixin(self):
+        self.check_scenarios(full=True)
+    def test_mixin_hollow(self):
+        self.run_scenarios(full=True)
+'''})
+        self.assertEqual([(v['path'], v['line']) for v in self.findings('fake_test')],
+                         [('tests/test_cli.py', 25), ('tests/test_cli.py', 38)])
+
+    def test_python_abstract_methods_and_defensive_test_branches(self):
+        self.commit({'src/shell.py': '''class Shell:
+    def complete_args(self):
+        """Return args. This must be implemented by subclasses."""
+        raise NotImplementedError
+    def render(self, item):
+        """Format an item; subclasses override this."""
+        raise NotImplementedError
+    def later(self):
+        """Render later."""
+        raise NotImplementedError
+def choose(kind):
+    if kind == "a":
+        return 1
+    else:
+        raise NotImplementedError(kind)
+''', 'tests/test_flags.py': '''def make(kind):
+    if kind is str:
+        return "s"
+    elif kind is int:
+        return 1
+    else:
+        raise NotImplementedError(kind)
+def test_make():
+    assert make(str) == "s"
+'''})
+        self.assertEqual([(v['path'], v['line']) for v in self.findings('stub')],
+                         [('src/shell.py', 10), ('src/shell.py', 15)])
+
+    def test_python_type_checking_imports_are_not_dependencies(self):
+        self.commit({'pyproject.toml': '[project]\nname = "demo"\ndependencies = []\n',
+                     'src/demo/__init__.py': '', 'src/demo/io.py': '''import typing as t
+from typing import TYPE_CHECKING
+if t.TYPE_CHECKING:
+    from _typeshed import ReadableBuffer
+if TYPE_CHECKING:
+    import typeonlylib
+else:
+    import runtimefallback
+import undeclared_runtime
+'''})
+        self.assertEqual([(v['line'], v['signal']) for v in self.findings('dependency')],
+                         [(8, 'undeclared_import'), (9, 'undeclared_import')])
+
+    def test_swift_format_lint_script_is_a_lint_check(self):
+        base = {'Package.swift': '// swift-tools-version:5.9\n', 'Sources/Demo/Demo.swift': 'public let x = 1\n'}
+        self.commit(dict(base, **{'.swift-format': '{"version": 1}\n'}))
+        self.assertIn('no_lint', {v['signal'] for v in self.findings('missing_checks')})
+        self.commit({'Scripts/format.sh': '#!/bin/bash\ngit ls-files -z "*.swift" | xargs -0 swift format lint --strict\n'})
+        self.assertNotIn('no_lint', {v['signal'] for v in self.findings('missing_checks')})
+
+    def test_swift_format_lint_requires_a_committed_config(self):
+        self.commit({'Package.swift': '// swift-tools-version:5.9\n',
+                     'Scripts/format.sh': '#!/bin/bash\nswift format lint --strict Sources\n'})
+        self.assertIn('no_lint', {v['signal'] for v in self.findings('missing_checks')})

@@ -77,9 +77,33 @@ def _check_call(name):
     Constant-only checks remain a separate slop signal, not a missing check.
     """
     last = name.rsplit('.', 1)[-1]
-    return (last.startswith(('assert', 'expect', 'should', 'verify', 'XCTAssert'))
+    # Helper names use any capitalisation of the prefix (AssertHelp, VerifyX).
+    return (last.startswith(('should', 'XCTAssert')) or last.lower().startswith(('assert', 'expect', 'verify'))
             or last in ('fail', 'XCTFail', 'XCTUnwrap') or 'assert' in name.split('.')[:-1]
             or name in ('pytest.raises', 'Issue.record'))
+
+
+# A committed linter configuration plus a committed script/CI step running it is
+# a lint check even when intake lists no lint command (e.g. Swift has no manifest
+# scripts). Only small script/CI blobs are read, through the same bounded reader.
+LINT_CONFIGS = {'.swift-format': r'\bswift[ -]format\b[^\n]*\blint\b',
+                '.swiftlint.yml': r'\bswiftlint\b', '.swiftlint.yaml': r'\bswiftlint\b'}
+
+
+def _lint_script(path, mode='100644'):
+    name = PurePosixPath(path).name
+    return bool(not intake._excluded(path) and (
+        PurePosixPath(path).suffix in ('.sh', '.bash', '.zsh') or name in ('Makefile', 'justfile', 'Justfile')
+        or intake._ci_provider(path) or mode == '100755' and not PurePosixPath(path).suffix))
+
+
+def _configured_lint(repo, entries, unseen, deadline):
+    patterns = sorted({LINT_CONFIGS[PurePosixPath(p).name] for p in entries if PurePosixPath(p).name in LINT_CONFIGS})
+    if not patterns:
+        return False
+    scripts = {p for p, (mode, _, _) in entries.items() if _lint_script(p, mode)}
+    blobs = _fetch(repo, entries, unseen, deadline, wanted=lambda p: p in scripts)
+    return any(re.search(pattern, raw.decode('utf-8', 'replace')) for raw in blobs.values() for pattern in patterns)
 
 
 def _language(path):
@@ -94,11 +118,11 @@ def _wanted(path):
                 or re.fullmatch(r'requirements[^/]*', name))
 
 
-def _fetch(repo, entries, unseen, deadline):
+def _fetch(repo, entries, unseen, deadline, wanted=_wanted):
     # Intake is a read-only input. Bind its exact reader to a private allow-list
     # namespace rather than mutating its globals (including during concurrent use).
     # Its secret-OID guard, mode checks, caps and batch validation stay intact.
-    namespace = dict(intake._fetch.__globals__, _file_kind=_wanted)
+    namespace = dict(intake._fetch.__globals__, _file_kind=wanted)
     reader = FunctionType(intake._fetch.__code__, namespace, 'slop_blob_reader')
     return reader(repo, entries, unseen, deadline)
 
@@ -418,14 +442,16 @@ class _PythonAssertions:
                     if depth < 3 and isinstance(target[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
                         assertions.extend(self.assertions(*target, depth=depth + 1, seen=seen + (key,)))
                 elif fallback:
-                    if last.startswith('assert') or last in ('raises', 'warns', 'fail'):
+                    if last.lower().startswith('assert') or last in ('raises', 'warns', 'fail'):
                         assertions.append(not node.args and not node.keywords
                                           or last in ('raises', 'warns', 'assertRaises', 'assertRaisesRegex',
                                                    'assertWarns', 'fail')
                                           or last.startswith(('assert_called', 'assert_not_called'))
                                           or any(not _constant(v) for v in node.args)
                                           or any(not _constant(v.value) for v in node.keywords))
-                    elif _check_call(check_name) or '.' not in name and last.startswith(('check', 'ensure')):
+                    elif (_check_call(check_name) or last.startswith(('check', 'ensure'))
+                          and ('.' not in name or name.count('.') == 1 and name.split('.')[0] in ('self', 'cls'))):
+                        # An unresolved own-method check (e.g. a mixin's self.check_x).
                         assertions.append(True)
                 if _check_call(name) and not assertions:
                     # A known product call or empty helper still has assertion
@@ -433,6 +459,26 @@ class _PythonAssertions:
                     assertions.append(False)
             if any(assertions):
                 return [True]
+        # A nested callback asserts once the test hands it on (runner.invoke(cli)),
+        # or registers it through a handed-on callback (@cli.command()). A nested
+        # function that is never referenced from the enclosing body supplies nothing.
+        body = list(_body_nodes(function))
+        nested = [v for v in body if isinstance(v, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        live = {v.id for v in body if isinstance(v, ast.Name) and isinstance(v.ctx, ast.Load)}
+        live = {v.name for v in nested if v.name in live}
+        grown = True
+        while grown:
+            grown = False
+            for declaration in nested:
+                if declaration.name not in live and any(
+                        _name(v).split('.')[0] in live for v in declaration.decorator_list):
+                    live.add(declaration.name)
+                    grown = True
+        for declaration in nested:
+            if declaration.name in live and depth < 3:
+                assertions.extend(self.assertions(path, declaration, depth + 1, seen + (key,)))
+                if any(assertions):
+                    return [True]
         return assertions
 
     def callee(self, path, node):
@@ -460,6 +506,47 @@ class _PythonAssertions:
         return any(self.availability(path, child, seen) for child in ast.iter_child_nodes(condition))
 
 
+def _python_test_file(path):
+    """Runner discovery names (unittest ``test*.py``, pytest ``*_test.py``), as L0 counts."""
+    name = PurePosixPath(path).name
+    return bool(re.fullmatch(r'test.*\.py|.*_test\.py', name))
+
+
+def _enclosed(node, parents, kinds=(ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+    parent = parents.get(node)
+    while parent is not None:
+        if isinstance(parent, kinds):
+            return True
+        parent = parents.get(parent)
+    return False
+
+
+def _type_only(node, parents):
+    """An import inside ``if TYPE_CHECKING:`` (any receiver) never runs."""
+    child, parent = node, parents.get(node)
+    while parent is not None:
+        if (isinstance(parent, ast.If) and child in parent.body
+                and _name(parent.test).rsplit('.', 1)[-1] == 'TYPE_CHECKING'):
+            return True
+        child, parent = parent, parents.get(parent)
+    return False
+
+
+ABSTRACT_DOC = re.compile(r'\bsubclass(?:es)?\b|\boverrid(?:e|den|ing)\b|\bmust\s+be\s+implemented\b'
+                          r'|\bimplemented\s+by\b|\babstract\b', re.I)
+
+
+def _abstract(node, parent, decorators):
+    """Interface methods: @abstractmethod, or a method documented as a subclass duty.
+
+    Membership in an ABC alone is not enough: ABC enforces only decorated methods,
+    so an undocumented, undecorated ``raise NotImplementedError`` stays a stub.
+    """
+    if any(v.rsplit('.', 1)[-1] in ('abstractmethod', 'abstractproperty') for v in decorators):
+        return True
+    return isinstance(parent, ast.ClassDef) and bool(ABSTRACT_DOC.search(ast.get_docstring(node) or ''))
+
+
 def _conditional_marker(decorator, name):
     if not isinstance(decorator, ast.Call) or name.rsplit('.', 1)[-1] not in ('skipIf', 'skipUnless', 'skipif'):
         return False
@@ -468,11 +555,15 @@ def _conditional_marker(decorator, name):
     return condition is not None and not _constant(condition)
 
 
-def _conditional_runtime(path, node, parents, helpers):
+def _conditional_runtime(node, parents):
+    """A runtime skip guarded like a conditional marker: inside a non-constant ``if``
+    body/``else`` or an ``except`` handler, up to the nearest function boundary."""
     child = node
     parent = parents.get(child)
-    while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        if isinstance(parent, ast.If) and child in parent.body + parent.orelse and helpers.availability(path, parent.test):
+    while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        if isinstance(parent, ast.If) and child in parent.body + parent.orelse and not _constant(parent.test):
+            return True
+        if isinstance(parent, ast.ExceptHandler) and child in parent.body:
             return True
         child, parent = parent, parents.get(parent)
     return False
@@ -492,8 +583,11 @@ def _python(path, text, add, helpers=None):
                 if token.type == tokenize.COMMENT]
     _comments(comments, 'python', add)
     imports, exports = [], []
+    test_file = _python_test_file(path)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and _type_only(node, parents):
+            pass  # Type-only imports are not runtime dependencies.
+        elif isinstance(node, ast.Import):
             imports.extend((v.name.split('.')[0], node.lineno) for v in node.names)
         elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
             imports.append((node.module.split('.')[0], node.lineno))
@@ -502,7 +596,7 @@ def _python(path, text, add, helpers=None):
             parent = parents.get(node)
             decorator = isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node in parent.decorator_list
             if not decorator and re.search(r'(?:^|\.)(?:skipTest|skip|xfail)$', name):
-                conditional = name.rsplit('.', 1)[-1] != 'xfail' and _conditional_runtime(path, node, parents, helpers)
+                conditional = name.rsplit('.', 1)[-1] != 'xfail' and _conditional_runtime(node, parents)
                 add('skipped_test', node.lineno, 'conditional_skip' if conditional else 'runtime_skip')
         if isinstance(node, ast.ClassDef):
             for decorator in node.decorator_list:
@@ -514,8 +608,14 @@ def _python(path, text, add, helpers=None):
         parent = parents.get(node)
         unittest_method = isinstance(parent, ast.ClassDef) and any(
             _name(v).endswith('TestCase') for v in parent.bases)
-        test = node.name.startswith('test_') or node.name == 'test' or unittest_method and node.name.startswith('test')
         decorators = [helpers.callee(path, v) for v in node.decorator_list]
+        # Runner-collected names only: a test file's own test functions or a
+        # TestCase method. Product functions named test_* and nested callbacks
+        # (e.g. ``@click.command() def test(...)`` inside a test) are not tests.
+        registered = any(v.rsplit('.', 1)[-1] in ('command', 'group', 'fixture') for v in decorators)
+        test = (not registered and not _enclosed(node, parents)
+                and (test_file and (node.name.startswith('test_') or node.name == 'test')
+                     or unittest_method and node.name.startswith('test')))
         for decorator, name in zip(node.decorator_list, decorators):
             if re.search(r'(?:^|\.)(?:skip\w*|xfail|only)$', name):
                 add('skipped_test', decorator.lineno, 'conditional_skip' if _conditional_marker(decorator, name) else 'test_marker')
@@ -527,10 +627,15 @@ def _python(path, text, add, helpers=None):
         parent = parents.get(node)
         protocol = isinstance(parent, ast.ClassDef) and any(
             _name(v).rsplit('.', 1)[-1] == 'Protocol' for v in parent.bases)
-        exempt = protocol or any(v.rsplit('.', 1)[-1] in ('abstractmethod', 'overload') for v in decorators)
+        exempt = (protocol or any(v.rsplit('.', 1)[-1] == 'overload' for v in decorators)
+                  or _abstract(node, parent, decorators))
         if not exempt:
+            # A defensive ``else: raise NotImplementedError(case)`` in test code
+            # rejects an unexpected parameter; it is not an unfinished product body.
             raises = [v for v in body if isinstance(v, ast.Raise)
-                      and _name(v.exc).rsplit('.', 1)[-1] in ('NotImplementedError', 'NotImplemented')]
+                      and _name(v.exc).rsplit('.', 1)[-1] in ('NotImplementedError', 'NotImplemented')
+                      and not ((test_file or _test_support(path)) and isinstance(parents.get(v), ast.If)
+                               and v in parents[v].orelse)]
             if raises:
                 add('stub', raises[0].lineno, 'not_implemented')
             else:
@@ -1005,10 +1110,29 @@ def _javascript(path, text, add, helpers=None):
 
 
 class _SwiftAssertions:
-    """Follow visible Swift functions and same-suite support, at most three calls."""
+    """Follow visible Swift functions and test support, at most three calls.
+
+    Support is same-suite test source, or a module the test imports whose file
+    itself imports XCTest/Testing (e.g. a ``Sources/FooTestHelpers`` target).
+    """
 
     def __init__(self, texts):
-        self.texts, self.units, self.support = texts, {}, {}
+        self.texts, self.units, self.support, self.index = texts, {}, {}, None
+
+    def declarations(self, wanted):
+        """Swift files declaring a function named ``wanted`` (index built once)."""
+        if self.index is None:
+            self.index = {}
+            for other_path in sorted(self.texts):
+                if not other_path.endswith('.swift'):
+                    continue
+                try:
+                    functions = self.unit(other_path)[2]
+                except (ValueError, RecursionError):
+                    continue
+                for name in {f[0] for f in functions}:
+                    self.index.setdefault(name, []).append(other_path)
+        return self.index.get(wanted, [])
 
     def unit(self, path):
         if path not in self.units:
@@ -1020,7 +1144,7 @@ class _SwiftAssertions:
                      for m in re.finditer(r'\b(?:class|struct|enum|extension)\s+(\w+)([^{}]*)\{', code)]
             type_scopes = {t[1] for t in types}
             functions = []
-            for match in re.finditer(r'\bfunc\s+(\w+)\s*\([^{}]*\)[^{]*\{', code):
+            for match in re.finditer(r'\bfunc\s+(\w+)\s*(?:<[^{}()]*>\s*)?\([^{}]*\)[^{]*\{', code):
                 decl, opening = offsets[match.start()], offsets[match.end() - 1]
                 scope = tuple(a for a, b in pairs.items() if tokens[a][1] == '{' and a < decl < b)
                 # Nested functions are lexical helpers, not callable type members.
@@ -1028,22 +1152,37 @@ class _SwiftAssertions:
                               and all(s in type_scopes for s in scope)), None)
                 private = bool(re.search(r'\b(?:private|fileprivate)\s*$', code[:match.start()]))
                 functions.append((match[1], decl, opening, pairs[opening], scope, owner, private))
-            self.units[path] = (tokens, pairs, functions, types)
+            imports = set(re.findall(r'(?m)^\s*(?:@\w+(?:\([^()\n]*\))?\s+)*import\s+'
+                                     r'(?:(?:struct|class|enum|protocol|func|var|let|typealias)\s+)?(\w+)', code))
+            self.units[path] = (tokens, pairs, functions, types, imports)
         return self.units[path]
 
+    def _members(self, other_path, wanted, root, owners):
+        try:
+            other = self.unit(other_path)
+        except (ValueError, RecursionError):
+            return []
+        return [(other_path, f) for f in other[2] if f[0] == wanted and not f[6] and (
+            not root and not f[4] or root in ('', 'self', 'Self') and f[5] in owners
+            or root not in ('', 'self', 'Self') and f[5] == root)]
+
     def resolve(self, path, name, caller):
-        _, pairs, functions, types = self.unit(path)
+        """Return the candidate declarations; [] when nothing (or nothing unique) is
+        visible, None when only an imported product declaration is."""
+        _, pairs, functions, types, imports = self.unit(path)
         root, _, member = name.rpartition('.')
         wanted = member or name
         owners = {name for name, a, b, _ in types if a < caller < b}
         for _ in range(3):
             owners.update(base for name, _, _, bases in types if name in owners for base in bases)
+        if 'XCTestCase' in owners:
+            owners.add('XCTest')  # XCTest's own superclass; extensions may target either.
         local = [f for f in functions if f[0] == wanted and
                  ((not root or root in ('self', 'Self') and f[5])
                   and (all(a < caller < pairs[a] for a in f[4]) or f[5] in owners)
                   or root not in ('', 'self', 'Self') and f[5] == root)]
         if local:
-            return path, max(local, key=lambda f: (len(f[4]), f[1]))
+            return [(path, max(local, key=lambda f: (len(f[4]), f[1])))]
         # Swift test-support files share their module without per-file imports.
         # Search the nearest suite directory first; ambiguity supplies no check.
         key = (path, name, tuple(sorted(owners)))
@@ -1053,29 +1192,40 @@ class _SwiftAssertions:
         test_root = next((i for i, part in enumerate(parts[:-1]) if part.lower() in ('test', 'tests')), None)
         suite = (PurePosixPath(*parts[:min(len(parts) - 1, test_root + 2)])
                  if test_root is not None else PurePosixPath(path).parent)
+        found = []
         for parent in PurePosixPath(path).parents:
             candidates = []
             for other_path in self.texts:
                 if (other_path == path or not other_path.endswith('.swift') or not _test_support(other_path)
                         or parent not in PurePosixPath(other_path).parents):
                     continue
-                try:
-                    other = self.unit(other_path)
-                except (ValueError, RecursionError):
-                    continue
-                for f in other[2]:
-                    if f[0] != wanted or f[6]:
-                        continue
-                    if (not root and not f[4] or root in ('', 'self', 'Self') and f[5] in owners
-                            or root not in ('', 'self', 'Self') and f[5] == root):
-                        candidates.append((other_path, f))
+                candidates.extend(self._members(other_path, wanted, root, owners))
             if candidates:
-                self.support[key] = candidates[0] if len(candidates) == 1 else None
-                return self.support[key]
+                found = candidates[:1] if len(candidates) == 1 else None
+                break
             if parent == suite:
                 break
-        self.support[key] = None
-        return None
+        if found is None:
+            found = []
+        elif not found:
+            # An imported support module (a directory named like the import, whose
+            # files import a test framework). Overloads are all candidates.
+            # A same-named API of an imported product module is a known product
+            # call: it vetoes the name-only check fallback (``None``).
+            modules = imports - {'XCTest', 'Testing', 'Foundation', 'Swift'}
+            product = False
+            for other_path in self.declarations(wanted) if modules else ():
+                if other_path == path or not modules & set(PurePosixPath(other_path).parts[:-1]):
+                    continue
+                other_imports = self.unit(other_path)[4]
+                members = self._members(other_path, wanted, root, owners)
+                if other_imports & {'XCTest', 'Testing'}:
+                    found.extend(members)
+                elif members:
+                    product = True
+            found = found[:8] or (None if product else [])
+        self.support[key] = found
+        return found
 
     def assertions(self, path, start, end, depth=0, seen=()):
         key = (path, start, end)
@@ -1085,6 +1235,13 @@ class _SwiftAssertions:
         nested = [(decl, stop) for _, decl, _, stop, *_ in functions if start <= decl < end]
         visible = [t if not any(a <= i <= b for a, b in nested) else ('code', ';', t[2], t[3])
                    for i, t in enumerate(tokens)]
+        # ``#available``/``#unavailable`` are compile-time availability guards
+        # (``guard #available(...) else { return }``), never checks.
+        for i in range(start, end):
+            if (visible[i][1] in ('available', 'unavailable') and i > start and visible[i - 1][1] == '#'
+                    and i + 1 < end and visible[i + 1][1] == '(' and i + 1 in pairs):
+                for k in range(i - 1, pairs[i + 1] + 1):
+                    visible[k] = ('code', ';', visible[k][2], visible[k][3])
         delegated = []
         for i in range(start, end):
             if (visible[i][0] != 'code' or not re.fullmatch(r'[A-Za-z_$][\w$]*', visible[i][1])
@@ -1096,14 +1253,24 @@ class _SwiftAssertions:
                 j += 2
             if j >= end or visible[j][1] != '(':
                 continue
-            target = self.resolve(path, name, i)
-            if target:
+            targets = self.resolve(path, name, i)
+            if targets is None:
+                for k in range(i, j):
+                    visible[k] = ('code', ';', visible[k][2], visible[k][3])
+            elif targets:
                 for k in range(i, j):
                     visible[k] = ('code', ';', visible[k][2], visible[k][3])
                 if depth < 3:
-                    target_path, function = target
-                    delegated.extend(self.assertions(target_path, function[2] + 1, function[3],
-                                                      depth + 1, seen + (key,)))
+                    # Every overload must check: an unchecked overload is not laundered.
+                    # An overload forwarding to its sibling is judged by that sibling.
+                    stack = seen + (key,)
+                    results = [self.assertions(target_path, function[2] + 1, function[3], depth + 1, stack)
+                               for target_path, function in targets
+                               if (target_path, function[2] + 1, function[3]) not in stack]
+                    if len(targets) == 1:
+                        delegated.extend(results[0] if results else [])
+                    elif results:
+                        delegated.append(all(any(v) for v in results))
         return _js_assertions(visible, pairs, start, end, swift=True) + delegated
 
 
@@ -1339,6 +1506,9 @@ def scan(repo):
             if not intake._own_state(path):
                 entries[path] = (mode.decode(), oid.decode(), 0 if size == b'-' else int(size))
     blobs = _fetch(repo, entries, unseen, deadline)
+    # Read lint evidence before the (unbounded-time) source analysis uses the deadline.
+    configured_lint = (not any(v['kind'] == 'lint' for v in discovery['commands'])
+                       and _configured_lint(repo, entries, unseen, deadline))
     texts, sources, manifests, findings = {}, {}, {}, []
 
     def add_for(path, kind, line, signal):
@@ -1408,6 +1578,8 @@ def scan(repo):
                 add_for(path, 'dead_code', line, 'unreferenced_export:' + name)
     _dependencies(sources, manifests, add_for, (p for p in entries if _wanted(p)))
     kinds = {v['kind'] for v in discovery['commands']}
+    if configured_lint:
+        kinds.add('lint')
     for kind, present in (('test', 'test' in kinds), ('lint', 'lint' in kinds),
                           ('ci', bool(discovery['ci']['workflow_files']))):
         if not present:
