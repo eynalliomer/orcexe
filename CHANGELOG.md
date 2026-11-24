@@ -1,5 +1,22 @@
 ## Unreleased
 
+### T65a — security pack: class-bound tests (R9) and control-state tampering fix
+
+- The shared runguard observes `.orcexe/do.lock` and `do.reclaim`, including
+  absence, around every guarded executor, L1 and auditor call. A changed file
+  causes terminal `state_tampered`, with no acceptance or landing ref. The CLI
+  still acquires and releases its own lock outside these observation windows.
+  Nonblocking regular-file reads reject FIFO replacements without hanging.
+- Add package-wide AST/argv scans for ledger-head compare-and-swap, guarded
+  executors, review calls using `guard.wrap(..., with_main=True)`, and approved
+  allowlists at context dispatch. Scan mutations cover removed guards and flags;
+  discovery includes new modules and Python entry points.
+- Offline behavioural tests cover concurrent ledger-head creation/movement,
+  deferred standard/risky tasks and plan run/resume without dispatch or run
+  directories, foreign ledger/head/run-directory writes, allowed adapter outputs,
+  executor/reviewer lock tampering and normal plan-run lock handling. All model
+  calls use fakes; acceptance evidence is simulated as in the plan-run tests.
+
 ### T56 — isolation remainder (C31): mach-lookup allow-list, bwrap --unshare-all
 
 - macOS `isolation.profile` adds `(deny mach-lookup)` with an allow-list of

@@ -3,7 +3,8 @@
 The CLI never writes the ledger or any run directory while an executor, L1
 evaluator or (later) auditor runs. ``Guard.run`` therefore observes, before and
 after each external call, the ledger bytes (size + sha256), the head ref and a
-fingerprint of the whole ``.orcexe/runs`` tree (every dispatch). Any ledger or ref
+fingerprint of the whole ``.orcexe/runs`` tree (every dispatch), and the bytes of
+``do.lock`` and ``do.reclaim`` (including their absence). Any control-file, ledger or ref
 change, and any run-directory change other than the adapter's fixed artifacts in
 that call's own output directory, is foreign: the guard writes the ``state-tampered``
 marker carrying the last trusted ledger state and raises ``isolation.StateTampered``.
@@ -29,11 +30,14 @@ ADAPTER_OUTPUTS = frozenset(('.attempt', 'brief.md', 'brief', 'brief/brief.md', 
 
 def _ledger_state(path):
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                     | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
     except FileNotFoundError:
         return None
     digest, size = hashlib.sha256(), 0
     with os.fdopen(fd, 'rb') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError('nonregular_control_state')
         for chunk in iter(lambda: handle.read(1 << 20), b''):
             digest.update(chunk)
             size += len(chunk)
@@ -100,7 +104,11 @@ class Guard:
         anchor = self.log._anchor()
         head = anchor.read(strict=False) if anchor is not None else None
         main = self.main_snapshot() if with_main and self.main_snapshot is not None else None
-        return _ledger_state(self.log.path), head, fingerprint(self.run_root), main
+        # The CLI acquires/releases these outside guarded calls. A model must
+        # neither rewrite an active lock nor create/remove a reclaim sentinel.
+        controls = tuple(_ledger_state(self.main / '.orcexe' / name)
+                         for name in ('do.lock', 'do.reclaim'))
+        return _ledger_state(self.log.path), head, fingerprint(self.run_root), main, controls
 
     def _allowed(self, before, after, own):
         """Only the adapter's fixed artifacts in the call's own directory may change."""
@@ -139,7 +147,7 @@ class Guard:
         finally:
             try:
                 after = self.observe(with_main)
-                clean = (before[0] == after[0] and before[1] == after[1]
+                clean = (before[0] == after[0] and before[1] == after[1] and before[4] == after[4]
                          and self._allowed(before[2], after[2], own))
                 same_main = before[3] == after[3]
             except Exception:

@@ -34,7 +34,11 @@ bubblewrap (`bwrap`) with a read-only root, writable checkout/scratch and privat
 network. Sandboxed project steps have network off and cannot write outside the
 checkout and their temporary scratch/HOME. Descendant processes inherit the
 policy; on macOS the profile also refuses LaunchServices opens and Apple events,
-so a step cannot start an app outside it (see below for the exact limits).
+so a step cannot start an app outside it, denies mach-lookup except an allow-list
+needed for user/group lookup, and refuses the clipboard (`pbcopy`/`pbpaste`); on
+Linux, `bwrap` runs with `--unshare-all` and a private `--tmpfs /run` (see below
+for the exact limits). Swift package builds (`swift build`) do not work inside
+the macOS sandbox.
 On other systems, or when sandbox creation is denied, steps still run with a
 temp HOME but without OS confinement: `isolation_unavailable` prevents acceptance
 (`task`: `gate_passed`, exit 0; `do`: `unverified`, exit 1). The reports record
