@@ -29,6 +29,14 @@ def git_environment(environment, directory):
     git = shutil.which('git', path=environment['PATH'])
     if not git:
         return None
+    # Newer Git (ubuntu-latest) starts detached auto-maintenance after commits; it
+    # races fixture copies (vanishing objects/maintenance.lock). Tests never need it.
+    if 'GIT_CONFIG_COUNT' not in environment:
+        pairs = (('maintenance.auto', 'false'), ('gc.auto', '0'))
+        environment['GIT_CONFIG_COUNT'] = str(len(pairs))
+        for i, (key, value) in enumerate(pairs):
+            environment['GIT_CONFIG_KEY_%d' % i] = key
+            environment['GIT_CONFIG_VALUE_%d' % i] = value
     if sys.platform == 'darwin':
         if _GIT is None:
             _GIT = subprocess.run(['xcrun', '--find', 'git'], env=environment,
@@ -58,4 +66,5 @@ class GitTemplates:
             template.mkdir()
             build(template)
             self.paths[name] = template
-        shutil.copytree(self.paths[name], destination)
+        # Transient lock files (e.g. a background maintenance run) are not repository state.
+        shutil.copytree(self.paths[name], destination, ignore=shutil.ignore_patterns('*.lock'))
