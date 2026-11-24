@@ -71,7 +71,9 @@ class RiskAreaTests(GitFixture):
         fsio.atomic_write_json(self.main / '.orcexe/project-map.json', {})
         local = self.main / '.orcexe/risk-map.yaml'
         local.write_text('invalid: true\n')
-        self.assertEqual(self.lane(['tests/**'])[0], 'standard')
+        # Decision 028 (T68): an unusable local map floors the lane at risky (was standard).
+        self.assertEqual(self.lane(['tests/**'])[0], 'risky')
+        self.assertIn('cli:risk_map_invalid:unavailable', self.lane(['tests/**'])[1])
         self.assertEqual(self.lane(['src/auth/new.py'])[0], 'risky')
         self.assertEqual(task._escalation(self.main, ['safe.py'])['suggested_lane'], 'risky')
         local.unlink()

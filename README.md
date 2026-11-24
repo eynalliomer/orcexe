@@ -450,7 +450,7 @@ the lane and records `cli:risk_glob_unusable:<glob>` in `lane_basis`.
 The Markdown approval form shows each task's lane basis, including the risk class
 and area or do-not-touch area that raised its lane.
 
-Plan lanes use classifier `lane.v2`, recorded as `"classifier": "lane.v2"` in
+Plan lanes use classifier `lane.v3`, recorded as `"classifier": "lane.v3"` in
 `plan.json` (bound by `content_sha256`). The goal keeps every `do` rule, so no
 goal gets a lower lane than `do` gives it; in addition an identifier hides an
 action word only when it names a tracked file (full path or file name with
@@ -462,14 +462,30 @@ and the task lane is the highest of the fields: action shapes (spaced backticks
 and fences as commands, calls such as `os.remove(` or `requests.put(`, command
 names such as `curl` or `git push`, imperatives, run-verb sentences, hard
 destructive words such as `rmtree` or `rm`, uppercase HTTP methods, and state
-sentences such as "is pushed to origin" or "dalı origin'e gönder") make a task
-risky; a narrow set of exact risk words (`password`, `secret`, `payment`,
+sentences such as "is pushed to origin", "the commit is pushed" or "dalı origin'e gönder")
+make a task risky. A bare verb counts anywhere in a sentence when it has an object
+and a direction ("When tests pass, push the branch to origin"), but not after a
+determiner or a negation ("the push to origin", "do not push the branch") or as a
+compound modifier ("commit message"); `post` and `tag` count like `push`; a word
+after `:` starts a sentence (`TODO: push …`); Turkish "push et", "push'la",
+"merge yap", "yayına al", "yükleyip" and "gönderin" count. A run-verb sentence
+counts outward and hard destructive parts of what it runs and of its plain words.
+Every line also counts as its own sentence, and in addition a single line break
+is joined into one sentence (only a blank line or a bulleted line splits it);
+`e.g.`, `i.e.`, `vs.`, `etc.` or `J.` end a sentence only before a capitalized
+word. lane.v3 never classifies a done item or the notes lower than `lane.v2`
+except through a small set of named exemptions, recorded in the basis as
+`exempted` (for example `exempt:descriptive_subject A4=commit` for "Commit
+messages are validated", or `exempt:prose_publishes_no` for "makes no model call
+and publishes no plan.json"); a narrow set of exact risk words (`password`, `secret`, `payment`,
 `migration`, `production`, `şifre`…) raises too, while other risk words are
 only recorded. Soft destructive words (`remove`, `sil`…) keep standard. Basis
 lines name their field: `cli:goal:A2:git.push`, `cli:done[1]:A8:pushed`,
-`cli:notes:risk_word:token`. Only the goal can produce fast. An unusable
-`risk-map.yaml` (corrupt, wrong type, unknown key, unsupported version, dangling
-symlink, unreadable) never lowers a text-derived lane and never gives fast.
+`cli:notes:risk_word:token`. Only the goal can produce fast. A present but
+unusable `risk-map.yaml` (corrupt, empty, binary, wrong type, unknown key,
+unsupported version, symlink, unreadable) makes every task lane at least risky,
+also for a harmless text, and records `risk_map_invalid` (decision 028); a missing
+map changes nothing.
 The classifier is a word list, not an understanding of intent: actions it has
 no word for (`aws s3 sync`, `pip install`, `vercel --prod`, `npm run ship`, a
 pull request or Slack message, turning off TLS checks, `subprocess.run(cmd)`
@@ -541,7 +557,7 @@ state: `plan --run` and `--resume` skip deferred tasks (the run ends `partial`,
 exit 1) and `orcexe task --plan PLAN_ID --task T3` on a deferred task exits 2
 with `task_deferred`. Before any dispatch (`task`, `plan --run`, `--open`) the
 CLI checks the content hash, HEAD (`plan_stale`), the classifier (a plan whose
-`classifier` is not the current `lane.v2` is `plan_stale` with stderr
+`classifier` is not the current `lane.v3` is `plan_stale` with stderr
 `detail: classifier_changed`, also when approving a proposal), a missing
 `approval` (plans approved before this version are `plan_stale`, never treated
 as fully approved), `approval_sha256`, that `approved ∪ deferred` are exactly the

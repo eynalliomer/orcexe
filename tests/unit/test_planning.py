@@ -184,7 +184,7 @@ class PlanChecks(unittest.TestCase):
         self.assertEqual(planning.task_lane(task(files={'allow': ['src/auth/new.py']}), project())[0], 'risky')
 
     def test_lane_v2_done_and_notes_raise_with_field_basis(self):
-        # T58: every task's lane comes from goal + done + notes (lane.v2).
+        # T58: every task's lane comes from goal + done + notes (lane.v2, now lane.v3).
         lane, basis = planning.task_lane(task(done=['The spelling is corrected.',
                                                     'The branch is pushed to origin.']), project())
         self.assertEqual(lane, 'risky')
@@ -288,9 +288,9 @@ class PlanCLI(GitFixture):
         from orcexe import classify
         result = self.proposed()
         self.assertEqual(result['classifier'], classify.CLASSIFIER_VERSION)
-        self.assertEqual(result['classifier'], 'lane.v2')
-        self.assertEqual(fsio.read_json(self.state / 'plan.json')['classifier'], 'lane.v2')
-        changed = dict(result, classifier='lane.v1')
+        self.assertEqual(result['classifier'], 'lane.v3')
+        self.assertEqual(fsio.read_json(self.state / 'plan.json')['classifier'], 'lane.v3')
+        changed = dict(result, classifier='lane.v2')
         self.assertNotEqual(planning.content_sha256(changed), result['content_sha256'])
 
     def test_state_dir_inside_repository_is_reported_without_model_call_or_plan(self):

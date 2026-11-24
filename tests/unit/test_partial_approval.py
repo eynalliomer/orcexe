@@ -256,18 +256,39 @@ class PartialApprovalTests(TaskFixture):
     # -- classifier version and pre-T59 plans ---------------------------------------------
     def test_classifier_change_is_stale_everywhere(self):
         self.propose([doc('T1'), doc('T2')])
-        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v3'):
+        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v9'):
             code, out, err = self.approve(expect=2)
         self.assertEqual(err, 'not_seen: plan_stale\ndetail: classifier_changed\n')
         self.approve('--defer', 'T2')
         before = self.files()
-        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v3'):
+        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v9'):
             code, out, err = self.approve('--open', 'T2', expect=2)
             self.assertEqual(err, 'not_seen: plan_stale\ndetail: classifier_changed\n')
             code, result, error = self.invoke_plan()
             self.assertEqual((code, result['reason'], error), (2, 'plan_stale', 'not_seen: plan_stale\ndetail: classifier_changed\n'))
             code, result, error = self.invoke()
             self.assertEqual((code, result['reason'], error), (2, 'plan_stale', 'not_seen: plan_stale\ndetail: classifier_changed\n'))
+        self.assertEqual(self.files(), before)
+        self.assertFalse(self.counter.exists())
+
+    def test_lane_v2_plans_are_stale_under_lane_v3(self):
+        """T68: plans proposed (and approved) by lane.v2 go stale with the real lane.v3."""
+        self.assertEqual(classify.CLASSIFIER_VERSION, 'lane.v3')
+        stale = 'not_seen: plan_stale\ndetail: classifier_changed\n'
+        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v2'):
+            self.propose([doc('T1'), doc('T2')])
+        self.assertEqual(self.saved['classifier'], 'lane.v2')
+        code, out, err = self.approve(expect=2)
+        self.assertEqual(err, stale)
+        with mock.patch.object(classify, 'CLASSIFIER_VERSION', 'lane.v2'):
+            self.approve('--defer', 'T2')
+        before = self.files()
+        code, out, err = self.approve('--open', 'T2', expect=2)
+        self.assertEqual(err, stale)
+        code, result, error = self.invoke_plan()
+        self.assertEqual((code, result['reason'], error), (2, 'plan_stale', stale))
+        code, result, error = self.invoke()
+        self.assertEqual((code, result['reason'], error), (2, 'plan_stale', stale))
         self.assertEqual(self.files(), before)
         self.assertFalse(self.counter.exists())
 

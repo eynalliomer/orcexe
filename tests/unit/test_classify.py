@@ -713,13 +713,14 @@ class RiskMapTests(GitFixture):
             self.assertEqual(classify_repo(str(self.main), "ledger README.md").lane, "risky")
             self.write_map("version: 99\n")
             result = classify_repo(str(self.main), "Fix README.md")
-            self.assertEqual(result.lane, "standard")
+            # Decision 028 (T68): an unusable map floors at risky (was "standard").
+            self.assertEqual(result.lane, "risky")
             self.assertIn("risk_map_invalid", {s.id for s in result.signals})
             # T58 (P1-3): an unusable map never lowers a text-derived lane
             # (this asserted "standard" before T58).
             self.assertEqual(classify_repo(str(self.main), "auth README.md").lane, "risky")
             self.write_map("version: [\n")
-            self.assertEqual(classify_repo(str(self.main), "Fix README.md").lane, "standard")
+            self.assertEqual(classify_repo(str(self.main), "Fix README.md").lane, "risky")
             self.assertEqual(classify_repo(str(self.home), "Help me").mode, "everyday")
 
     def test_empty_repo_and_observation_failure(self):
@@ -736,13 +737,13 @@ class RiskMapTests(GitFixture):
         self.git_run(self.main, "add", ".")
         with mock.patch.object(classifier, "load_risk_map", side_effect=PermissionError("denied")):
             result = classify_repo(str(self.main), "Fix README.md")
-        self.assertEqual(result.lane, "standard")
+        self.assertEqual(result.lane, "risky")  # decision 028 (T68); was "standard"
         self.assertIn("risk_map_invalid", {s.id for s in result.signals})
         path = self.main / ".orcexe" / "risk-map.yaml"
         path.parent.mkdir()
         path.symlink_to("absent.yaml")
         result = classify_repo(str(self.main), "Fix README.md")
-        self.assertEqual(result.lane, "standard")
+        self.assertEqual(result.lane, "risky")
         self.assertIn("risk_map_invalid", {s.id for s in result.signals})
 
 

@@ -18,7 +18,7 @@ def repository_areas(repo=None, project=None):
     """Return all additive areas with their existing lane-basis labels.
 
     An unavailable input is represented explicitly, so consumers cannot silently
-    narrow policy. Invalid local YAML retains the standard planning floor;
+    narrow policy. Invalid local YAML is a risky planning floor (decision 028);
     concrete-path checks fail closed for any unavailable area.
     """
     areas = [RiskArea(p, 'cli:risk_path:' + p) for p in classify._RISK_PATHS]
@@ -26,7 +26,7 @@ def repository_areas(repo=None, project=None):
         local = classify.repository_risk_map(repo) if repo is not None else classify.RiskMap()
         areas.extend(RiskArea(p, 'cli:risk_path:' + p) for p in local.risky_paths)
     except classify._RISK_MAP_ERRORS:
-        areas.append(RiskArea(None, 'cli:risk_map_invalid:unavailable', 'standard'))
+        areas.append(RiskArea(None, 'cli:risk_map_invalid:unavailable', 'risky'))
     try:
         if project is None:
             try:

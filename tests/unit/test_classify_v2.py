@@ -1,4 +1,4 @@
-"""T58 lane.v2: goal + done + notes, the lane only rises (T57 r2 §1.2, decision 027 Ş1)."""
+"""T58 lane.v2 (now lane.v3, T68): goal + done + notes, the lane only rises (T57 r2 §1.2, decision 027 Ş1)."""
 
 import os
 from pathlib import Path
@@ -34,7 +34,7 @@ def field_ids(result, field):
 class ApiTests(unittest.TestCase):
     def test_version_and_shape(self):
         self.assertRegex(CLASSIFIER_VERSION, r"^lane\.v[1-9][0-9]*$")
-        self.assertEqual(CLASSIFIER_VERSION, "lane.v2")
+        self.assertEqual(CLASSIFIER_VERSION, "lane.v3")
         result = task_lane(NEUTRAL_GOAL, ["The spelling is corrected."], "", TRACKED)
         self.assertIsInstance(result, Classification)
         self.assertEqual(result.lane, "fast")
@@ -310,7 +310,10 @@ class DifferentialTests(unittest.TestCase):
 
 
 class RiskMapFloorTests(GitFixture):
-    """P1-3: an unusable risk map never lowers a text lane and never yields fast."""
+    """P1-3: an unusable risk map never lowers a text lane and never yields fast.
+
+    Decision 028 (T68): it floors the lane at risky, even for a harmless text.
+    """
 
     BROKEN = ["version: [\n", "version: 99\n", "[]\n", "version: 1\nunknown: []\n",
               "version: 1\nrisky_words: foo\n", "version: 1\nrisky_words: [1]\n", '"text"\n']
@@ -327,8 +330,8 @@ class RiskMapFloorTests(GitFixture):
             for goal, done, expected in [("auth README.md", [], "risky"),
                                          ("Push README.md upstream", [], "risky"),
                                          (NEUTRAL_GOAL, ["The branch is pushed to origin"], "risky"),
-                                         (NEUTRAL_GOAL, [], "standard"),
-                                         ("Fix README.md", [], "standard")]:
+                                         (NEUTRAL_GOAL, [], "risky"),
+                                         ("Fix README.md", [], "risky")]:
                 result = task_lane_repo(str(self.main), goal, done, "")
                 self.assertEqual(result.lane, expected, goal)
                 self.assertIn("risk_map_invalid", {s.id for s in result.signals})

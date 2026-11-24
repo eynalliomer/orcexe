@@ -192,7 +192,7 @@ def clean_tasks(tasks, clean):
 def task_lane(task, project, repo=None):
     allowed = task['files']['allow']
     files = sorted({path for pattern in allowed for path in expand(pattern)})
-    # lane.v2: goal + done + notes; the result is the field maximum.
+    # lane.v3: goal + done + notes; the result is the field maximum.
     done, notes = task['done'], task.get('notes', '')
     classified = (classify.task_lane_repo(str(repo), task['goal'], done, notes) if repo is not None
                   else classify.task_lane(task['goal'], done, notes, files))

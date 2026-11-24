@@ -1,5 +1,136 @@
 ## Unreleased
 
+### T68 — lane classifier v3: T58 L2 P2-1, P2-2, P2-4 and decision 028
+
+- `classify.CLASSIFIER_VERSION = "lane.v3"`. Plans recorded with `lane.v2` are `plan_stale`
+  (`detail: classifier_changed`) at approval, `--open`, `plan --run` and `task`
+  (`test_partial_approval.test_lane_v2_plans_are_stale_under_lane_v3`).
+- P2-1 (done/notes, and the goal): a bare outward verb (`push publish upload deploy send email
+  mail merge rebase commit post tag`) counts anywhere in a sentence (A8) when an object follows
+  it (a determiner/pronoun, an identifier or command, or `to/into/onto`) and it has a direction
+  (`to/into/onto` within 6 words) or an A8 noun within 3 words (nouns gain `build crate
+  payload`). It does not count after a determiner (`the push to origin`), after a negation
+  (`do not push`, `never push`, `not to push`), inside a kebab/slash word (`post-merge`) or as a
+  compound modifier (`commit message`). Passive state sentences (`is pushed`, `are then
+  committed`, `is sent`) count unless negated back to the clause start (`nothing is pushed`,
+  `No plan.json or plan.md is published`); `merge`, `post`, `tag` are excluded there. `post`
+  and `tag` join the inflected A8 forms (`POSTs`, `tagged`). A word after `:` or `,` starts a
+  clause for A4 (with an object or the sentence end) and for bare verbs (`TODO: push …`,
+  `After that, push the branch.`). A3 pairs add `cargo publish`, `compose push`. Turkish:
+  `<push|commit|deploy|merge|rebase|publish|upload|tag> + et/edin/edip/edilir/yap/yapın/atın…`
+  (bare `at` only at the sentence end or before `ve`/`sonra`), `yayına/canlıya al…`, and
+  suffix + continuation forms of the A4-TR stems (`yükleyip`, `gönderin`, `yayınlasın`) count
+  whatever follows.
+- P2-2: A5 (run verb + outward part) scans identifier and command parts by prefix as before; a
+  prose word counts only in its full form (`deploy`, `merging`, `published`) and only as the run
+  verb's object (at most three determiners between: `Execute the deploy step`). `source` is a run
+  verb only before an identifier or command. A mid-sentence "lead + verb" (A4) needs an object
+  or the sentence end (`pre and post conditions`, `Branch and tag names` stay quiet). The
+  passive aorist of the ambiguous Turkish stems `yükle birleştir paylaş` (`yüklenir`,
+  `birleştirilir`, `paylaşılır`) describes and is not A4-TR.
+- r2 (gate findings): exemptions only stop new v3 signals. Kebab/slash prose parts keep lane.v2's
+  A5 prefix match (`Trigger the mirror-push job`); a prose run object may be a noun phrase of up
+  to three words that contains no conjunction, preposition or clause break. The Turkish passive-aorist
+  exemption applies only without a destination: no word before the verb ending in -a/-e
+  (dative/locative such as `kanalında`, `sunucuya`; function words and `-sa/-se` conditionals
+  excepted), no apostrophe suffix ending in -a/-e (`PyPI'ye`, `` `main`'e ``), and no A8 noun.
+  `Özet ekip kanalında paylaşılır.` and `Paket PyPI'ye yüklenir.` stay risky; `Koşul sağlanırsa
+  etiketler birleştirilir.` does not. A sentence-start A4 verb followed by a bare noun phrase that
+  is the subject of a finite verb (`is are was were stay remain become has have must should will
+  can may`) within six tokens, with no direction, relative pronoun or clause break before it, is
+  descriptive (`Tag names in the parser are case-insensitive.`); `Push changes to origin.`, `Tag
+  the release.`, `Push branches that are ready.` stay risky.
+- r3: the descriptive start-verb rule is narrowed to its main-verb form: one or two bare nouns,
+  then optionally one prepositional phrase (not after/before/to; at most three plain words) or
+  one participle, then directly the finite verb. Any subordinator or clause joiner (when, after,
+  before, once, until, if, so, because, while, as, unless, then, since, though…), relative
+  pronoun or clause break before the finite verb keeps the imperative: `Publish builds when they
+  are ready.`, `Merge branches after CI has passed.` stay risky. Tests: 12 imperative +
+  subordinate clause sentences (push/publish/upload/merge/tag/deploy/send/commit) risky in done
+  and notes (and risky under the frozen v2), and the quiet twins `Tag names in the parser are
+  case-insensitive.`, `Commit messages are validated.`, `Deploy scripts must be idempotent.`,
+  `Post titles stay under 80 characters.`. The last two were lane.v2 A4 catches, so they join the
+  v2-subset allowlist (14 entries).
+- Structural v2 subset: `tests/fixtures/classify/lane_v2.py` is the lane.v2 classifier frozen
+  verbatim (0b7bcb6). `test_classify_v3.V2SubsetTests` runs it and lane.v3 over every
+  `test_classify_v2`/`test_classify_v3` sentence (including today's v1 test texts) as goal,
+  done and notes with three file sets, and asserts `lane_v3 >= lane_v2`, except an explicit
+  allowlist of P2-2/r2/r3 false alarms (12 after r2, 14 after r3), each with a reason. The goal field never drops, and every
+  allowlist entry must really drop, so stale entries fail.
+- P2-4: one line break is a space; only a blank line or a bulleted/numbered line starts a new
+  sentence. `e.g.`, `i.e.`, `vs.`, `etc.` and one letter plus a dot (`J.`) never end a sentence.
+- Decision 028: a present but unusable `.orcexe/risk-map.yaml` (corrupt, empty, binary, wrong
+  type/key/version, any symlink — including one to a valid file —, unreadable) makes both
+  `classify_repo` and `task_lane_repo` return at least `risky` with `risk_map_invalid`, also for
+  a harmless text (README typo); `risk_areas` records that area as `risky`. A missing map changes
+  nothing; the `git_unavailable` floor stays `standard`. Tests that asserted `standard` for a
+  broken map (`test_classify`, `test_classify_v2.RiskMapFloorTests`, `test_risk_areas`) now
+  assert `risky`.
+- Measurement (16 unique real plan tasks: 12 from the T47 reports, 2 from the local
+  `.orcexe` plan state, 1 T62 plan, the T40c fixture; tracked files = `git ls-files`): risky
+  v2 = 6, v3 = 4. The two dropped are the A5 false alarms of P2-2 (`plan3` T2 `published`,
+  `plan4` T1 `publishes`); no task became newly risky.
+- Tests: `test_classify_v3` (P2-1 catches/twins incl. Turkish, P2-2 twins and kept catches,
+  P2-4 wrapped lines/abbreviations/sentence boundaries, decision 028 floors for both entry
+  points, no-map/valid-map/git_unavailable unchanged, plan lane and risk area, goal never below
+  `classify(goal)`); version assertions in `test_classify_v2` and `test_planning`.
+- r4 (T68 L2, P1-1..P1-5, P2-2): architecture fix. A done/notes/goal field's lane.v3 signals
+  are now `(lane.v2 signals − named exemptions) ∪ lane.v3 additions`, so the r1–r3 in-place
+  narrowings no longer lower anything lane.v2 caught (`Fix lint and push again.`, `Run the
+  deployment.`, `Sonra deploy işini tetikle.`, `Update version\nCommit\nPush\nDeploy`, `Rapor Slack
+  ile paylaşılır.`, `Push branch is done.`, `Update docs, tests, etc. Deploy the site.` are risky).
+  - `_v2_field_signals` computes lane.v2's field rules bit for bit (lane.v2's line-by-line
+    sentences and its constants frozen as `_V2_*`); `V2BaseTests` compares its signals and
+    sentences with the frozen fixture over the corpus and the grid, and the shared constants
+    one by one.
+  - `_v3_additions` (the r1–r3 rules on joined-line sentences) only adds. Its narrowing only
+    keeps it from re-adding a false alarm.
+  - The exemption pass is separate, done/notes only, per lane.v2 sentence and closed:
+    `exempt:descriptive_subject` (verb + one head noun of `names messages notifications
+    conflicts requests hooks keys permissions titles scripts limits fields` + optional one
+    prepositional phrase + `is/are/stay(s)/remain(s)`; a modal, `has/have` or
+    `done/complete/happen` anywhere breaks it), `exempt:prose_pre_post`,
+    `exempt:prose_model_call`, `exempt:prose_source_of_truth`, `exempt:prose_starts_with`,
+    `exempt:prose_starts_final` (run context that is only these noun/intransitive uses; A5 prose
+    words only), `exempt:prose_published_outputs`, `exempt:prose_publishes_no`, and
+    `exempt:tr_conditional_description` (passive aorist of `yükle birleştir paylaş` with a
+    `-sa/-se` clause and `etiketler/ayarlar`, no `ile/üzerinden`, no destination). Each dropped
+    signal is reported as `<field>:exempted` (`exempt:descriptive_subject A4=commit`).
+  - Now risky again, as in lane.v2: `Deploy scripts must be idempotent.`, `Branch, tag and commit
+    lists stay sorted.`, `Etiketler birleştirilir.`, `Run the tests and the published docs stay
+    unchanged.`, `Run the publisher tests and note the pushback.`.
+  - P2-4 additions: an abbreviation or one letter + dot before a capitalized word ends a
+    sentence; bullets add `– — · >` and one-letter items (`a.`, `a)`).
+  - P2-1 additions: `push'la`/`merge'le`, `-meyi/-mayı unutma`, `mail/email at`, `yayımla`,
+    `to + bare verb` at the sentence end or before `it/them` (`Don't forget to push.`).
+  - Tests: the r2/r3 allowlist is gone. `V2SubsetTests` (corpus, three file sets) and
+    `TemplateGridTests` (1,818 generated sentences: P1-1 3×7×13, P1-2 6×6, line lists and
+    bullets, abbreviations, Turkish passive with `ile/üzerinden`, work-step labels, descriptive
+    heads, every review sentence) assert that every lane.v2 risky signal lane.v3 lacks has an
+    `exempted` signal, that a lane falls only then, that exemptions fire only on the
+    sentences tagged with that exemption's name, and that the goal is never exempted.
+    `ExemptionTests` covers every exemption name with a positive sentence and near misses.
+  - Measurement (same 16 real tasks): risky v2 = 6, v3 = 4. The two drops are
+    `exempt:prose_published_outputs` (`plan3` T2) and `exempt:prose_publishes_no` (`plan4` T1).
+- r5 (second L2 on r4): exemptions narrowed to their names.
+  - Each run-context exemption drops only its own A5 words: `prose_model_call` → `published
+    publishes`, `prose_source_of_truth` → `committed`, `prose_starts_with` → `tagline postal`,
+    `prose_starts_final` → `truncated`. `After the model call, publish docs.`, `Once merged, the
+    deploy starts.`, `Keep main as the source of truth for deployments.` stay risky.
+  - `prose_publishes_no` needs an identifier or the sentence end after `no`;
+    `prose_published_outputs` needs one to three identifiers or `.orcexe` between the words.
+  - `tr_conditional_description`: only `birleştir + etiketler` and `yükle + ayarlar` (`paylaş`
+    never), the object directly before the verb, and a Turkish conditional suffix (`-rsa/-rse`,
+    `varsa/yoksa`) instead of any word ending in `sa/se`.
+  - `V2BaseTests` adds a seeded differential over 300 messy generated notes (unicode, CRLF,
+    fences, backticks, calls, identifiers, bullets, notes over 2,000 characters). Shared helpers
+    used by the v2 base carry a "keep V2BaseTests green" comment. `_v3_additions` was not trimmed.
+  - Measurement unchanged: risky v2 = 6, v3 = 4 on the 16 real tasks.
+- r6 (rule R8): `test_classify_v3`'s full template grid, the 300-text random differential and
+  the three-file-set loops run only with `ORCEXE_SLOW_TESTS=1`. The default run keeps every
+  10th grid cell (every family) plus every review, exemption and near-miss sentence, and the
+  first 40 random texts of the same seed (about 11s on Python 3.9, 44s in slow mode).
+
 ### T64b — slop precision on real repositories (C18 / K26)
 
 - Assertion helpers resolve transitively in Swift too: a test may call a helper from a module it

@@ -134,6 +134,7 @@ def _fold(text):
     return text.casefold().replace("\u0307", "").replace("ı", "i")
 
 
+# Used by the v2 base (_v2_field_signals); any change must keep V2BaseTests green.
 def _words(text):
     """Unicode letters/digits, split at punctuation (including underscores)."""
     return _WORD.findall(_fold(text))
@@ -570,8 +571,40 @@ def classify(task: str, files: Sequence[str] | None,
 #   K-4  done/notes: a narrow exact-word risk subset raises; other risk words
 #        are informational.
 # Fast is produced only by the goal (v1); done/notes can only raise.
+#
+# lane.v3 (T68; T58 L2 P2-1, P2-2, P2-4 and decision 028):
+#   P2-4  a single line break is a space; only a blank line, a bulleted line
+#         and .;!? end a sentence. "e.g." "i.e." "vs." "etc." and one letter
+#         plus a dot never end one.
+#   P2-1  a bare outward verb counts anywhere in a sentence when it has an
+#         object (a determiner/pronoun/identifier or to/into/onto right after
+#         it) and a direction (to/into/onto within 6 words) or an A8 noun
+#         within 3 words; never after a determiner or a negation, never as part
+#         of a kebab/slash word or as a compound modifier ("commit message").
+#         Passive state sentences ("is pushed", "are committed") count unless
+#         negated. "post"/"tag" join A8; a word after ":" starts a sentence;
+#         Turkish "<English verb> et/at/yap/edin…", "yayına/canlıya al" and
+#         suffix + continuation forms (yükleyip, gönderin) count.
+#   P2-2  A5 scans identifier and command parts by prefix; a prose word counts
+#         only in its full form and only as the object of the run verb (with at
+#         most determiners between). "source" is a run verb only before an
+#         identifier or command. A mid-sentence "lead + verb" (A4) needs an
+#         object or the sentence end. Passive aorist of ambiguous Turkish stems
+#         (yüklenir, birleştirilir, paylaşılır) is a description, not A4-TR.
+#   028   an unusable risk map floors classify_repo/task_lane_repo at risky.
+#
+# T68 r4 architecture (T68 L2 P2-2): a field's lane.v3 signals are
+#   (lane.v2 signals - named exemptions) | lane.v3 additions.
+# _v2_field_signals() is lane.v2's field rules bit for bit (frozen constants
+# _V2_*, line-by-line sentences); tests compare it with the frozen fixture
+# tests/fixtures/classify/lane_v2.py. _v3_additions() runs the rules above on
+# lane.v3 sentences (joined lines) and can only add. _EXEMPTIONS is the one,
+# closed place where a lane.v2 signal may fall, per sentence and only in
+# done/notes; each fallen signal is reported as "<field>:exempted" with the
+# exemption's name. The narrowing inside _v3_additions only keeps it from
+# re-adding a false alarm; it never removes a lane.v2 signal.
 
-CLASSIFIER_VERSION = "lane.v2"
+CLASSIFIER_VERSION = "lane.v3"
 
 
 def _folded(text):
@@ -585,18 +618,65 @@ _A_SOFT = _folded("delete remove drop sil kaldır temizle boşalt")
 _A_CALL_EXTRA = _folded("put patch delete remove urlopen sendmail create_connection")
 _A_NET = frozenset(_folded("requests httpx urllib aiohttp smtplib socket boto3 paramiko ftplib"))
 _A_GIT = frozenset(_folded("push commit tag merge rebase reset clean"))
-_A_PAIRS = (("docker", "push"), ("npm", "publish"), ("pip", "upload"), ("force", "push"))
+_A_PAIRS = (("docker", "push"), ("npm", "publish"), ("pip", "upload"), ("force", "push"),
+            ("cargo", "publish"), ("compose", "push"))
 _RUN_VERBS = _folded("""run execut exec call invok launch start trigger spawn schedul
-source python çalıştır koş başlat tetikle""")
+python çalıştır koş başlat tetikle""")
+# lane.v3 (P2-2): "source" is a run verb only before an identifier or command.
+_RUN_SOURCE = _fold("source")
 # Interpreter names match as whole words: as prefixes, sh would make every
 # "should"/"show"/"share" sentence a call context.
 _RUN_WORDS = frozenset(_folded("sh bash zsh node nodejs npx"))
 _CALL_EXTENSIONS = (".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd")
 _A4_LEADS = frozenset(_folded("also finally please then and afterwards next now"))
 _A4_VERBS = frozenset(_A_VERBS)
-_A4_TR = _folded("gönder yayınla yükle paylaş birleştir pushla commitle")
+_A4_TR = _folded("gönder yayınla yayımla yükle paylaş birleştir pushla commitle")
 _A4_TR_NEXT = frozenset(_folded("ve sonra"))
 _A8_TARGETS = frozenset(_folded("to into onto"))
+# lane.v3 (P2-1/P2-2): object, noun-use and negation context for bare verbs.
+_DETERMINERS = frozenset(_folded("""the a an this that these those its their our your my his
+her one no each every any some another"""))
+_OBJECT_NEXT = _DETERMINERS | frozenset(_folded("it them everything all both changes results files"))
+_NEGATIONS = frozenset(_folded("not never t nor without"))
+_PASSIVE_NEGATIONS = frozenset(_folded("not never nothing no none neither nor"))
+_CLAUSE_JOINERS = frozenset(_folded("and but then so while once after when if"))
+# T68 r2: the run verb's object noun phrase ends at these words.
+_PREPOSITIONS = frozenset(_folded("""of in on at for from by with under over after before into to
+onto via about"""))
+_NP_BREAKS = _CLAUSE_JOINERS | _PREPOSITIONS
+# Words that end exempt:descriptive_subject's prepositional phrase (T68 r2-r4).
+_RELATIVES = frozenset(_folded("that which who whose where"))
+_SUBORDINATORS = _CLAUSE_JOINERS | frozenset(_folded("""before until unless because as since though
+although whenever once so then"""))
+# Prepositions a descriptive subject may carry ("Tag names in the parser"); after/before are
+# subordinators there.
+_DESCRIPTIVE_PREPOSITIONS = _PREPOSITIONS - frozenset(_folded("after before to into onto"))
+# T68 r2: Turkish words that are never a dative/locative destination.
+_APOSTROPHE_SUFFIX = re.compile(r"[^\s'’]['’]([^\W\d_]+)", re.UNICODE)
+_TR_FUNCTION = frozenset(_folded("""ve veya ya da de ile ise ne sonra daha bile yine gibi diye ama fakat
+çünkü ancak hala sadece önce şimdi artık"""))
+_AUXILIARIES = frozenset(_folded("is are was were be been being get gets got getting"))
+_ADVERBS = frozenset(_folded("then also finally now automatically immediately always"))
+_ABBREVIATIONS = frozenset(_folded("e.g. i.e. vs. etc."))
+_SINGLE_LETTER = re.compile(r"[^\W\d_]\.", re.UNICODE)
+# Turkish light verbs after an English verb (push et, commit at, deploy yap).
+_A4_TR_LOAN = frozenset(_folded("push commit deploy merge rebase publish upload tag mail email"))
+# T68 r4 (Fable P2-1): apostrophe verb suffixes (push'la, merge'le, commit'leyin).
+_A4_TR_APOSTROPHE = frozenset(_folded("""la le layın leyin layınız leyiniz layıp leyip lasın lesin
+lamalı lemeli"""))
+_A4_TR_FORGET = frozenset(_folded("meyi mayı"))
+_A4_TR_FORGET_NEXT = _fold("unutma")
+_TO_OBJECTS = frozenset(_folded("it them"))
+_A4_TR_LIGHT = frozenset(_folded("""et etsin etsinler etmek etmeli etmelisin etmeyi edin ediniz edip
+ederek eder edilir edilsin edilecek edildi edilmeli atın atınız atıp atsın atılır atılsın atılacak
+atıldı yap yapın yapınız yapıp yapsın yapılır yapılsın yapılacak yapıldı"""))
+_A4_TR_AT = _fold("at")
+# Suffix + continuation (yükleyip, gönderin, yayınlasın): an action whatever follows.
+_A4_TR_GOING = frozenset(_folded("""in un ün iniz unuz ünüz yin yun yün yiniz yunuz yünüz ip up üp
+yip yup yüp erek arak yerek yarak sin sun sün"""))
+# Turkish passive aorist suffix (yüklenir, birleştirilir), folded.
+_A4_TR_DESCRIBE = re.compile(r"^(?:n|[iuü]l)[iuü]r(?:ler|lar)?$")
+_A4_TR_LIVE = frozenset(_folded("yayına canlıya"))
 
 
 def _inflections(verbs):
@@ -611,9 +691,16 @@ def _inflections(verbs):
 
 
 _A8_FORMS = frozenset(_inflections(_folded(
-    "push publish upload deploy send email mail merge rebase commit")) | {"sent"})
+    "push publish upload deploy send email mail merge rebase commit post tag"))
+    | {"sent", "tagged", "tagging"})
 # Outward words for part scans: stem prefix or a known inflection (merging).
 _OUTWARD_FORMS = _A8_FORMS | _inflections(_A_VERBS)
+# lane.v3: bare verbs that count mid-sentence (P2-1) and full prose forms (P2-2).
+_A8_BARE = frozenset(_folded("push publish upload deploy send email mail merge rebase commit post tag"))
+_OUTWARD_FULL = _OUTWARD_FORMS | frozenset(_A_VERBS)
+# Passive state sentences (is pushed); merge/post/tag describe too much else.
+_PASSIVE_FORMS = frozenset(w for w in _inflections(_folded(
+    "push publish upload deploy send email mail commit rebase")) if w.endswith("ed")) | {"sent"}
 
 
 def _plurals(nouns):
@@ -626,16 +713,43 @@ def _plurals(nouns):
 
 
 _A8_NOUNS = frozenset(_plurals(_folded(
-    "branch tag commit package wheel release image changes report email message summary artifact")))
+    "branch tag commit package wheel release image changes report email message summary artifact"
+    " build crate payload")))
 _NARROW_RISK = frozenset(_folded("""auth login oauth sso password secret credential apikey
 payment billing invoice stripe migration production encrypt pii gdpr kvkk"""))
 _NARROW_RISK_PREFIX = _folded("şifre parola ödeme fatura")
+
+# lane.v2 base (T68 r4): the constants lane.v3 changed, frozen at their lane.v2
+# values. Every other constant _v2_field_signals reads is unchanged since lane.v2
+# (test_classify_v3.V2BaseTests compares them with the frozen fixture).
+_V2_A_PAIRS = (("docker", "push"), ("npm", "publish"), ("pip", "upload"), ("force", "push"))
+_V2_RUN_VERBS = _folded("""run execut exec call invok launch start trigger spawn schedul
+source python çalıştır koş başlat tetikle""")
+_V2_A4_TR = _folded("gönder yayınla yükle paylaş birleştir pushla commitle")
+_V2_A8_FORMS = frozenset(_inflections(_folded(
+    "push publish upload deploy send email mail merge rebase commit")) | {"sent"})
+_V2_OUTWARD_FORMS = _V2_A8_FORMS | _inflections(_A_VERBS)
+_V2_A8_NOUNS = frozenset(_plurals(_folded(
+    "branch tag commit package wheel release image changes report email message summary artifact")))
+_V2_BULLET = re.compile(r"^\s*(?:(?:[-*+•]|\d+[.)]|\[[ xX]\])\s+)+")
+
+# T68 r4 exemptions (closed lists; Fable T68 L2 P1-4, P1-5).
+_EXEMPT_HEADS = frozenset(_folded("""names messages notifications conflicts requests hooks keys
+permissions titles scripts limits fields"""))
+_EXEMPT_STATES = frozenset(_folded("is are stay stays remain remains"))
+_EXEMPT_BREAKERS = frozenset(_folded("""must will should can may has have done complete completed
+happen happens happened"""))
+_EXEMPT_TR_PAIRS = frozenset(zip(_folded("birleştir yükle"), _folded("etiketler ayarlar")))
+# T68 r5: Turkish conditional suffixes (sağlanırsa, geçerse, varsa, yoksa), folded.
+_TR_CONDITIONAL = re.compile(r"(?:r(?:sa|se)|varsa|yoksa)$")
+_EXEMPT_TR_TARGETS = frozenset(_folded("ile üzerinden"))
 
 _PLURAL_CALL = re.compile(r"(?<=[^\W_])\((?:s|es|\d+)\)", re.UNICODE | re.IGNORECASE)
 _FENCE = re.compile(r"(`{3,})(.*?)\1", re.S)
 _DOUBLE = re.compile(r"``(.+?)``", re.S)
 _SINGLE = re.compile(r"`([^`]+)`")
-_BULLET = re.compile(r"^\s*(?:(?:[-*+•]|\d+[.)]|\[[ xX]\])\s+)+")
+# lane.v3 (T68 r4, P1-3): also – — · > and one-letter items (a. b) A.).
+_BULLET = re.compile(r"^\s*(?:(?:[-*+•–—·>]|\d+[.)]|[^\W\d_][.)]|\[[ xX]\])\s+)+", re.UNICODE)
 # A chained call (x(...).sendmail() keeps its own name after the ").".
 _CALLS = re.compile(r"(?:(?<![\w.])|(?<=\)\.))([^\W\d][\w]*(?:\.[^\W\d][\w]*)*)\(", re.UNICODE)
 _QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"|“([^”]*)”|‘([^’]*)’")
@@ -661,6 +775,7 @@ def _index(files):
     return _Index(frozenset(paths), frozenset(basenames))
 
 
+# Used by the v2 base (_v2_field_signals); any change must keep V2BaseTests green.
 def _pieces(text):
     """K-1: fences, then double, then single backticks; odd leftovers are prose."""
     out = []
@@ -693,8 +808,78 @@ def _pieces(text):
     return out
 
 
+def _ends_sentence(chunk):
+    """lane.v3 (P2-4): .;!? end a sentence, except e.g./i.e./vs./etc. and 'x.'."""
+    core = chunk.rstrip(_CLOSERS)
+    if core[-1:] not in _SENTENCE_END:
+        return False
+    if core.endswith("."):
+        word = _fold(core.lstrip("\"'`’‘“”([{<*_"))
+        if word in _ABBREVIATIONS or _SINGLE_LETTER.fullmatch(word):
+            return False
+    return True
+
+
+def _capitalized(chunk):
+    letters = chunk.lstrip("\"'`’‘“”([{<*_")
+    return letters[:1].isupper()
+
+
 def _sentences(text):
-    """Split one field into sentences of (kind, raw) tokens."""
+    """Split one field into sentences of (kind, raw) tokens.
+
+    lane.v3 (P2-4): a single line break is a space (managers wrap notes at 80
+    columns); a blank line and a bulleted line start a new sentence. T68 r4:
+    an abbreviation or one letter plus a dot followed by a capitalized word
+    ends the sentence ("etc. Deploy the site."). This only feeds the lane.v3
+    additions; lane.v2's line-by-line sentences (_v2_sentences) stay the base.
+    """
+    sentences, current = [], []
+    line_start = True
+    abbreviation = False
+
+    def close():
+        if current:
+            sentences.append(list(current))
+            current.clear()
+
+    for kind, raw in _pieces(text):
+        if kind == "fence":
+            close()
+            sentences.append([("cmd", raw)])
+            line_start = abbreviation = False
+            continue
+        if kind != "prose":
+            current.append((kind, raw))
+            line_start = abbreviation = False
+            continue
+        lines = raw.split("\n")
+        for n, line in enumerate(lines):
+            if n:
+                line_start = True
+                if not line.strip() and n < len(lines) - 1:
+                    close()  # blank line
+            if line_start:
+                bullet = _BULLET.match(line)
+                if bullet:
+                    close()
+                    line = line[bullet.end():]
+            for chunk in line.split():
+                if abbreviation and _capitalized(chunk):
+                    close()
+                current.append(("prose", chunk))
+                ends = _ends_sentence(chunk)
+                abbreviation = not ends and chunk.rstrip(_CLOSERS).endswith(".")
+                if ends:
+                    close()
+            if line.strip():
+                line_start = False
+    close()
+    return sentences
+
+
+def _v2_sentences(text):
+    """lane.v2 sentences, frozen: every line break and every .;!? ends one."""
     sentences, current = [], []
     line_start = True
 
@@ -719,7 +904,7 @@ def _sentences(text):
                 close()
                 line_start = True
             if line_start:
-                line = _BULLET.sub("", line)
+                line = _V2_BULLET.sub("", line)
             for chunk in line.split():
                 current.append(("prose", chunk))
                 if chunk.rstrip(_CLOSERS)[-1:] in _SENTENCE_END:
@@ -730,6 +915,7 @@ def _sentences(text):
     return sentences
 
 
+# Used by the v2 base (_v2_field_signals); any change must keep V2BaseTests green.
 def _identifier_chunk(chunk):
     core = chunk.strip(_EDGE)
     return bool(core) and bool(_IDENTIFIER_SHAPE.search(core) or _CALL.search(chunk) or _camel(core))
@@ -749,6 +935,7 @@ def _resolved(core, index):
     return "/" not in key and "." in name.strip(".") and key in index.basenames
 
 
+# Used by the v2 base (_v2_field_signals); any change must keep V2BaseTests green.
 def _exposed(core, chunk, context, index):
     """Identifier parts an action stem may come from (empty = hidden)."""
     called = context or "(" in chunk or _fold(core).endswith(_CALL_EXTENSIONS)
@@ -770,13 +957,13 @@ def _outward_word(word):
     return _starts(word, _A_VERBS) or word in _OUTWARD_FORMS
 
 
-def _command_hits(text):
+def _command_hits(text, forms=_OUTWARD_FORMS):
     """A1 over a command span (and A2's quoted arguments)."""
     folded = _fold(text)
     words = _words(text)
     hits = set()
     for word in words:
-        if _starts(word, _A_VERBS + _A_TOOLS + _A_HARD) or word in _OUTWARD_FORMS:
+        if _starts(word, _A_VERBS + _A_TOOLS + _A_HARD) or word in forms:
             hits.add(word[:40])
     for first, second in (("drop", "table"), ("alter", "table")):
         if any(a == first and b.startswith(second) for a, b in zip(words, words[1:])):
@@ -790,6 +977,7 @@ def _command_hits(text):
     return hits
 
 
+# Used by the v2 base (_v2_field_signals); any change must keep V2BaseTests green.
 def _hard_phrases(words, folded):
     hits = set()
     if re.search(r"\breset\s+--hard\b", folded):
@@ -805,13 +993,13 @@ def _hard_phrases(words, folded):
     return hits
 
 
-def _call_hits(text):
+def _call_hits(text, forms=_OUTWARD_FORMS):
     """A2: call shapes plus their quoted arguments, scanned like A1."""
     hits = set()
     for match in _CALLS.finditer(text):
         components = [_fold(c) for c in match.group(1).split(".")]
         last, first = components[-1], components[0]
-        if (_starts(last, _A_VERBS + _A_HARD + _A_CALL_EXTRA) or last in _OUTWARD_FORMS
+        if (_starts(last, _A_VERBS + _A_HARD + _A_CALL_EXTRA) or last in forms
                 or first in _A_TOOLS or first in _A_NET):
             hits.add(".".join(components)[:60])
         depth, end = 0, len(text)
@@ -823,7 +1011,7 @@ def _call_hits(text):
         quoted = " ".join(next(g for g in m.groups() if g is not None)
                           for m in _QUOTED.finditer(text[match.end():end]))
         if quoted.strip():
-            hits.update(_command_hits(quoted))
+            hits.update(_command_hits(quoted, forms))
     return hits
 
 
@@ -831,8 +1019,113 @@ def _call_names(text):
     return [_fold(c) for m in _CALLS.finditer(text) for c in m.group(1).split(".")]
 
 
-def _field_signals(field, text, index, risk_map, goal):
-    """Signals of one field; ids are '<field>:<rule>', details are stems only."""
+def _bare_verb(previous, before):
+    """lane.v3: a bare form after a determiner or a negation is not an action."""
+    if previous in _DETERMINERS or previous in _NEGATIONS:
+        return False
+    return not (previous in _A8_TARGETS and before in _NEGATIONS)
+
+
+def _descriptive_subject(stream, p):
+    """exempt:descriptive_subject (T68 r4, Fable P1-5): "Push notifications stay disabled."
+
+    Closed form only: the verb at p is directly followed by one head noun from
+    _EXEMPT_HEADS, then optionally one prepositional phrase (a preposition and
+    at most three plain words), then directly is/are/stay(s)/remain(s). A modal
+    or has/have, or done/complete/happen anywhere in the sentence, breaks it
+    ("Deploy scripts must be idempotent.", "Push branch is done.").
+    """
+    words = [w if k == "w" else None for k, w in stream]
+    if any(w in _EXEMPT_BREAKERS for w in words):
+        return False
+
+    def word(k):
+        return words[k] if 0 <= k < len(words) else None
+
+    if word(p + 1) not in _EXEMPT_HEADS:
+        return False
+    k = p + 2
+    if word(k) in _DESCRIPTIVE_PREPOSITIONS:
+        k += 1
+        for _ in range(3):
+            current = word(k)
+            if current in _EXEMPT_STATES:
+                break
+            if (current is None or current in _PREPOSITIONS or current in _SUBORDINATORS
+                    or current in _RELATIVES or current in _A8_TARGETS):
+                return False
+            k += 1
+    return word(k) in _EXEMPT_STATES
+
+
+def _tr_destination(before, words, raw):
+    """T68 r2: a dative/locative word before the verb or an A8 noun is a destination.
+
+    Conservative: any word ending in -a/-e (kanalında, PyPI'ye -> ye, sunucuya)
+    counts, except function words and conditionals (sağlanırsa).
+    """
+    if any(w in _A8_NOUNS for w in words):
+        return True
+    # An apostrophe suffix also marks identifiers (PyPI'ye, `main`'e).
+    if any(_fold(m.group(1))[-1:] in ("a", "e") for m in _APOSTROPHE_SUFFIX.finditer(raw)):
+        return True
+    for word in before:
+        if word in _TR_FUNCTION or word.endswith(("sa", "se")):
+            continue
+        if word[-1:] in ("a", "e"):
+            return True
+    return False
+
+
+def _tr_conditional_description(words, i, stem, raw):
+    """exempt:tr_conditional_description (T68 r4, Fable P1-4).
+
+    The Turkish passive aorist is risky by default ("Rapor Slack ile
+    paylaşılır.", "PR birleştirilir."). It describes only in this closed form:
+    one exact (stem, object) pair of _EXEMPT_TR_PAIRS (birleştir + etiketler,
+    yükle + ayarlar; paylaş never), the object directly before the passive
+    aorist, a Turkish conditional (-rsa/-rse, varsa/yoksa) earlier in the
+    sentence, no "ile"/"üzerinden" anywhere, and no destination
+    ("Koşul sağlanırsa etiketler birleştirilir."). T68 r5: narrowed per L2.
+    """
+    word = words[i]
+    if not _A4_TR_DESCRIBE.match(word[len(stem):]) or i < 1:
+        return False
+    if (stem, words[i - 1]) not in _EXEMPT_TR_PAIRS:
+        return False
+    present = [w for w in words if w is not None]
+    before = [w for w in words[:i] if w is not None]
+    if any(w in _EXEMPT_TR_TARGETS for w in present):
+        return False
+    if not any(_TR_CONDITIONAL.search(w) for w in words[:i - 1] if w is not None):
+        return False
+    return not _tr_destination(before, present, raw)
+
+
+def _passive(stream, i, clause_starts):
+    """lane.v3: "is pushed", "are then committed"; negated passives are not actions.
+
+    The subject is searched back (at most 6 tokens) to the clause start, a
+    comma/colon or a conjunction: "No plan.json or plan.md is published" is
+    negated, "No tests fail and the branch is pushed" is not.
+    """
+    previous = stream[i - 1][1] if i and stream[i - 1][0] == "w" else None
+    if previous in _PASSIVE_NEGATIONS:
+        return False
+    j = i - 2 if previous in _ADVERBS else i - 1
+    if j < 0 or stream[j][0] != "w" or stream[j][1] not in _AUXILIARIES:
+        return False
+    for k in range(j - 1, max(-1, j - 7), -1):
+        kind, word = stream[k]
+        if kind == "w" and word in _PASSIVE_NEGATIONS:
+            return False
+        if k in clause_starts or (kind == "w" and word in _CLAUSE_JOINERS):
+            break
+    return True
+
+
+def _v3_additions(field, text, index, risk_map, goal):
+    """lane.v3 rules on lane.v3 sentences; only ever added to the lane.v2 base."""
     signals = set()
 
     def add(rule, detail):
@@ -847,18 +1140,47 @@ def _field_signals(field, text, index, risk_map, goal):
     for sentence in _sentences(text):
         raw = " ".join(t for _, t in sentence)
         prose, stream, commands = [], [], []
+        starts, colon_starts, joined, apostrophes = {0}, set(), set(), set()
         for kind, token in sentence:
             if kind == "prose" and not _identifier_chunk(token):
                 words = _words(token)
+                folded = _fold(token)
+                apostrophes.update(len(stream) + n for n, m in enumerate(_WORD.finditer(folded))
+                                   if m.start() and folded[m.start() - 1] in "'’")
+                if len(words) > 1 and any(c in token for c in "-/"):
+                    joined.update(range(len(stream), len(stream) + len(words)))
                 prose.extend(words)
                 stream.extend(("w", w) for w in words)
+                # lane.v3 (P2-1): "TODO:", "Step 3:" start a sentence, and a
+                # comma starts a clause ("After that, push the branch").
+                if token.rstrip(_CLOSERS)[-1:] in ":,":
+                    colon_starts.add(len(stream))
             elif kind == "cmd":
                 commands.append(token)
                 stream.append(("cmd", ""))
             else:
                 stream.append(("id", ""))
-        context = any(_starts(w, _RUN_VERBS) or w in _RUN_WORDS
-                      for w in prose + _call_names(raw))
+        words = [w for k, w in stream]
+
+        def word_at(i):
+            return words[i] if 0 <= i < len(stream) and stream[i][0] == "w" else None
+
+        def has_object(i, end_ok):
+            """lane.v3: what follows a verb is an object, a direction or the sentence end."""
+            if i + 1 >= len(stream):
+                return end_ok
+            following = word_at(i + 1)
+            return following is None or following in _OBJECT_NEXT or following in _A8_TARGETS
+
+        def run_verb(i):
+            word = words[i]
+            if word.startswith(_RUN_SOURCE):
+                return i + 1 < len(stream) and stream[i + 1][0] != "w"
+            return _starts(word, _RUN_VERBS) or word in _RUN_WORDS
+
+        run_positions = [i for i, (kind, _) in enumerate(stream) if kind == "w" and run_verb(i)]
+        context = bool(run_positions) or any(_starts(w, _RUN_VERBS) or w in _RUN_WORDS
+                                             for w in _call_names(raw))
         exposed, identifiers = [], []
         for kind, token in sentence:
             if kind == "code" or (kind == "prose" and _identifier_chunk(token)):
@@ -889,30 +1211,77 @@ def _field_signals(field, text, index, risk_map, goal):
             if pair in pairs:
                 add("A3", " ".join(pair))
         # A4: imperative at sentence start (after optional leads) or after a lead.
-        words = [w for k, w in stream]
-        position = 0
-        while position < len(stream) and stream[position][0] == "w" and words[position] in _A4_LEADS:
-            position += 1
-        if position < len(stream) and stream[position][0] == "w" and words[position] in _A4_VERBS:
-            add("A4", words[position])
+        # lane.v3: after ":" or "," and after a mid-sentence lead the verb needs an
+        # object or the sentence end ("pre and post conditions" is not one).
+        for start in sorted(starts | colon_starts):
+            position = start
+            while word_at(position) is not None and words[position] in _A4_LEADS:
+                position += 1
+            if (word_at(position) in _A4_VERBS and (start not in colon_starts or start == 0
+                                                    or has_object(position, True))
+                    and not _descriptive_subject(stream, position)):
+                add("A4", words[position])
         for i in range(1, len(stream)):
-            if (stream[i][0] == "w" and words[i] in _A4_VERBS
-                    and stream[i - 1][0] == "w" and words[i - 1] in _A4_LEADS):
+            if (word_at(i) in _A4_VERBS and word_at(i - 1) in _A4_LEADS
+                    and has_object(i, True)):
                 add("A4", words[i])
         # A4-TR: verb + bounded suffix, then sentence end, ve or sonra.
         for i, (kind, word) in enumerate(stream):
             if kind != "w":
                 continue
+            following = stream[i + 1] if i + 1 < len(stream) else None
             for stem in _A4_TR:
                 if word.startswith(stem) and len(word) - len(stem) <= 8:
-                    following = stream[i + 1] if i + 1 < len(stream) else None
+                    suffix = word[len(stem):]
+                    # lane.v3: suffix + continuation (yükleyip, gönderin) is an action.
+                    if suffix in _A4_TR_GOING:
+                        add("A4-TR", stem)
+                        continue
+                    # T68 r4: the same closed form as exempt:tr_conditional_description.
+                    if _tr_conditional_description([word_at(k) for k in range(len(stream))],
+                                                   i, stem, raw):
+                        continue
+                    # T68 r4 (Fable P2-1): "yüklemeyi unutma".
+                    if suffix in _A4_TR_FORGET and (word_at(i + 1) or "").startswith(_A4_TR_FORGET_NEXT):
+                        add("A4-TR", stem)
+                        continue
                     if following is None or (following[0] == "w" and following[1] in _A4_TR_NEXT):
                         add("A4-TR", stem)
-        # A5: run verb plus an outward or hard destructive part anywhere.
+            # lane.v3 (P2-1): "push et", "commit at", "deploy yap", "yayına al".
+            light = word_at(i + 1)
+            if word in _A4_TR_LOAN and light is not None:
+                if light in _A4_TR_LIGHT:
+                    add("A4-TR", word + " " + light)
+                elif light == _A4_TR_AT and (i + 2 >= len(stream) or word_at(i + 2) in _A4_TR_NEXT):
+                    add("A4-TR", word + " " + light)
+            if word in _A4_TR_LIVE and light is not None and light.startswith("al") and len(light) <= 7:
+                add("A4-TR", word + " al")
+            # T68 r4 (Fable P2-1): "push'la", "Main'e merge'le".
+            if word in _A4_TR_LOAN and light in _A4_TR_APOSTROPHE and i + 1 in apostrophes:
+                add("A4-TR", word + " " + light)
+        # A5: run verb plus an outward or hard destructive part of what is run.
+        # lane.v3 (P2-2): identifier and command parts by prefix; a prose word
+        # only in full form and only as the run verb's object.
         if context:
-            for word in everything:
+            for word in camel_parts + command_words:
                 if _outward_word(word) or _starts(word, _A_HARD):
                     add("A5", word[:40])
+            # T68 r2: kebab/slash prose parts keep lane.v2's prefix match
+            # ("Trigger the mirror-push job").
+            for j in sorted(joined):
+                word = word_at(j)
+                if word is not None and (_outward_word(word) or _starts(word, _A_HARD)):
+                    add("A5", word[:40])
+            for j, (kind, word) in enumerate(stream):
+                if kind != "w" or word not in _OUTWARD_FULL:
+                    continue
+                for i in run_positions:
+                    between = range(i + 1, j)
+                    if (i < j and len(between) <= 3
+                            and all(word_at(b) is not None and word_at(b) not in _NP_BREAKS
+                                    and b not in colon_starts for b in between)
+                            and j not in colon_starts):
+                        add("A5", word[:40])
         # A6: hard destructive words and phrases.
         for word in everything:
             if word in _A_HARD:
@@ -921,11 +1290,24 @@ def _field_signals(field, text, index, risk_map, goal):
             add("A6", hit)
         # A8: directed verb forms (state / third person sentences).
         for i, (kind, word) in enumerate(stream):
-            if kind == "w" and word in _A8_FORMS:
-                near = [w for k, w in stream[i + 1:i + 7] if k == "w"]
-                close = [w for k, w in stream[i + 1:i + 4] if k == "w"]
-                if any(w in _A8_TARGETS for w in near) or any(w in _A8_NOUNS for w in close):
-                    add("A8", word)
+            if kind != "w":
+                continue
+            near = [w for k, w in stream[i + 1:i + 7] if k == "w"]
+            close = [w for k, w in stream[i + 1:i + 4] if k == "w"]
+            directed = any(w in _A8_TARGETS for w in near) or any(w in _A8_NOUNS for w in close)
+            if word in _A8_FORMS and directed:
+                add("A8", word)
+            elif (word in _A8_BARE and directed and i not in joined and has_object(i, False)
+                  and (i in colon_starts or _bare_verb(word_at(i - 1), word_at(i - 2)))):
+                # lane.v3 (P2-1): a bare verb anywhere, with object and direction.
+                add("A8", word)
+            if word in _PASSIVE_FORMS and _passive(stream, i, colon_starts):
+                add("A8", word)
+            # T68 r4 (Fable P2-1): "Don't forget to push.", "Make sure to send it."
+            if (word in _A8_BARE and word_at(i - 1) == "to" and i not in joined
+                    and word_at(i - 2) not in _NEGATIONS
+                    and (i + 1 >= len(stream) or word_at(i + 1) in _TO_OBJECTS)):
+                add("A8", word)
 
         if goal:
             # K-2: stems from identifiers that no longer hide them (union with v1).
@@ -955,12 +1337,309 @@ def _field_signals(field, text, index, risk_map, goal):
     return signals
 
 
+def _v2_field_signals(text, index, risk_map, goal):
+    """lane.v2's field rules, bit for bit (T68 r4 base).
+
+    Returns (field-level (rule, detail) set, [(sentence, (rule, detail) set)]).
+    The body is the frozen lane.v2 _field_signals with the _V2_* constants;
+    only the per-sentence grouping is new, for the exemption pass.
+    """
+    field_level, per_sentence = set(), []
+
+    def add(target, rule, detail):
+        target.add((rule, "".join(c if c.isprintable() else "?" for c in str(detail))[:200]))
+
+    text = _PLURAL_CALL.sub("", _visible(text))
+    for match in _HTTP.finditer(text):
+        add(field_level, "A7", match.group(1))
+    for hit in _call_hits(text, _V2_OUTWARD_FORMS):
+        add(field_level, "A2", hit)
+    for sentence in _v2_sentences(text):
+        found = set()
+        per_sentence.append((sentence, found))
+        raw = " ".join(t for _, t in sentence)
+        prose, stream, commands = [], [], []
+        for kind, token in sentence:
+            if kind == "prose" and not _identifier_chunk(token):
+                words = _words(token)
+                prose.extend(words)
+                stream.extend(("w", w) for w in words)
+            elif kind == "cmd":
+                commands.append(token)
+                stream.append(("cmd", ""))
+            else:
+                stream.append(("id", ""))
+        context = any(_starts(w, _V2_RUN_VERBS) or w in _RUN_WORDS
+                      for w in prose + _call_names(raw))
+        exposed, identifiers = [], []
+        for kind, token in sentence:
+            if kind == "code" or (kind == "prose" and _identifier_chunk(token)):
+                core = token if kind == "code" else token.strip(_EDGE)
+                plain, camel = _exposed(core, token, context, index)
+                exposed.extend(plain)
+                identifiers.append(plain)
+                identifiers.append(camel)
+            elif kind == "prose":
+                exposed.extend(_words(token))
+        camel_parts = [w for parts in identifiers for w in parts]
+        command_words = [w for c in commands for w in _words(c)]
+        everything = exposed + camel_parts + command_words
+
+        for command in commands:
+            for hit in _command_hits(command, _V2_OUTWARD_FORMS):
+                add(found, "A1", hit)
+        for word in exposed + camel_parts:
+            if word in _A_TOOLS:
+                add(found, "A3", word)
+        pairs = set(zip(exposed, exposed[1:]))
+        for first, second in pairs:
+            if first == "git" and second in _A_GIT:
+                add(found, "A3", "git " + second)
+        for pair in _V2_A_PAIRS:
+            if pair in pairs:
+                add(found, "A3", " ".join(pair))
+        words = [w for k, w in stream]
+        for position in _v2_a4_positions(stream):
+            add(found, "A4", words[position])
+        for i, (kind, word) in enumerate(stream):
+            if kind != "w":
+                continue
+            for stem in _V2_A4_TR:
+                if _v2_a4_tr_fires(stream, i, stem):
+                    add(found, "A4-TR", stem)
+        if context:
+            for word in everything:
+                if _starts(word, _A_VERBS) or word in _V2_OUTWARD_FORMS or _starts(word, _A_HARD):
+                    add(found, "A5", word[:40])
+        for word in everything:
+            if word in _A_HARD:
+                add(found, "A6", word)
+        for hit in _hard_phrases(exposed + command_words, _fold(raw)):
+            add(found, "A6", hit)
+        for i, (kind, word) in enumerate(stream):
+            if kind == "w" and word in _V2_A8_FORMS:
+                near = [w for k, w in stream[i + 1:i + 7] if k == "w"]
+                close = [w for k, w in stream[i + 1:i + 4] if k == "w"]
+                if any(w in _A8_TARGETS for w in near) or any(w in _V2_A8_NOUNS for w in close):
+                    add(found, "A8", word)
+
+        if goal:
+            prose_words = list(prose)
+            for parts in identifiers + [prose_words]:
+                for stem in _OUTWARD:
+                    if _contains(parts, stem):
+                        add(found, "outward_action", stem)
+                for stem in _DESTRUCTIVE:
+                    if _contains(parts, stem):
+                        add(found, "destructive", stem)
+        else:
+            for word in prose:
+                if (word in _NARROW_RISK or (word.endswith("s") and word[:-1] in _NARROW_RISK)
+                        or _starts(word, _NARROW_RISK_PREFIX)):
+                    add(found, "K4", word[:40])
+            for stem in risk_map.risky_words:
+                if _contains(prose, stem):
+                    add(found, "K4", stem)
+            for stem in _RISK_WORDS:
+                if _contains(prose, stem):
+                    add(found, "risk_word", stem)
+            for stem in _A_SOFT:
+                if _contains(prose, stem):
+                    add(found, "destructive", stem)
+    return field_level, per_sentence
+
+
+def _v2_a4_positions(stream):
+    """lane.v2 A4: the sentence-start verb after optional leads, and every lead + verb."""
+    words = [w for k, w in stream]
+    positions = set()
+    position = 0
+    while position < len(stream) and stream[position][0] == "w" and words[position] in _A4_LEADS:
+        position += 1
+    if position < len(stream) and stream[position][0] == "w" and words[position] in _A4_VERBS:
+        positions.add(position)
+    for i in range(1, len(stream)):
+        if (stream[i][0] == "w" and words[i] in _A4_VERBS
+                and stream[i - 1][0] == "w" and words[i - 1] in _A4_LEADS):
+            positions.add(i)
+    return positions
+
+
+def _v2_a4_tr_fires(stream, i, stem):
+    """lane.v2 A4-TR: stem + at most 8 more letters, then the end, ve or sonra."""
+    word = stream[i][1]
+    if stream[i][0] != "w" or not word.startswith(stem) or len(word) - len(stem) > 8:
+        return False
+    following = stream[i + 1] if i + 1 < len(stream) else None
+    return following is None or (following[0] == "w" and following[1] in _A4_TR_NEXT)
+
+
+def lane_v2_field_signals(field, text, files, risk_map=None, goal=False):
+    """The lane.v2 base signals of one field, as lane.v2 named them (for tests)."""
+    field_level, per_sentence = _v2_field_signals(text, _index(files), risk_map or RiskMap(), goal)
+    found = set(field_level).union(*(signals for _, signals in per_sentence))
+    return {Signal(field + ":" + rule, detail) for rule, detail in found}
+
+
+# --- T68 r4 exemption pass: the only way a lane.v2 signal can fall. ----------
+# Each entry is (name, rule, test). A test sees one lane.v2 sentence and one
+# signal detail of that rule, and returns True only for its closed form.
+
+
+def _exemption_view(sentence):
+    stream, nonprose = [], set()
+    for kind, token in sentence:
+        if kind == "prose" and not _identifier_chunk(token):
+            stream.extend(("w", w) for w in _words(token))
+            continue
+        core = token.strip(_EDGE) if kind == "prose" else token
+        nonprose.update(_words(core))
+        nonprose.update(_camel_words(core))
+        stream.append(("cmd" if kind == "cmd" else "id", ""))
+    return stream, [w if k == "w" else None for k, w in stream], nonprose
+
+
+def _exempt_a4(form):
+    def test(sentence, detail):
+        stream, _, _ = _exemption_view(sentence)
+        positions = [p for p in _v2_a4_positions(stream) if stream[p][1] == detail]
+        return bool(positions) and all(form(stream, p) for p in positions)
+    return test
+
+
+def _pre_post(stream, p):
+    """exempt:prose_pre_post: "Keep the pre and post conditions unchanged."."""
+    words = [w if k == "w" else None for k, w in stream]
+    following = words[p + 1] if p + 1 < len(words) else None
+    return (words[p] == "post" and p >= 2 and words[p - 1] == "and" and words[p - 2] == "pre"
+            and following is not None and following not in _OBJECT_NEXT
+            and following not in _A8_TARGETS)
+
+
+def _exempt_tr(sentence, detail):
+    stream, words, _ = _exemption_view(sentence)
+    raw = " ".join(t for _, t in sentence)
+    positions = [i for i in range(len(stream)) if _v2_a4_tr_fires(stream, i, detail)]
+    return bool(positions) and all(_tr_conditional_description(words, i, detail, raw)
+                                   for i in positions)
+
+
+# Run-context false alarms: every run verb of the sentence is one of these noun
+# or intransitive uses (and no call name is a run verb). T68 r5: each form may
+# drop only its own closed list of A5 words; any other A5 word keeps its signal.
+_CONTEXT_FORMS = {
+    "exempt:prose_model_call": (
+        lambda w, i: w[i] in ("call", "calls") and i and w[i - 1] == "model",
+        frozenset(_folded("published publishes"))),
+    "exempt:prose_source_of_truth": (
+        lambda w, i: w[i] == "source" and w[i + 1:i + 3] == ["of", "truth"],
+        frozenset(_folded("committed"))),
+    "exempt:prose_starts_with": (
+        lambda w, i: w[i] in ("starts", "started") and w[i + 1:i + 2] == ["with"],
+        frozenset(_folded("tagline postal"))),
+    "exempt:prose_starts_final": (
+        lambda w, i: w[i] in ("starts", "started") and i == len(w) - 1,
+        frozenset(_folded("truncated"))),
+}
+
+
+def _published_outputs(w, i):
+    """'published .orcexe outputs': one to three identifiers or 'orcexe' in between (T68 r5)."""
+    for k in range(i + 2, min(i + 5, len(w))):
+        if w[k] in ("output", "outputs"):
+            return all(x is None or x == "orcexe" for x in w[i + 1:k])
+    return False
+
+
+def _publishes_no(w, i):
+    """'publishes no plan.json': an identifier or the sentence end after 'no' (T68 r5)."""
+    return w[i + 1:i + 2] == ["no"] and (i + 2 >= len(w) or w[i + 2] is None)
+
+
+# Outward-word false alarms: every prose occurrence of the word has this form.
+_WORD_FORMS = {
+    "exempt:prose_published_outputs": ("published", _published_outputs),
+    "exempt:prose_publishes_no": ("publishes", _publishes_no),
+}
+
+
+def _exempt_a5(sentence, detail):
+    """A5 prose words only: a word that is also an identifier/command part never falls."""
+    stream, words, nonprose = _exemption_view(sentence)
+    if detail in nonprose or detail not in words:
+        return None
+    for name, (form_word, form) in _WORD_FORMS.items():
+        occurrences = [i for i, w in enumerate(words) if w == form_word]
+        if detail == form_word and all(form(words, i) for i in occurrences):
+            return name
+    raw = " ".join(t for _, t in sentence)
+    if any(_starts(w, _V2_RUN_VERBS) or w in _RUN_WORDS for w in _call_names(raw)):
+        return None
+    sources = [i for i, w in enumerate(words)
+               if w is not None and (_starts(w, _V2_RUN_VERBS) or w in _RUN_WORDS)]
+    names = set()
+    for i in sources:
+        name = next((n for n, (form, allowed) in _CONTEXT_FORMS.items()
+                     if form(words, i) and detail in allowed), None)
+        if name is None:
+            return None
+        names.add(name)
+    return "+".join(sorted(names)) or None
+
+
+_EXEMPTIONS = (
+    ("exempt:descriptive_subject", "A4", _exempt_a4(_descriptive_subject)),
+    ("exempt:prose_pre_post", "A4", _exempt_a4(_pre_post)),
+    ("exempt:tr_conditional_description", "A4-TR", _exempt_tr),
+)
+EXEMPTION_NAMES = frozenset([name for name, _, _ in _EXEMPTIONS] + list(_CONTEXT_FORMS)
+                            + list(_WORD_FORMS))
+
+
+def _exemption(sentence, rule, detail):
+    """The exemption name that drops this lane.v2 signal in this sentence, or None."""
+    if rule == "A5":
+        return _exempt_a5(sentence, detail)
+    for name, exempt_rule, test in _EXEMPTIONS:
+        if rule == exempt_rule and test(sentence, detail):
+            return name
+    return None
+
+
+def _field_signals(field, text, index, risk_map, goal):
+    """(lane.v2 signals - named exemptions) | lane.v3 additions, for one field.
+
+    Exemptions apply to done/notes only; the goal keeps every lane.v2 signal.
+    A signal some exemption dropped in every sentence that raised it, and that
+    no lane.v3 rule raises again, is reported as '<field>:exempted' with the
+    detail '<exemption name> <rule>=<detail>'.
+    """
+    field_level, per_sentence = _v2_field_signals(text, index, risk_map, goal)
+    kept, dropped = set(field_level), {}
+    for sentence, found in per_sentence:
+        for rule, detail in found:
+            name = None if goal else _exemption(sentence, rule, detail)
+            if name is None:
+                kept.add((rule, detail))
+            else:
+                dropped.setdefault((rule, detail), set()).add(name)
+    signals = {Signal(field + ":" + rule, detail) for rule, detail in kept}
+    signals |= _v3_additions(field, text, index, risk_map, goal)
+    for (rule, detail), names in dropped.items():
+        if Signal(field + ":" + rule, detail) not in signals:
+            for name in names:
+                note = name + " " + rule + "=" + detail
+                signals.add(Signal(field + ":exempted",
+                                   "".join(c if c.isprintable() else "?" for c in note)[:200]))
+    return signals
+
+
 _FIELD_RISKY = frozenset("A1 A2 A3 A4 A4-TR A5 A6 A7 A8 K4 outward_action".split())
 
 
 def task_lane(goal: str, done, notes, files: Sequence[str] | None,
               risk_map: RiskMap | None = None) -> Classification:
-    """lane.v2: max of the goal lane and each done item / notes lane.
+    """lane.v3: max of the goal lane and each done item / notes lane.
 
     The goal keeps every lane.v1 rule (classify()) and adds K-2/K-3 signals,
     so no goal can get a lower lane than classify(goal, files). Done items and
@@ -1002,15 +1681,18 @@ def task_lane(goal: str, done, notes, files: Sequence[str] | None,
     return Classification(base.mode, lane, base.targets, signals)
 
 
-def _blocked(result, name):
+def _blocked(result, name, floor="standard"):
     """An unavailable input never lowers the text lane and never grants fast.
 
     T58 (P1-3): this used to turn a text-derived risky lane into standard when
     the local risk map was unusable; every unavailable input is now a floor.
+    Decision 028 (T68): an unusable risk map floors at risky, because the
+    project's own risky words and paths are unknown (git_unavailable stays
+    standard: it only covers the map, see repository_risk_map callers).
     """
     signals = tuple(sorted(result.signals + (Signal(name, "unavailable"),),
                            key=lambda s: (s.id, s.detail)))
-    lane = "risky" if result.lane == "risky" else "standard"
+    lane = "risky" if result.lane == "risky" or floor == "risky" else "standard"
     return Classification(result.mode, lane,
                           result.targets, signals)
 
@@ -1021,8 +1703,14 @@ _RISK_MAP_ERRORS = (ValueError, OSError, TypeError, RecursionError)
 
 
 def repository_risk_map(root):
-    """Load the same main-worktree additions for do and plan."""
+    """Load the same main-worktree additions for do and plan.
+
+    Decision 028 (T68): a symlinked map is unusable even when its target
+    parses; the map must be the repository's own file.
+    """
     path = Path(root) / '.orcexe' / 'risk-map.yaml'
+    if path.is_symlink():
+        raise ValueError('risk_map_invalid')
     try:
         return load_risk_map(path)
     except FileNotFoundError:
@@ -1042,7 +1730,7 @@ def classify_repo(workdir: str, task: str) -> Classification:
     try:
         risk_map = repository_risk_map(root)
     except _RISK_MAP_ERRORS:
-        return _blocked(classify(task, files), "risk_map_invalid")
+        return _blocked(classify(task, files), "risk_map_invalid", "risky")
     return classify(task, files, risk_map)
 
 
@@ -1058,5 +1746,5 @@ def task_lane_repo(workdir: str, goal: str, done, notes) -> Classification:
     try:
         risk_map = repository_risk_map(root)
     except _RISK_MAP_ERRORS:
-        return _blocked(task_lane(goal, done, notes, files), "risk_map_invalid")
+        return _blocked(task_lane(goal, done, notes, files), "risk_map_invalid", "risky")
     return task_lane(goal, done, notes, files, risk_map)
