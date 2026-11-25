@@ -251,6 +251,16 @@ def is_test(path):
                  or bool(re.search(r'(^test[_.]|[._](?:test|spec)\.|_test\.|Tests?\.)', p.name))))
 
 
+def _red_first_kind(path):
+    """Separate named tests from test-directory support for the red overlay only."""
+    p = PurePosixPath(path)
+    if not is_test(path):
+        return None
+    if is_test(p.name) or any(part.lower() == '__tests__' for part in p.parts[:-1]):
+        return 'test'
+    return 'support'
+
+
 def is_doc(path):
     p = PurePosixPath(path)
     return (p.suffix.lower() in gate_lite._DOC
@@ -420,9 +430,10 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             final_blobs = gate_lite._blobs(Path(worktree.path), final_oids, deadline)
             overlaid = False
             for file, fingerprint in zip(final_files, fingerprints):
-                if not is_test(file['path']):
+                kind = _red_first_kind(file['path'])
+                if kind is None or (kind == 'support' and file['old_mode'] != '000000'):
                     continue
-                # Overlay changed/added tests only; retain the rest of the base.
+                # Overlay named tests and new support; existing support may be the code under change.
                 if file['new_mode'] == '000000':
                     continue
                 target = red / file['path']

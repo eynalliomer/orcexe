@@ -1,5 +1,15 @@
 ## Unreleased
 
+### T72
+
+- Red-first overlays identify test files by name. Existing helpers and runners
+  under test directories stay at base; added support files are overlaid so
+  missing helper imports cannot supply false red-first evidence.
+- Preserve the other L0 checks, deleted-file handling, overlay safety guard,
+  deadlines and fresh base checkout. Add classification and task regressions.
+- Treat every source file under a `__tests__` directory as a named test for the
+  red overlay, matching Jest layout without widening `tests/` support handling.
+
 ### T71 — gate snapshots use only base-commit ignore rules
 
 - Exclude untracked files matched by tracked base `.gitignore` files at any

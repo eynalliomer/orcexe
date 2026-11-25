@@ -37,6 +37,23 @@ class CountTests(unittest.TestCase):
         self.assertFalse(task_l0.is_doc('src/app.py'))
         self.assertFalse(task_l0.is_doc('docs/conf.py'))
 
+    def test_red_first_classification_uses_names_for_tests(self):
+        for path in ('tests/test_app.py', 'test_app.py', 'testApp.py', 'app_test.py',
+                     'app.test.ts', 'app.spec.jsx', 'test_app.mjs', 'app.test.cjs',
+                     'src/app_test.go', 'AppTests.swift', 'AppTest.java',
+                     'src/__tests__/app.ts', 'src/__tests__/helpers/util.js'):
+            with self.subTest(path=path):
+                self.assertEqual(task_l0._red_first_kind(path), 'test')
+        for path in ('tests/tools/run_tests.py', 'tests/conftest.py', 'test/helpers.py',
+                     'Tests/Fixtures.swift', 'tests/fixtures/data.py'):
+            with self.subTest(path=path):
+                self.assertEqual(task_l0._red_first_kind(path), 'support')
+                self.assertTrue(task_l0.is_test(path))
+        for path in ('src/app.py', 'src/helper.ts', 'contest.py', 'docs/testing.md',
+                     'tests/data.json', 'testing/helper.py'):
+            with self.subTest(path=path):
+                self.assertIsNone(task_l0._red_first_kind(path))
+
 
     def test_skip_detector_added_markers_and_unchanged_literals(self):
         cases = [
@@ -282,6 +299,46 @@ class L0Tests(TaskFixture):
         self.assertEqual((code, result['state']), (0, 'gate_passed'), result)
         self.assertEqual({c['id']: c['status'] for c in self.receipts()[0]['checks']},
                          {identifier: 'pass' for identifier in task_l0.CHECK_IDS})
+
+    def support_test(self, expected):
+        return ('import runpy\nimport unittest\nfrom pathlib import Path\n'
+                'class SupportTest(unittest.TestCase):\n'
+                '    def test_support(self):\n'
+                '        support = runpy.run_path(str(Path(__file__).parent / "tools/run_tests.py"))\n'
+                '        self.assertEqual(support["value"](), ' + str(expected) + ')\n')
+
+    def test_modified_support_stays_at_base_and_proves_red_first(self):
+        self.seed_files({'tests/tools/run_tests.py': 'def value():\n    return 1\n'})
+        self.actions.write_text(json.dumps([{
+            'tests/tools/run_tests.py': 'def value():\n    return 2\n',
+            'tests/test_support.py': self.support_test(2)}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (0, 'gate_passed'), result)
+        self.assertEqual({c['id']: c['status'] for c in self.receipts()[0]['checks']},
+                         {identifier: 'pass' for identifier in task_l0.CHECK_IDS})
+
+    def test_noop_modified_support_does_not_prove_red_first(self):
+        support = 'def value():\n    return 1\n'
+        self.seed_files({'tests/tools/run_tests.py': support})
+        self.actions.write_text(json.dumps([{
+            'tests/tools/run_tests.py': support + '\n# no behaviour change\n',
+            'tests/test_support.py': self.support_test(1)}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertEqual(self.checks()['red_first_missing']['status'], 'fail')
+        self.assertEqual(self.checks()['red_first_missing']['detail'], 'no_observed_failure_on_base')
+
+    def test_added_support_is_overlaid_without_fake_import_failure(self):
+        self.actions.write_text(json.dumps([{
+            'tests/helper.py': 'def value():\n    return 1\n',
+            'tests/test_support.py': (
+                'import unittest\nfrom tests.helper import value\n'
+                'class SupportTest(unittest.TestCase):\n'
+                '    def test_support(self):\n        self.assertEqual(value(), 1)\n')}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertEqual(self.checks()['red_first_missing']['status'], 'fail')
+        self.assertEqual(self.checks()['red_first_missing']['detail'], 'no_observed_failure_on_base')
 
     def test_reported_test_count_drop_without_static_test_drop_fails(self):
         load = ('\ndef load_tests(loader, tests, pattern):\n'
