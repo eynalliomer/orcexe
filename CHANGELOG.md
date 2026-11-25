@@ -1,5 +1,18 @@
 ## Unreleased
 
+### T74 — v0.3 test runner, risk signals and sandbox cache follow-ups
+
+- `risk_of` no longer lists `<field>:exempted` signals as risks.
+- `ORCEXE_SLOW_TESTS=1` (or runner `--slow`) adds `tests/slow/` to the default
+  suite and raises the runner's per-module timeout to 1800 seconds. The env var
+  also works with plain unittest discovery.
+- With a non-empty `CI` env var, the runner prints each skipped test id and
+  reason under its module line; local runs show only per-module skip counts.
+- Redirect Swift/Clang module caches, HOME and XDG directories to per-step
+  scratch. Cache redirection is preparatory: `swift build` is still unsupported
+  inside the macOS sandbox because SwiftPM's nested `sandbox-exec` is refused
+  (`sandbox_apply: Operation not permitted`); this remains on the v0.4 backlog.
+
 ### T73 — auditor truncates over-long finding reasons
 
 - ``parse_audit`` keeps verdict and severity when a finding reason exceeds the cap;

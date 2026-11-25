@@ -38,7 +38,8 @@ so a step cannot start an app outside it, denies mach-lookup except an allow-lis
 needed for user/group lookup, and refuses the clipboard (`pbcopy`/`pbpaste`); on
 Linux, `bwrap` runs with `--unshare-all` and a private `--tmpfs /run` (see below
 for the exact limits). Swift package builds (`swift build`) do not work inside
-the macOS sandbox.
+the macOS sandbox because SwiftPM's nested `sandbox-exec` is refused
+(`sandbox_apply: Operation not permitted`); this remains on the v0.4 backlog.
 On other systems, or when sandbox creation is denied, steps still run with a
 temp HOME but without OS confinement: `isolation_unavailable` prevents acceptance
 (`task`: `gate_passed`, exit 0; `do`: `unverified`, exit 1). The reports record
@@ -980,7 +981,11 @@ A timed-out project check reports its limit, for example `unittest: timeout (600
 `do` has a single attempt and keeps failing `empty_diff` at `run_status`.
 
 Every code-executing project step, including candidate checks, L0 base counts and
-red-first reruns, uses a fresh sandbox and temp directory. On macOS, Seatbelt
+red-first reruns, uses a fresh sandbox and temp directory. Each step's `HOME`,
+`USERPROFILE` and `CFFIXED_USER_HOME` point to a home directory in per-step scratch;
+`CLANG_MODULE_CACHE_PATH` and `SWIFTPM_MODULECACHE_OVERRIDE` point to its
+`clang-module-cache` directory. `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`
+and `CODEX_HOME` also point to per-step scratch directories. On macOS, Seatbelt
 (`/usr/bin/sandbox-exec`) allows writes only to that checkout, the step temp and
 runner device files, and denies outbound network. Profile paths are canonical and
 escaped. Linux uses `bwrap` with a read-only root, writable checkout/temp and private
@@ -996,8 +1001,11 @@ so a step cannot start a job outside the profile. On Linux, `bwrap` runs with
 `--unshare-all` (all namespaces, network included) and a fresh `--tmpfs /run`, which
 hides the session bus (`/run/user/<uid>/bus`) and the docker socket; this is to be
 verified in CI on Linux hosts. Known limitation: Swift package builds (`swift build`)
-do not work inside the macOS sandbox. `TMPDIR`/`TEMP`/`TMP` point to the fresh step temp. A denied write fails the
-project check normally, with `write outside checkout denied` in feedback.
+do not work inside the macOS sandbox because SwiftPM's nested `sandbox-exec` is
+refused (`sandbox_apply: Operation not permitted`); this remains on the v0.4 backlog.
+The Swift/Clang cache redirection is preparatory. `TMPDIR`/`TEMP`/`TMP` point to the
+fresh step temp. A denied write fails the project check normally, with
+`write outside checkout denied` in feedback.
 
 If a backend is missing or the host refuses sandbox creation, steps still run, but
 `task` can only reach `gate_passed` with `isolation_unavailable` (exit 0), even after
@@ -1246,12 +1254,24 @@ manager/planner publication matrices, cross-interpreter layouts, task race and
 stacked retry scenarios live in `tests/slow/`. Generated stress sets and timing
 checks also remain opt-in.
 
-Run the full suite with `python3 tests/tools/run_tests.py --slow` or equivalently
-`ORCEXE_SLOW_TESTS=1 python3 tests/tools/run_tests.py`. Both include the default
-suite. Slow modules default to a 1800-second timeout; override it with `--timeout`.
+Set `ORCEXE_SLOW_TESTS=1` (or pass runner `--slow`) to add `tests/slow/` modules
+on top of the default suite. Run the full suite from the repository root with:
+
+```sh
+python3 tests/tools/run_tests.py --slow
+ORCEXE_SLOW_TESTS=1 python3 tests/tools/run_tests.py
+```
+
+Both raise the runner's per-module timeout from 300 to 1800 seconds; override it
+with `--timeout`. Plain unittest discovery also honors `ORCEXE_SLOW_TESTS=1`:
+
+```sh
+ORCEXE_SLOW_TESTS=1 python3 -m unittest discover
+```
+
 Run slow coverage for changes to orchestration, adapters, gates, publication,
-redaction, classification or YAML parsing. Ordinary unittest discovery honors
-`ORCEXE_SLOW_TESTS=1` too. No real model CLI, network or install is needed.
+redaction, classification or YAML parsing. No real model CLI, network or install
+is needed.
 
 For five runs under twice the CPU count in busy-loop workers, use
 `python3 tests/tools/stress_suite.py --runs 5 --scale 3`. Its default runner is
@@ -1265,6 +1285,11 @@ in v0.1: its two jobs are experimental and continue on error, with failures stil
 reported. Markdown-only changes skip CI, except plugin skills and commands.
 The full slow suite runs on Ubuntu/Python 3.9 weekly, manually, and on pull
 requests touching `redact*.py`, `classify.py` or `miniyaml.py`.
+
+When the `CI` env var is non-empty, `tests/tools/run_tests.py` prints each skipped
+test id and reason under its module line. Hosted-runner sandbox availability
+shows up through these printed skip reasons. Local runs with `CI` unset or empty
+show only per-module skip counts.
 
 Public repositories run standard GitHub-hosted runners for free. For a private
 copy, estimate about 76 billable minutes per full matrix run: Ubuntu 2 jobs ×
