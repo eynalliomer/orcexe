@@ -54,6 +54,10 @@ def scan(tests):
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop('CI', None)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -115,18 +119,77 @@ class Tests(unittest.TestCase):
         self.assertEqual((record['tests'], record['failures'], record['errors'], record['skips']),
                          (3, 1, 1, 1))
         self.assertEqual(len(record['tracebacks']), 2)
+        self.assertEqual(record['skipped'], [['outcomes.Tests.test_skip', 'expected skip']])
+        self.assertEqual(json.loads(json.dumps(record))['skipped'], record['skipped'])
         self.assertIn('expected failure', record['output'])
         self.assertIn('expected error', record['output'])
+
+    def test_skip_details_appear_only_with_nonempty_ci(self):
+        name = self.module('test_skip_details', '''import unittest
+class Tests(unittest.TestCase):
+    def test_first(self): self.skipTest('first skip reason')
+    def test_second(self): self.skipTest('second skip reason')
+''')
+        cache = self.directory / 'durations.json'
+        args = ['-j', '1', '-s', str(self.directory), '-t', str(self.directory)]
+        for ci in (None, '', '1', 'false'):
+            with self.subTest(ci=ci), mock.patch.dict(os.environ), \
+                    mock.patch.object(runner, 'CACHE', cache), \
+                    redirect_stdout(io.StringIO()) as output:
+                if ci is None:
+                    os.environ.pop('CI', None)
+                else:
+                    os.environ['CI'] = ci
+                self.assertEqual(runner.main(args), 0)
+                summary = output.getvalue()
+                self.assertIn('{}: tests=2 failures=0 errors=0 skips=2'.format(name), summary)
+                for method, reason in (('test_first', 'first skip reason'),
+                                       ('test_second', 'second skip reason')):
+                    if ci:
+                        lines = [line for line in summary.splitlines() if reason in line]
+                        self.assertEqual(len(lines), 1)
+                        self.assertIn(name, lines[0])
+                        self.assertIn('{}.Tests.{}'.format(name, method), lines[0])
+                        self.assertLess(summary.index(name + ': tests='), summary.index(lines[0]))
+                        self.assertLess(summary.index(lines[0]), summary.index('10 slowest modules:'))
+                    else:
+                        self.assertNotIn(reason, summary)
+                        self.assertNotIn('{}.Tests.{}'.format(name, method), summary)
 
     def test_crash_and_timeout_fail_without_results(self):
         crash = self.module('crash', 'import os; os._exit(7)\n')
         record = self.run_module(crash)
         self.assertFalse(record['successful'])
         self.assertIn('crashed (exit 7)', record['issue'])
+        self.assertEqual(record['skipped'], [])
         hang = self.module('hang', 'import threading; threading.Event().wait()\n')
         record = self.run_module(hang, timeout=.2)
         self.assertFalse(record['successful'])
         self.assertIn('timed out', record['issue'])
+        self.assertEqual(record['skipped'], [])
+
+    def test_ci_summary_tolerates_missing_and_empty_skip_lists_and_worker_exception(self):
+        cache = self.directory / 'durations.json'
+        loader = mock.Mock(modules={'crashed', 'timed_out', 'exception'}, errors=[])
+        def run(name, *args):
+            if name == 'exception':
+                raise RuntimeError('worker exception')
+            record = dict(module=name, tests=0, failures=0, errors=0, skips=0,
+                          duration=0, successful=False, issue=name, output='', tracebacks=[])
+            if name == 'timed_out':
+                record['skipped'] = []
+            return record
+        with mock.patch.dict(os.environ, CI='1'), \
+                mock.patch.object(runner, 'CACHE', cache), \
+                mock.patch.object(runner, 'Discovery', return_value=loader), \
+                mock.patch.object(runner, 'run_module', side_effect=run), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(runner.main(['-j', '1']), 1)
+        summary = output.getvalue()
+        for name in loader.modules:
+            self.assertIn(name + ': tests=0', summary)
+        self.assertIn('worker exception', summary)
+        self.assertIn('failed modules=3', summary)
 
     def test_discovery_pattern_and_import_error_exit_status(self):
         self.module('test_good', 'import unittest\nclass Tests(unittest.TestCase):\n'

@@ -38,7 +38,9 @@ def worker(module, result_path, top):
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     record = dict(module=module, tests=result.testsRun,
                   failures=len(result.failures), errors=len(result.errors),
-                  skips=len(result.skipped), duration=time.monotonic() - started,
+                  skips=len(result.skipped),
+                  skipped=[[test.id(), str(reason)] for test, reason in result.skipped],
+                  duration=time.monotonic() - started,
                   successful=result.wasSuccessful(),
                   tracebacks=[(test.id(), trace) for test, trace in
                               result.failures + result.errors])
@@ -92,7 +94,7 @@ def run_module(module, top, timeout, directory):
             if process.returncode != (0 if record['successful'] else 1):
                 issue = issue or 'worker crashed (exit {})'.format(process.returncode)
         except (OSError, ValueError, KeyError):
-            record = dict(module=module, tests=0, failures=0, errors=0, skips=0,
+            record = dict(module=module, tests=0, failures=0, errors=0, skips=0, skipped=[],
                           successful=False, tracebacks=[])
             issue = issue or 'worker crashed (exit {})'.format(process.returncode)
         record.update(duration=time.monotonic() - started, output=captured, issue=issue)
@@ -153,7 +155,7 @@ def main(argv=None):
                     records.append(future.result())
                 except Exception as error:
                     records.append(dict(module=name, tests=0, failures=0, errors=1,
-                                        skips=0, duration=0, successful=False,
+                                        skips=0, skipped=[], duration=0, successful=False,
                                         issue=repr(error), tracebacks=[], output=''))
     records.sort(key=lambda item: item['module'])
     print('Module results (name order):')
@@ -161,6 +163,9 @@ def main(argv=None):
         print('{module}: tests={tests} failures={failures} errors={errors} skips={skips} '
               'duration={duration:.2f}s{issue}'.format(
                   **dict(record, issue='; ' + record['issue'] if record['issue'] else '')))
+        if os.environ.get('CI'):
+            for test, reason in record.get('skipped') or []:
+                print('  {}: {} skipped: {}'.format(record['module'], test, reason))
         if record['output']:
             print(record['output'].rstrip())
         for test, trace in record['tracebacks']:
