@@ -297,7 +297,7 @@ class _PythonAssertions:
                 tree = tree if tree is not None else parse_python(self.texts[path])
                 parents = {child: parent for parent in ast.walk(tree)
                            for child in ast.iter_child_nodes(parent)}
-                imports, bindings = {}, {}
+                imports = {}
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Import):
                         for alias in node.names:
@@ -306,11 +306,7 @@ class _PythonAssertions:
                     elif isinstance(node, ast.ImportFrom):
                         for alias in node.names:
                             imports[alias.asname or alias.name] = (node.module or '', alias.name, node.level)
-                    elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                        for target in targets:
-                            bindings.setdefault(_name(target), []).append(node.value)
-                self.units[path] = (tree, parents, imports, bindings)
+                self.units[path] = (tree, parents, imports)
             except (SyntaxError, ValueError, RecursionError):
                 self.units[path] = None
         return self.units[path]
@@ -370,7 +366,7 @@ class _PythonAssertions:
         unit = self.unit(path)
         if unit is None:
             return None, True
-        tree, parents, imports, _ = unit
+        tree, parents, imports = unit
         pieces = name.split('.')
         scope = function
         if len(pieces) == 1:
@@ -490,20 +486,6 @@ class _PythonAssertions:
             if not level:
                 return '.'.join(v for v in (module, symbol, member) if v)
         return name
-
-    def availability(self, path, condition, seen=()):
-        if _constant(condition):
-            return False
-        name = self.callee(path, condition)
-        if re.search(r'(?:^|\.)(?:os|sys|platform|environ|getenv|which|find_spec|git_environment)'
-                     r'(?:\.|$)|(?:available|installed|HAS_|HAVE_)', name):
-            return True
-        name = _name(condition)
-        unit = self.unit(path)
-        if unit and name and name not in seen and len(seen) < 3:
-            if any(self.availability(path, value, seen + (name,)) for value in unit[3].get(name, [])):
-                return True
-        return any(self.availability(path, child, seen) for child in ast.iter_child_nodes(condition))
 
 
 def _python_test_file(path):

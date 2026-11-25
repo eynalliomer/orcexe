@@ -10,7 +10,7 @@ import subprocess
 import sys
 from unittest import mock
 
-from orcexe import cli, intake, slop
+from orcexe import cli, intake, slop, task_l0
 from tests.unit.test_gitutil import GitFixture
 from tests.security import capture_children
 
@@ -570,6 +570,39 @@ test('interpolated', () => { expect(`${product()}`).toBe('ok'); });
                          [('a.ts', 1), ('test_a.py', 6)])
         self.assertEqual([v['line'] for v in self.findings('skipped_test')], [4])
         self.assertEqual(self.findings('stub'), [])
+
+    def test_python_assertion_unit_without_availability_bindings(self):
+        path = 'tests/test_aliases.py'
+        source = '''import pytest as checks
+from pytest import skip as omit
+value = product()
+other: bool = product()
+def helper():
+    assert value
+def test_helper():
+    helper()
+def test_skip():
+    omit("later")
+'''
+        helpers = slop._PythonAssertions({path: source})
+        self.assertFalse(hasattr(helpers, 'availability'))
+        unit = helpers.unit(path)
+        tree, parents, imports = unit
+        self.assertIs(helpers.unit(path), unit)
+        self.assertEqual(imports, {'checks': ('pytest', '', 0), 'omit': ('pytest', 'skip', 0)})
+        helper, test_helper, test_skip = tree.body[-3:]
+        self.assertIs(parents[test_helper], tree)
+        self.assertEqual(helpers.resolve(path, test_helper, 'helper'), ((path, helper), False))
+        self.assertEqual(helpers.assertions(path, test_helper), [True])
+        self.assertEqual(helpers.callee(path, test_skip.body[0].value.func), 'pytest.skip')
+        findings = []
+        slop._python(path, source, lambda *finding: findings.append(finding), helpers)
+        self.assertEqual(findings, [('fake_test', 9, 'no_assertions'),
+                                    ('skipped_test', 10, 'runtime_skip')])
+        markers = []
+        task_l0._python_markers(source, lambda *finding: markers.append(finding), path, helpers)
+        self.assertEqual(markers, [('skipped_test', 10, 'runtime_skip'),
+                                  ('skipped_test', 9, 'hollow_test')])
 
     def test_python_helpers_local_inherited_nested_depth_and_cycles(self):
         source = '''def leaf(value):
