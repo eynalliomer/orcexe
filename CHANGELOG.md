@@ -1,5 +1,11 @@
 ## Unreleased
 
+### T73 — auditor truncates over-long finding reasons
+
+- ``parse_audit`` keeps verdict and severity when a finding reason exceeds the cap;
+  it validates the full original text, then truncates with a visible marker instead
+  of rejecting the audit as invalid.
+
 ### T72
 
 - Red-first overlays identify test files by name. Existing helpers and runners

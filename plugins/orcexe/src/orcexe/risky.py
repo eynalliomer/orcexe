@@ -398,6 +398,18 @@ def approve_contract_command(args):
 
 # -- auditor ---------------------------------------------------------------------------------
 
+def _truncate_audit_reason(reason):
+    if len(reason) <= REASON_CAP:
+        return reason
+    for prefix_len in range(REASON_CAP, 0, -1):
+        dropped = len(reason) - prefix_len
+        marker = f'… [truncated {dropped} chars]'
+        candidate = reason[:prefix_len] + marker
+        if len(candidate) <= REASON_CAP:
+            return candidate
+    raise mapping.ManagerOutputInvalid('findings.reason', 'too_long', len(reason), REASON_CAP)
+
+
 def parse_audit(text):
     """Strict ``orcexe.audit.v1``; a pass is valid only without P0/P1/P2 findings."""
     invalid = mapping.ManagerOutputInvalid
@@ -422,7 +434,7 @@ def parse_audit(text):
         if item['severity'] not in SEVERITIES:
             raise invalid('findings.severity', 'invalid_value')
         mapping.manager_string(item['path'], 'findings.path', cap=PATH_CAP, empty=True)
-        mapping.manager_string(item['reason'], 'findings.reason', cap=REASON_CAP)
+        mapping.manager_string(item['reason'], 'findings.reason', cap=OUTPUT_CAP)
         # Single-line printable text only: no control characters, line or paragraph separators;
         # a path is relative and uses '/'.
         for key in ('path', 'reason'):
@@ -430,6 +442,7 @@ def parse_audit(text):
                 raise invalid('findings.' + key, 'control_character')
         if item['path'].startswith('/') or '\\' in item['path'] or item['path'] != item['path'].strip():
             raise invalid('findings.path', 'invalid_value')
+        item['reason'] = _truncate_audit_reason(item['reason'])
     blocking = [f for f in findings if f['severity'] in BLOCKING]
     if value['verdict'] == 'pass' and blocking:
         raise invalid('verdict', 'pass_with_blocking_findings')

@@ -633,8 +633,7 @@ class AuditOutputTests(unittest.TestCase):
         bad = [audit('pass', [BLOCKER]), audit('pass', [dict(BLOCKER, severity='P0')]),
                audit('pass', [dict(BLOCKER, severity='P2')]), audit('fail'), audit('maybe'),
                audit('fail', [dict(BLOCKER, severity='P4')]), audit('fail', [dict(BLOCKER, extra=1)]),
-               audit('fail', [BLOCKER, BLOCKER]), audit('fail', [dict(BLOCKER, reason='')]),
-               audit('fail', [dict(BLOCKER, reason='x' * 1201)]),
+               audit('fail', [BLOCKER, BLOCKER]),                audit('fail', [dict(BLOCKER, reason='')]),
                audit('fail', [dict(BLOCKER, id='a' + str(i)) for i in range(17)]),
                dict(audit(), extra=True), dict(audit(), schema='orcexe.rubric.v1'),
                dict(schema='orcexe.audit.v1', verdict='pass'),
@@ -656,6 +655,31 @@ class AuditOutputTests(unittest.TestCase):
         for text in texts:
             with self.subTest(text=text[:120]), self.assertRaises(mapping.ManagerOutputInvalid):
                 risky.parse_audit(text)
+
+    def test_truncates_overlong_reason(self):
+        long_p3 = 'n' * 1541
+        parsed = risky.parse_audit(json.dumps(audit('pass', [dict(NOTE, reason=long_p3)])))
+        self.assertEqual(parsed['verdict'], 'pass')
+        reason = parsed['findings'][0]['reason']
+        self.assertLessEqual(len(reason), risky.REASON_CAP)
+        self.assertIn('… [truncated ', reason)
+        self.assertIn(' chars]', reason)
+
+        long_p1 = 'f' * 5000
+        parsed = risky.parse_audit(json.dumps(audit('fail', [dict(BLOCKER, reason=long_p1)])))
+        self.assertEqual(parsed['verdict'], 'fail')
+        self.assertEqual(parsed['findings'][0]['severity'], 'P1')
+
+        with self.assertRaises(mapping.ManagerOutputInvalid):
+            risky.parse_audit(json.dumps(audit('pass', [dict(BLOCKER, severity='P2', reason='b' * 2000)])))
+
+        bad_tail = 'c' * 1200 + '\x07'
+        with self.assertRaises(mapping.ManagerOutputInvalid):
+            risky.parse_audit(json.dumps(audit('pass', [dict(NOTE, reason=bad_tail)])))
+
+        exact = 'e' * risky.REASON_CAP
+        self.assertEqual(risky.parse_audit(json.dumps(audit('pass', [dict(NOTE, reason=exact)]))),
+                         audit('pass', [dict(NOTE, reason=exact)]))
 
     def test_failure_class_masks_paths_numbers_and_keeps_first_twenty_lines(self):
         one = risky.failure_class('gate', 'project_checks', 'tests/a.py:12 failed after 3.2s\n' + 'x\n' * 30 + 'tail A')
