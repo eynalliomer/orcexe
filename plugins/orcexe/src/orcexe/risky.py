@@ -128,11 +128,19 @@ def auditor_gaps(tasks):
 # -- contract.v1 -----------------------------------------------------------------------------
 
 def risk_of(task):
-    """The lane_basis lines that make the task risky: areas, then every other signal."""
+    """The lane_basis risk reasons: areas and signals; exempted signals are not risk reasons."""
     basis = [b for b in task.get('lane_basis') or [] if isinstance(b, str)]
     areas = [b for b in basis if b.startswith(AREA_PREFIXES)]
     quiet = ('manager:fast', 'manager:standard', 'cli:classify:fast', 'cli:classify:standard')
-    return dict(signals=[b for b in basis if b not in areas and b not in quiet], areas=areas)
+    signals = []
+    for b in basis:
+        if b in areas or b in quiet:
+            continue
+        parts = b.split(':', 3)
+        if len(parts) >= 3 and parts[0] == 'cli' and parts[2] == 'exempted':
+            continue
+        signals.append(b)
+    return dict(signals=signals, areas=areas)
 
 
 def forbidden_paths(main, task):

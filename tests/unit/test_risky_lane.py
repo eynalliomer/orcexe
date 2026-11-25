@@ -142,6 +142,44 @@ class RiskyFixture(TaskFixture):
         return self.git_run(self.main, 'for-each-ref', 'refs/orcexe/accepted/').strip()
 
 
+class RiskOfTests(unittest.TestCase):
+    def test_exempted_fields_are_not_risk_signals(self):
+        basis = [
+            'manager:risky',
+            'cli:risk_path:src/app.py',
+            'cli:done[0]:exempted:exempt:descriptive_subject A4=commit',
+            'manager:fast',
+            'cli:notes:exempted:exempt:descriptive_subject A4=commit',
+            'cli:classify:risky',
+            'cli:done[1]:A4:commit',
+            'cli:goal:exempted:exempt:descriptive_subject A4=commit',
+            'manager:standard',
+            'cli:classify:fast',
+            'cli:classify:standard',
+        ]
+        self.assertEqual(risky.risk_of(dict(lane_basis=basis)), dict(
+            signals=['manager:risky', 'cli:classify:risky', 'cli:done[1]:A4:commit'],
+            areas=['cli:risk_path:src/app.py']))
+
+    def test_all_area_prefixes_keep_order_even_with_exempted_segment(self):
+        areas = [prefix + 'exempted:detail' for prefix in risky.AREA_PREFIXES]
+        basis = [areas[0], 'cli:done[0]:exempted:detail', areas[1],
+                 'cli:done[1]:A4:commit', areas[2], 'cli:notes:exempted:detail'] + areas[3:]
+        self.assertEqual(risky.risk_of(dict(lane_basis=basis)), dict(
+            signals=['cli:done[1]:A4:commit'], areas=areas))
+
+    def test_exempted_marker_matches_only_the_cli_signal_segment(self):
+        signals = [
+            'manager:notes:exempted:detail',
+            'cli:notes:A4:exempted:detail',
+            'cli:exempted:A4:commit',
+            'cli:notes:exempted_extra:detail',
+            'cli:exempted',
+        ]
+        basis = signals + ['cli:notes:exempted', 'cli:done[0]:exempted:detail:with:colons']
+        self.assertEqual(risky.risk_of(dict(lane_basis=basis)), dict(signals=signals, areas=[]))
+
+
 class ContractApprovalTests(RiskyFixture):
     def test_first_dispatch_proposes_and_parks_without_running(self):
         code, result, error = self.dispatch()
