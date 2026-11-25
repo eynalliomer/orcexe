@@ -294,8 +294,10 @@ def _resolve_identity(main):
     return identity
 
 
-def _accepted_commit(main, wt, gate, task_id, preview, target, identity):
+def _accepted_commit(main, wt, gate, task_id, preview, target, identity, *, message=None):
     """Compose solely from the base tree and the gate's immutable raw blob."""
+    if message is None:
+        message = "orcexe do " + task_id + ": " + preview
     gate_lite.validate_gate_result(gate)
     diff = gate["diff"]
     if diff["base_commit"] != wt.base_commit or diff["target_path"] != redact.redact_text(target):
@@ -312,7 +314,7 @@ def _accepted_commit(main, wt, gate, task_id, preview, target, identity):
         _git(main, "update-index", "--cacheinfo", mode + "," + blob + "," + target, index=index)
         _, tree = _git(main, "write-tree", index=index)
         _, commit = _git(main, "commit-tree", tree.decode().strip(), "-p", base,
-                         "-m", "orcexe do " + task_id + ": " + preview, identity=identity)
+                         "-m", message, identity=identity)
     commit = commit.decode().strip()
     _, names = _git(main, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", base, commit)
     _, actual = _git(main, "ls-tree", "-z", commit, "--", target)

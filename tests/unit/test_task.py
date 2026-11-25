@@ -8,13 +8,14 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import warnings
 from unittest import mock
 
 from tests.unit.test_gitutil import GitFixture, ROOT
 from tests.unit.test_planning import task as plan_task
 from tests.unit.test_questions import project
-from orcexe import classify, cli, fsio, gate_lite, isolation, ledger, planning, task, task_gate, task_l0, task_l1, worktree
+from orcexe import classify, cli, do, fsio, gate_lite, isolation, ledger, planning, task, task_gate, task_l0, task_l1, worktree
 from orcexe.adapters.codex import CodexAdapter
 
 
@@ -113,6 +114,16 @@ class TaskFixture(GitFixture):
 
     def log(self):
         return TaskLog(ledger.default_path(self.main))
+
+    def assert_landing_message(self, result, title):
+        frozen = list(self.log().records(event='contract.frozen'))[-1]
+        dispatch_id = Path(frozen['data']['path']).parent.name
+        ref = 'refs/orcexe/accepted/' + dispatch_id
+        self.assertEqual(self.git_run(self.main, 'rev-parse', result['land']['ref']),
+                         self.git_run(self.main, 'rev-parse', ref))
+        message = self.git_run(self.main, 'show', '-s', '--format=%B', ref).strip()
+        self.assertEqual(message, 'orcexe task ' + result['task_id'] + ': ' + title
+                         + '\n\nDispatch: ' + dispatch_id)
 
     def invoke(self, identifier=None, task_id='T1', before=None, after=None, json_output=True,
                repo=None, timeout='0.5'):
@@ -260,6 +271,7 @@ class TaskTests(TaskFixture):
                              ('codex', 'gpt-6.1-sol', 'high', 30))
         code, result, error = self.invoke(before=before)
         self.assertEqual((code, error, result['state']), (0, '', 'gate_passed'), result)
+        self.assert_landing_message(result, 'Return two and update its test')
         self.assertEqual(result['attempts'], 1)
         self.assertEqual([r['event'] for r in self.log().records()],
                          ['contract.frozen', 'attempt.started', 'attempt.ended', 'l0.passed', 'gate.passed', 'task.state'])
@@ -272,14 +284,69 @@ class TaskTests(TaskFixture):
                                       'attempts', 'contract_sha256', 'escalation', 'land', 'l1'})
 
     def test_fast_success_is_accepted(self):
-        self.saved = self.save([plan_task()])
+        self.saved = self.save([plan_task(goal='  Fix \t the typo in README.md  \nAdditional instructions')])
         self.actions.write_text(json.dumps([{'README.md': 'Example corrected\n'}]))
-        code, result, _ = self.invoke()
+        with mock.patch.object(do, '_accepted_commit', wraps=do._accepted_commit) as accepted:
+            code, result, _ = self.invoke()
         self.assertEqual((code, result['state']), (0, self.accepted_state), result)
+        self.assert_landing_message(result, 'Fix the typo in README.md')
         self.assertEqual(self.git_run(self.main, 'show', result['land']['ref'] + ':README.md'), 'Example corrected\n')
         summary = (self.main / '.orcexe/current-state.md').read_text()
         self.assertIn('T1: ' + result['state'], summary)
         self.assertIn(self.saved['plan_id'] + ' / approved', summary)
+
+        # The same helper remains callable positionally with do's original message.
+        main, wt, gate, _, _, target, identity = accepted.call_args.args
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            ref = do._accepted_commit(main, wt, gate, 'do-default-message', 'Fix a typo', target, identity)
+        self.assertEqual(ref, 'refs/orcexe/accepted/do-default-message')
+        self.assertEqual(self.git_run(self.main, 'show', '-s', '--format=%B', ref).strip(),
+                         'orcexe do do-default-message: Fix a typo')
+
+    def test_risky_success_uses_plan_task_message(self):
+        from tests.unit.test_task_l1 import EvaluatorTests, rubric
+
+        self.saved = self.save([plan_task('T12', goal='Return two and update its test', lane='risky',
+                                          files={'allow': ['src/*.py', 'tests/**']},
+                                          done=['app returns 2 and its test passes'],
+                                          lane_basis=['manager:risky', 'cli:classify:risky'])])
+        EvaluatorTests.evaluator(self, [rubric(), dict(schema='orcexe.audit.v1', verdict='pass', findings=[])])
+        code, result, error = self.invoke(task_id='T12')
+        self.assertEqual((code, result['state']), (2, 'awaiting_approval'), (result, error))
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = cli.main(['task', '--approve-contract', self.saved['plan_id'], 'T12',
+                             result['contract']['approval_sha256'], '--repo', str(self.main)])
+        self.assertEqual(code, 0)
+        with mock.patch.object(isolation, 'evidence', return_value='seatbelt'):
+            code, result, error = self.invoke(task_id='T12')
+        self.assertEqual((code, result['state']), (0, 'accepted'), (result, error))
+        self.assert_landing_message(result, 'Return two and update its test')
+
+    def test_commit_message_collapses_and_caps_first_goal_line(self):
+        tree = self.git_run(self.main, 'rev-parse', 'HEAD^{tree}').strip()
+        cases = [
+            ('  Return \t two  \r\nMore instructions', 'Return two'),
+            ('x' * 80 + '\nMore instructions', 'x' * 72),
+        ]
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            identity = do._resolve_identity(self.main)
+            for goal, title in cases:
+                with self.subTest(goal=goal):
+                    commit = task._commit(self.main, SimpleNamespace(base_commit=self.head), tree,
+                                          'task-test-dispatch', identity, task_id='T12', goal=goal)
+                    self.assertEqual(self.git_run(self.main, 'show', '-s', '--format=%B', commit).strip(),
+                                     'orcexe task T12: ' + title + '\n\nDispatch: task-test-dispatch')
+                    self.assertEqual(self.git_run(self.main, 'rev-parse', commit + '^').strip(), self.head)
+
+    def test_commit_message_redacts_title_before_capping(self):
+        redacted = '[REDACTED] ' + 'x' * 80
+        with mock.patch.object(task.redact, 'redact_text', return_value=redacted) as redact_title:
+            message = task._commit_message('T12', '  Private \t goal  \nMore instructions',
+                                           'task-test-dispatch')
+        redact_title.assert_called_once_with('Private goal')
+        self.assertEqual(message, 'orcexe task T12: ' + redacted[:72]
+                         + '\n\nDispatch: task-test-dispatch')
 
     def test_base_ignored_outputs_never_reach_gate_copy_or_land_commit(self):
         (self.main / '.gitignore').write_text('/coverage/\ntests/.durations.json\n')

@@ -249,14 +249,19 @@ def _escalation(main, paths):
     return dict(suggested_lane='risky' if risky else 'standard', paths=paths)
 
 
-def _commit(main, wt, tree, dispatch_id, identity):
+def _commit_message(task_id, goal, dispatch_id):
+    title = redact.redact_text(' '.join(goal.splitlines()[0].split()))[:72]
+    return 'orcexe task ' + task_id + ': ' + title + '\n\nDispatch: ' + dispatch_id
+
+
+def _commit(main, wt, tree, dispatch_id, identity, *, task_id, goal):
     _, commit = do._git(main, 'commit-tree', tree, '-p', wt.base_commit,
-                        '-m', 'orcexe task ' + dispatch_id, identity=identity)
+                        '-m', _commit_message(task_id, goal, dispatch_id), identity=identity)
     return commit.decode().strip()
 
 
-def _land(main, wt, tree, dispatch_id, identity):
-    commit = _commit(main, wt, tree, dispatch_id, identity)
+def _land(main, wt, tree, dispatch_id, identity, *, task_id, goal):
+    commit = _commit(main, wt, tree, dispatch_id, identity, task_id=task_id, goal=goal)
     ref = 'refs/orcexe/accepted/' + dispatch_id
     do._git(main, 'update-ref', ref, commit, '0' * len(commit))
     return ref
@@ -893,7 +898,8 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 # accepted ref is written only after it, so a failed record never leaves a ref behind.
                 deferred = True
                 contract = read_contract(contract_path, digest)
-                accepted_commit = _commit(main, wt, observed['tree'], dispatch_id, identity)
+                accepted_commit = _commit(main, wt, observed['tree'], dispatch_id, identity,
+                                          task_id=task_id, goal=task['goal'])
                 read_contract(contract_path, digest)
                 outcome = finish('accepted')
                 if outcome['state'] == 'accepted':
@@ -908,9 +914,11 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 contract = read_contract(contract_path, digest)
                 if contract['lane'] == 'fast':
                     target = gate['diff']['target_path']
-                    ref = do._accepted_commit(main, wt, gate, dispatch_id, 'approved task', target, identity)
+                    ref = do._accepted_commit(main, wt, gate, dispatch_id, 'approved task', target, identity,
+                                              message=_commit_message(task_id, task['goal'], dispatch_id))
                 else:
-                    ref = _land(main, wt, observed['tree'], dispatch_id, identity)
+                    ref = _land(main, wt, observed['tree'], dispatch_id, identity,
+                                task_id=task_id, goal=task['goal'])
                 read_contract(contract_path, digest)
                 _, commit = do._git(main, 'rev-parse', '--verify', ref)
                 accepted_commit = commit.decode().strip()
