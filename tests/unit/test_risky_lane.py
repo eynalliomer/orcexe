@@ -181,6 +181,92 @@ class RiskOfTests(unittest.TestCase):
 
 
 class ContractApprovalTests(RiskyFixture):
+    def test_repeat_approval_is_a_no_op_in_text_and_json(self):
+        proposed = self.propose_and_approve()
+        digest = proposed['contract']['approval_sha256']
+        decisions = self.main / '.orcexe/decisions.jsonl'
+        log_path = ledger.default_path(self.main)
+        before_decisions, before_ledger = decisions.read_bytes(), log_path.read_bytes()
+        records = fsio.read_jsonl(decisions)
+        decision = [d for d in records if d.get('kind') == 'contract_approval'][0]
+        for json_output in (False, True):
+            with self.subTest(json_output=json_output):
+                code, out, error = self.run_cli(
+                    'task', '--approve-contract', self.plan_id, 'T1', digest, '--repo', str(self.main),
+                    *(['--json'] if json_output else []))
+                self.assertEqual((code, error), (0, ''), out)
+                if json_output:
+                    self.assertEqual(json.loads(out), dict(
+                        schema='orcexe.contract_approval.v1', plan_id=self.plan_id, task_id='T1',
+                        approval_sha256=digest, decision_id=decision['decision_id'], already_approved=True))
+                else:
+                    self.assertEqual(out.splitlines()[0], 'Contract already approved: T1 (' + digest + ')')
+                self.assertEqual(decisions.read_bytes(), before_decisions)
+                self.assertEqual(log_path.read_bytes(), before_ledger)
+
+    def test_approval_command_rejects_an_unanchored_contract_decision(self):
+        proposed = self.propose_and_approve()
+        decisions = self.main / '.orcexe/decisions.jsonl'
+        forged = dict(fsio.read_jsonl(decisions)[-1], decision_id='d-forged')
+        fsio.append_jsonl(decisions, forged)
+        before_decisions = decisions.read_bytes()
+        before_anchors = list(self.log().records(event='decision.recorded'))
+        before_approved = list(self.log().records(event='contract.approved'))
+        code, out, error = self.approve_contract(proposed['contract']['approval_sha256'])
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn('not_seen: state_tampered\ndetail: contract_unanchored', error)
+        self.assertEqual(decisions.read_bytes(), before_decisions)
+        self.assertEqual(list(self.log().records(event='decision.recorded')), before_anchors)
+        self.assertEqual(list(self.log().records(event='contract.approved')), before_approved)
+        self.assertTrue(planning.revoked(self.plan_id, self.log()))
+
+    def test_anchored_approval_must_be_above_every_floor(self):
+        proposed = self.propose_and_approve()
+        digest = proposed['contract']['approval_sha256']
+        directory = self.main / '.orcexe'
+        log = ledger.Ledger(ledger.default_path(self.main))
+        view = risky._contract_view(log, self.plan_id, 'T1')
+        anchors = planning.ledger_view(self.plan_id, log)
+        record = fsio.read_jsonl(directory / 'decisions.jsonl')[-1]
+        seq = anchors['anchors'][record['decision_id']][planning.record_digest(record)]
+        self.assertEqual(risky._anchored_approval(directory, self.saved, 'T1', digest, log, view), record)
+        for source in ('frozen_at', 'contract_proposed_at', 'proposed_at', 'revoked_at'):
+            for floor in (seq, seq + 1):
+                with self.subTest(source=source, floor=floor):
+                    current_view, current_anchors = copy.deepcopy(view), copy.deepcopy(anchors)
+                    if source == 'contract_proposed_at':
+                        current_view['proposed']['seq'] = floor
+                    elif source == 'frozen_at':
+                        current_view[source] = floor
+                    else:
+                        current_anchors[source] = floor
+                    with mock.patch.object(planning, 'ledger_view', return_value=current_anchors):
+                        self.assertIsNone(risky._anchored_approval(
+                            directory, self.saved, 'T1', digest, log, current_view))
+
+    def test_first_approval_preserves_output_and_records(self):
+        for json_output in (False, True):
+            with self.subTest(json_output=json_output):
+                _, proposed, _ = self.dispatch('--constraint', str(json_output))
+                digest = proposed['contract']['approval_sha256']
+                before_anchors = len(list(self.log().records(event='decision.recorded')))
+                before_approved = len(list(self.log().records(event='contract.approved')))
+                code, out, error = self.run_cli(
+                    'task', '--approve-contract', self.plan_id, 'T1', digest, '--repo', str(self.main),
+                    *(['--json'] if json_output else []))
+                self.assertEqual((code, error), (0, ''), out)
+                records = [d for d in fsio.read_jsonl(self.main / '.orcexe/decisions.jsonl')
+                           if d.get('kind') == 'contract_approval' and d['approval_sha256'] == digest]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(len(list(self.log().records(event='decision.recorded'))), before_anchors + 1)
+                self.assertEqual(len(list(self.log().records(event='contract.approved'))), before_approved + 1)
+                if json_output:
+                    self.assertEqual(json.loads(out), dict(
+                        schema='orcexe.contract_approval.v1', plan_id=self.plan_id, task_id='T1',
+                        approval_sha256=digest, decision_id=records[0]['decision_id']))
+                else:
+                    self.assertEqual(out.splitlines()[0], 'Contract approved: T1 (' + digest + ')')
+
     def test_first_dispatch_proposes_and_parks_without_running(self):
         code, result, error = self.dispatch()
         self.assertEqual((code, result['state'], result['reason'], result['attempts']),
@@ -266,12 +352,26 @@ class ContractApprovalTests(RiskyFixture):
         self.assertNotIn('contract.approved', self.events())
         # A human constraint re-proposes: the earlier hash no longer freezes anything.
         self.approve_contract(result['contract']['approval_sha256'])
+        decisions = self.main / '.orcexe/decisions.jsonl'
+        log_path = ledger.default_path(self.main)
+        before_decisions, before_ledger = decisions.read_bytes(), log_path.read_bytes()
+        code, _, error = self.approve_contract('0' * 64)
+        self.assertEqual(code, 2)
+        self.assertIn('detail: proposal_changed', error)
+        self.assertEqual(decisions.read_bytes(), before_decisions)
+        self.assertEqual(log_path.read_bytes(), before_ledger)
         code, changed, error = self.dispatch('--constraint', 'Do not change the public signature.')
         self.assertEqual((code, changed['state'], changed['reason']), (2, 'awaiting_approval', 'contract_unapproved'))
         self.assertNotEqual(changed['contract']['approval_sha256'], result['contract']['approval_sha256'])
         self.assertIn('proposal changed', error)
         fields = json.loads((self.main / changed['contract']['path']).read_text())['fields']
         self.assertEqual(fields['human_constraints'], ['Do not change the public signature.'])
+        before_decisions, before_ledger = decisions.read_bytes(), log_path.read_bytes()
+        code, _, error = self.approve_contract(result['contract']['approval_sha256'])
+        self.assertEqual(code, 2)
+        self.assertIn('detail: proposal_changed', error)
+        self.assertEqual(decisions.read_bytes(), before_decisions)
+        self.assertEqual(log_path.read_bytes(), before_ledger)
         code, again, _ = self.dispatch()
         self.assertEqual((again['state'], again['contract']['approval_sha256']),
                          ('awaiting_approval', changed['contract']['approval_sha256']))

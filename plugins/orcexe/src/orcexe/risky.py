@@ -252,13 +252,29 @@ def _approvals(directory, plan_id, task_id, digest):
             and d.get('task_id') == task_id and d.get('approval_sha256') == digest]
 
 
+def _anchored_approval(directory, plan, task_id, digest, log, view):
+    """Return an approval above the current floor; reject an unanchored decision."""
+    from orcexe import planning
+    plan_id = plan['plan_id']
+    anchors = planning.ledger_view(plan_id, log)
+    floor = max(view['frozen_at'], view['proposed']['seq'], anchors['proposed_at'], anchors['revoked_at'])
+    for record in reversed(_approvals(directory, plan_id, task_id, digest)):
+        seq = anchors['anchors'].get(record.get('decision_id'), {}).get(planning.record_digest(record))
+        if seq is None:
+            # §4: a decision only counts with its ledger anchor; a bare file line is foreign.
+            planning.revoke(plan, log, 'contract_unanchored', directory)
+            raise planning.unanchored('contract_unanchored')
+        if seq > floor:
+            return record
+    return None
+
+
 def contract_gate(main, plan, task, log, prior_state, constraints=None):
     """T57 §3.2: propose, or confirm the anchored approval of the current proposal.
 
     Returns ``dict(status='approved'|'unapproved', approval_sha256, path, fields, changed)``.
     A matching decision record without its ledger anchor raises ``state_tampered``.
     """
-    from orcexe import planning
     directory = Path(main) / '.orcexe'
     plan_id, task_id = plan['plan_id'], task['id']
     view = _contract_view(log, plan_id, task_id)
@@ -290,18 +306,11 @@ def contract_gate(main, plan, task, log, prior_state, constraints=None):
         log.append('contract.proposed', task_id, dict(plan_id=plan_id, approval_sha256=digest,
                                                       path=result['path']))
     else:
-        anchors = planning.ledger_view(plan_id, log)
-        floor = max(view['frozen_at'], view['proposed']['seq'], anchors['proposed_at'], anchors['revoked_at'])
-        for record in reversed(_approvals(directory, plan_id, task_id, digest)):
-            seq = anchors['anchors'].get(record.get('decision_id'), {}).get(planning.record_digest(record))
-            if seq is None:
-                # §4: a decision only counts with its ledger anchor; a bare file line is foreign.
-                planning.revoke(plan, log, 'contract_unanchored', directory)
-                raise planning.unanchored('contract_unanchored')
-            if seq > floor:
-                result['status'] = 'approved'
-                result['decision_id'] = record['decision_id']
-                return result
+        record = _anchored_approval(directory, plan, task_id, digest, log, view)
+        if record is not None:
+            result['status'] = 'approved'
+            result['decision_id'] = record['decision_id']
+            return result
     if prior_state != 'awaiting_approval':
         log.append('task.state', task_id, dict(plan_id=plan_id, reason='contract_unapproved',
                                                **{'from': prior_state, 'to': 'awaiting_approval'}))
@@ -319,7 +328,7 @@ def frozen_contract(fields, base, digest):
 
 
 def approve_contract(main, plan, task_id, digest, log):
-    """Record the user's approval of the current proposal: decision.v1 + anchor + event."""
+    """Return ``(record, already_approved)``; write only a new approval of the proposal."""
     from orcexe import planning, planrun
     directory = Path(main) / '.orcexe'
     item = next((t for t in plan['tasks'] if t['id'] == task_id), None)
@@ -339,6 +348,9 @@ def approve_contract(main, plan, task_id, digest, log):
         error = _detail('contract_unapproved', 'proposal_changed')
         error.current = current['approval_sha256']
         raise error
+    record = _anchored_approval(directory, plan, task_id, digest, log, view)
+    if record is not None:
+        return record, True
     at = datetime.now(timezone.utc).isoformat()
     record = dict(schema='orcexe.decision.v1', kind=planning.CONTRACT_KIND, plan_id=plan['plan_id'],
                   task_id=task_id, approval_sha256=digest, decision_id='d-' + secrets.token_hex(8),
@@ -353,7 +365,7 @@ def approve_contract(main, plan, task_id, digest, log):
     fsio.append_jsonl(path, record)
     log.append('contract.approved', task_id, dict(plan_id=plan['plan_id'], approval_sha256=digest,
                                                   decision_id=record['decision_id']))
-    return record
+    return record, False
 
 
 def _detail(reason, detail):
@@ -378,7 +390,7 @@ def approve_contract_command(args):
             runguard.check_marker(main)
             log.verify_head()
             plan = task._read_plan(main, plan_id, None, log)
-            record = approve_contract(main, plan, task_id, digest, log)
+            record, already_approved = approve_contract(main, plan, task_id, digest, log)
             planrun.write_status(main, plan, log)
     except (ValueError, ledger.LedgerError) as error:
         reason = str(error) if isinstance(error, ValueError) else ledger.reason(error)
@@ -396,10 +408,14 @@ def approve_contract_command(args):
     finally:
         planrun._release(lock_path, lock_info)
     if args.json:
-        print(json.dumps(dict(schema='orcexe.contract_approval.v1', plan_id=plan_id, task_id=task_id,
-                              approval_sha256=digest, decision_id=record['decision_id'])))
+        result = dict(schema='orcexe.contract_approval.v1', plan_id=plan_id, task_id=task_id,
+                      approval_sha256=digest, decision_id=record['decision_id'])
+        if already_approved:
+            result['already_approved'] = True
+        print(json.dumps(result))
     else:
-        print('Contract approved: ' + task_id + ' (' + digest + ')')
+        print(('Contract already approved: ' if already_approved else 'Contract approved: ')
+              + task_id + ' (' + digest + ')')
         print('Run it: orcexe task --plan ' + plan_id + ' --task ' + task_id + '  (or orcexe plan --run ' + plan_id + ')')
     return 0
 
