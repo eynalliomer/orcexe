@@ -1,5 +1,17 @@
 ## Unreleased
 
+### T71 — gate snapshots use only base-commit ignore rules
+
+- Exclude untracked files matched by tracked base `.gitignore` files at any
+  depth from task and do snapshots, gate copies and land commits. Tracked files
+  remain visible, including paths removed from the executor's index.
+- Evaluate raw base ignore blobs in a private Git repository with global
+  excludes disabled; executor edits, new ignore files, `info/exclude` and
+  `core.excludesFile` cannot hide changes. Preserve cache exemptions, raw
+  hashing, metadata checks and deadlines without hooks or filters.
+- Add unit, landing and R9 security regression coverage for ignore authority,
+  nested rules, negation, ignored directories and tracked ignored files.
+
 ### T65a — security pack: class-bound tests (R9) and control-state tampering fix
 
 - The shared runguard observes `.orcexe/do.lock` and `do.reclaim`, including

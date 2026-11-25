@@ -33,7 +33,7 @@ def observe(main, wt, allow):
         if code:
             raise ValueError('base_not_ancestor')
     with tempfile.TemporaryDirectory(prefix='orcexe-task-snapshot-') as temporary:
-        index, dirty, _, metadata, _ = gate_lite._snapshot(path, Path(temporary), deadline)
+        index, dirty, _, metadata, _ = gate_lite._snapshot(path, Path(temporary), deadline, base)
         if metadata:
             raise ValueError('nested_git_metadata')
         states = [(base, index, None), (base, None, None)]

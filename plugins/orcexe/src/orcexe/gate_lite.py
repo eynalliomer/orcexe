@@ -19,7 +19,9 @@ source edits are unverifiable in v0.1; # is always code in the C-like lexer.
 Scope and content checks cover base..HEAD, base..index and the raw worktree.
 Every distinct base-to-state file diff counts once (line counts add across
 versions); allowed targets may differ between states, every variant is checked.
-All untracked files, ignored or not, fail scope except regular cache files in
+Untracked files ignored by the base commit's tracked .gitignore files are excluded.
+Executor ignore rules and config cannot hide candidates. Other untracked files
+fail scope except regular cache files in
 .pytest_cache/, .mypy_cache/, .ruff_cache/, and *.pyc in __pycache__/ directories.
 .gitignore/.gitattributes, symlinks and non-pyc files in __pycache__ are never
 cache exemptions. Git metadata
@@ -435,12 +437,54 @@ def _raw_files(path, deadline):
     return names, metadata
 
 
-def _snapshot(path, directory, deadline):
+def _base_ignored(path, directory, base_entries, names, deadline):
+    """Evaluate only immutable base .gitignore blobs in a private repository."""
+    rules = {name: oid for name, (mode, oid) in base_entries.items()
+             if PurePosixPath(name).name == '.gitignore' and mode in {'100644', '100755'}}
+    if not rules or not names:
+        return set()
+    root = directory / 'base-ignore'
+    root.mkdir()
+    # No templates, hooks, filters, worktree config or info/exclude are copied.
+    # _git_setup also removes environment-injected and global/system config.
+    _git(root, 'init', '--quiet', '--template=', deadline=deadline)
+    blobs = _blobs(path, set(rules.values()), deadline)
+    for name, oid in rules.items():
+        if time.monotonic() >= deadline:
+            raise _ObservationError('total_timeout')
+        if not _path(name):
+            raise _ObservationError('unsafe_git_path')
+        safe_write_bytes(root / name, blobs[oid])
+    # check-ignore rejects literal pathspec magic. Prefix raw stdin filenames
+    # with ./ so a leading colon cannot be interpreted as pathspec magic.
+    code, data = _git_bytes(root, '--no-literal-pathspecs', '-c', 'core.excludesFile=' + os.devnull,
+                            'check-ignore', '--no-index', '-z', '--stdin',
+                            input_data=b''.join(b'./' + os.fsencode(n) + b'\0' for n in sorted(names)),
+                            allow_failure=True, deadline=deadline)
+    if code not in (0, 1) or data and not data.endswith(b'\0'):
+        raise _ObservationError('git_observation_incomplete')
+    records = data.split(b'\0')[:-1]
+    if any(not n.startswith(b'./') for n in records):
+        raise _ObservationError('git_observation_incomplete')
+    ignored = {os.fsdecode(n[2:]) for n in records}
+    if not ignored <= names or bool(ignored) != (code == 0):
+        raise _ObservationError('git_observation_incomplete')
+    return ignored
+
+
+def _snapshot(path, directory, deadline, base):
     """Hash raw files without filters, preserving the real index byte for byte."""
     index = directory / "index"
     raw, metadata = _raw_files(path, deadline)
     _, listing = _git(path, "ls-files", "--stage", "-z", nul=True, deadline=deadline)
-    tracked, gitlinks = set(), {}
+    _, base_listing = _git(path, 'ls-tree', '-r', '-z', base, nul=True, deadline=deadline)
+    base_entries = {}
+    for entry in base_listing.split('\0')[:-1]:
+        info, name = entry.split('\t', 1)
+        mode, kind, oid = info.split()
+        base_entries[name] = (mode, oid)
+    # Removing a base-tracked path from the index cannot make it ignorable.
+    tracked, gitlinks = set(base_entries), {}
     for entry in listing.split("\0")[:-1]:
         info, name = entry.split("\t", 1)
         mode, oid, stage = info.split()
@@ -449,12 +493,14 @@ def _snapshot(path, directory, deadline):
         tracked.add(name)
         if mode == "160000":
             gitlinks[name] = oid
-    # The raw walk already includes ignored/self-ignoring files. Never ask Git
-    # to discover untracked repositories or consult executor ignore rules.
+    # The raw walk still detects nested metadata inside ignored directories.
+    # Only base rules may exclude untracked paths; never consult executor rules.
     untracked = set(raw) - tracked
+    ignored = _base_ignored(path, directory, base_entries, untracked, deadline)
+    untracked -= ignored
     unsafe = {name for name in untracked
               if not _cache_file(name, (path / name).lstat().st_mode)}
-    names = sorted(set(raw) | set(gitlinks))
+    names = sorted((set(raw) - ignored) | set(gitlinks))
     entries, inputs, pending, dirty_submodules = [], [], [], set()
     for name in names:
         if not _path(name):
@@ -1184,7 +1230,7 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                                 scope_problem = 'base_not_ancestor'
                         temporary = tempfile.TemporaryDirectory(prefix='orcexe-gate-')
                         scratch = Path(temporary.name)
-                        index, dirty, untracked, metadata, raw_oids = _snapshot(path, scratch, deadline)
+                        index, dirty, untracked, metadata, raw_oids = _snapshot(path, scratch, deadline, base)
                         # A snapshot-completion receipt also permits deterministic
                         # late-writer regression probes without timing guesses.
                         safe_write_text(scratch / 'head-index', head)

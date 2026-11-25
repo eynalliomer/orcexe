@@ -281,6 +281,35 @@ class TaskTests(TaskFixture):
         self.assertIn('T1: ' + result['state'], summary)
         self.assertIn(self.saved['plan_id'] + ' / approved', summary)
 
+    def test_base_ignored_outputs_never_reach_gate_copy_or_land_commit(self):
+        (self.main / '.gitignore').write_text('/coverage/\ntests/.durations.json\n')
+        self.git_run(self.main, 'add', '.gitignore')
+        self.git_run(self.main, 'commit', '-qm', 'base generated outputs')
+        self.head = self.git_run(self.main, 'rev-parse', 'HEAD').strip()
+        self.saved = self.save()
+        ignored = {'coverage/nested/report.txt', 'tests/.durations.json'}
+        self.actions.write_text(json.dumps([dict({'src/app.py': APP.replace('1', '2'),
+                                                  'tests/test_app.py': TEST.replace('1', '2')},
+                                                 **{name: 'generated\n' for name in ignored})]))
+        checkout = gate_lite._checkout
+        copies = []
+
+        def inspect_copy(*args, **kwargs):
+            path = checkout(*args, **kwargs)
+            self.assertTrue(all(not (path / name).exists() for name in ignored))
+            copies.append(path)
+            return path
+
+        with mock.patch.object(gate_lite, '_checkout', side_effect=inspect_copy):
+            code, result, error = self.invoke()
+        self.assertEqual((code, error, result['state']), (0, '', 'gate_passed'), result)
+        self.assertTrue(copies, 'the project checks must consume a real gate copy')
+        names = set(self.git_run(self.main, 'ls-tree', '-rz', '--name-only',
+                                 result['land']['ref']).split('\0')[:-1])
+        self.assertTrue(names.isdisjoint(ignored))
+        self.assertEqual(self.git_run(self.main, 'show', result['land']['ref'] + ':src/app.py'),
+                         APP.replace('1', '2'))
+
     def test_project_failure_retries_in_same_worktree_with_feedback(self):
         self.actions.write_text(json.dumps([{'src/app.py': APP.replace('1', '2')},
                                             {'tests/test_app.py': TEST.replace('1', '2')}]))

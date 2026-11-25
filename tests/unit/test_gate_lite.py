@@ -343,13 +343,16 @@ class GateTests(GitFixture):
         self.assertEqual(result["checks"][4]["detail"], "untracked_ignored:2")
         self.assertFalse(self.marker.exists())
 
-    def test_p3_ignored_configuration_never_executes_commands(self):
+    def test_base_ignored_files_never_enter_the_gate_copy(self):
         self.edit("VALUE = 1 # edit\n")
-        self.edit("X = 1\n", "ignored_conf.py")
-        result = self.call(commands=self.marker_command)
-        self.outcome(result, "escalated", "scope")
-        self.assertEqual(result["checks"][4]["detail"], "untracked_ignored:1")
-        self.assertFalse(self.marker.exists())
+        ignored = ('ignored_conf.py', 'ignored-dir/nested/output.txt', '__pycache__/config.py')
+        for name in ignored:
+            self.edit('generated\n', name)
+        commands = [gl.Command('check-copy', [sys.executable, '-c',
+            'from pathlib import Path; assert all(not Path(p).exists() for p in ' + repr(ignored) + ')'])]
+        result = self.call(commands=commands)
+        self.outcome(result, 'accepted')
+        self.assertEqual([f['path'] for f in result['diff']['files']], ['value.py'])
 
     def test_p4_staged_out_of_scope_restored_on_disk(self):
         self.edit("VALUE = 1 # edit\n")
@@ -388,6 +391,10 @@ class GateTests(GitFixture):
         self.assertIn('command-ran', (self.run_dir / 'gate/marker.log').read_text())
 
     def test_cache_exemptions_are_closed_and_do_not_follow_symlinks(self):
+        # Exercise _cache_file independently of the base's broader ignore rules.
+        self.edit('ignored*\n', '.gitignore')
+        self.git_run(self.path, 'commit', '-qam', 'base without pycache ignore')
+        self.wt = replace(self.wt, base_commit=self.git_run(self.path, 'rev-parse', 'HEAD').strip())
         self.edit("VALUE = 1 # edit\n")
         for name in ("__pycache__/config.py", "__pycache__/x.pyc/config.py", "x.pyc",
                      ".pytest_cache/.gitignore", ".mypy_cache/.gitattributes",
