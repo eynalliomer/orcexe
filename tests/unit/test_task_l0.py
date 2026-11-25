@@ -54,6 +54,88 @@ class CountTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(task_l0._red_first_kind(path))
 
+    def test_python_added_names_compare_module_bindings(self):
+        before = b'def existing():\n    pass\nchanged = 1\n'
+        after = (before.replace(b'changed = 1', b'changed = 2') +
+                 b'async def added():\n    nested = 1\n'
+                 b'class Added:\n    member = 1\n'
+                 b'left, (middle, right) = (1, (2, 3))\n'
+                 b'[head, *tail] = [1, 2, 3]\n'
+                 b'first = second = 1\ntyped: int = 1\n'
+                 b'import os.path\nimport sys as system\n'
+                 b'from pathlib import Path, PurePath as Pure\n'
+                 b'from package import *\nobj.attribute = 1\n'
+                 b'obj[[local for local in values]] = 1\n')
+        self.assertEqual(task_l0._python_added_names(before, after), {
+            'added', 'Added', 'left', 'middle', 'right', 'head', 'tail', 'first', 'second', 'typed',
+            'os', 'system', 'Path', 'Pure'})
+        for old, new in [(b'def broken(', after), (before, b'def broken('),
+                         (b'\xff', after), (before, b'\xff')]:
+            with self.subTest(old=old, new=new):
+                self.assertEqual(task_l0._python_added_names(old, new), set())
+
+    def test_only_missing_added_support_failures_in_unittest_and_pytest(self):
+        imports = "ImportError: cannot import name 'added' from 'tests.helper'"
+        attributes = "AttributeError: module 'tests.helper' has no attribute 'added'"
+        unittest_error = 'Traceback (most recent call last):\n  File "test.py", line 1\n' + imports + '\n'
+        for text in [imports, attributes,
+                     unittest_error + 'Ran 1 test in 0.01s\nFAILED (errors=1)\n',
+                     'ImportError: Failed to import test module: test_helper\n' + unittest_error +
+                     'Ran 1 test in 0.01s\nFAILED (errors=1)\n',
+                     unittest_error + 'Traceback (most recent call last):\n' + attributes +
+                     '\nRan 2 tests in 0.01s\nFAILED (errors=2)\n',
+                     'E   ' + imports + '\n=== 1 error in 0.1s ===\n',
+                     'E   ' + attributes + '\n=== 1 failed in 0.1s ===\n',
+                     'FAILED tests/test_helper.py::test_added - ' + attributes + '\n1 failed in 0.1s\n']:
+            with self.subTest(text=text):
+                self.assertTrue(task_l0._only_added_support_failures(text, {'added'}))
+        for extra in ['FAILED (failures=1, errors=1)\n',
+                      'Ran 2 tests in 2 modules in 0.1s; failures=1 errors=1 skips=0; failed modules=2\n',
+                      'Traceback (most recent call last):\nAssertionError: wrong\n',
+                      'E   assert 1 == 2\n', 'E   AssertionError\n',
+                      'FAILED tests/test_app.py::test_app - assert 1 == 2\n',
+                      'Traceback (most recent call last):\nValueError: wrong\n',
+                      'Traceback (most recent call last):\nCustomFailure\n',
+                      "E   AttributeError: module 'tests.helper' has no attribute 'other'\n",
+                      "E   ModuleNotFoundError: No module named 'added'\n",
+                      'FAILED (errors=2)\n', 'Traceback (most recent call last):\n']:
+            with self.subTest(extra=extra):
+                self.assertFalse(task_l0._only_added_support_failures(unittest_error + extra, {'added'}))
+        self.assertFalse(task_l0._only_added_support_failures(unittest_error, set()))
+        self.assertFalse(task_l0._only_added_support_failures('unrecognized failure', {'added'}))
+        # pytest's short summary repeats the error; it is not a second observed failure.
+        partial = ('E   ' + attributes + '\nFAILED tests/test_helper.py::test_added - ' + attributes +
+                   '\n=== 2 failed in 0.1s ===\n')
+        self.assertFalse(task_l0._only_added_support_failures(partial, {'added'}))
+
+    def test_l0_captures_full_output_without_changing_observation_fields(self):
+        import tempfile, time
+        from types import SimpleNamespace
+        text = 'ImportError: missing\n' + 'x' * 5000 + '\nRan 1 test in 0.1s\nFAILED (errors=1)\n'
+        command = gate_lite.Command('unittest', ['python3', '-m', 'unittest'])
+        outcome = dict(status='exited', pipes_held=False, truncated_lines=False, returncode=1)
+        def run(*args, **kwargs):
+            for line in text.splitlines():
+                kwargs['on_stderr_line'](line)
+            return SimpleNamespace(**outcome)
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(task_l0.isolation, 'run', side_effect=run):
+            root = Path(raw)
+            original = task_l0._tests([command], root, root, 5, time.monotonic() + 30, root)
+            captured = task_l0._tests([command], root, root, 5, time.monotonic() + 30, root,
+                                      capture_text=True)
+            self.assertEqual(captured, [dict(original[0], text=text)])
+            self.assertEqual((captured[0]['count'], captured[0]['exit_code']), (1, 1))
+            self.assertNotIn('ImportError', (root / 'unittest.log').read_text())
+            self.assertEqual(captured[0]['text'], text)
+            for incomplete in [dict(status='timeout'), dict(pipes_held=True), dict(truncated_lines=True)]:
+                with self.subTest(incomplete=incomplete):
+                    outcome.update(incomplete)
+                    captured = task_l0._tests([command], root, root, 5, time.monotonic() + 30, root,
+                                              capture_text=True)
+                    self.assertEqual(captured[0], dict(id='unittest', text='', exit_code=None,
+                                                     count=None, skips=None, skip_counts=None))
+                    outcome.update(status='exited', pipes_held=False, truncated_lines=False)
+
 
     def test_skip_detector_added_markers_and_unchanged_literals(self):
         cases = [
@@ -275,6 +357,7 @@ class L0Tests(TaskFixture):
     def test_all_checks_pass_and_red_first_uses_base_not_candidate(self):
         copies = []
         real = task_l0._tests
+        # Ordinary red runs retain the runner's positional call contract.
         def run(commands, checkout, directory, *args):
             copies.append(checkout)
             self.assertEqual((checkout / 'src/app.py').read_text(), APP)
@@ -339,6 +422,57 @@ class L0Tests(TaskFixture):
         self.assertEqual((code, result['state']), (1, 'exhausted'), result)
         self.assertEqual(self.checks()['red_first_missing']['status'], 'fail')
         self.assertEqual(self.checks()['red_first_missing']['detail'], 'no_observed_failure_on_base')
+
+    def test_modified_support_new_import_does_not_prove_red_first(self):
+        support = 'def value():\n    return 1\n'
+        self.seed_files({'tests/helper.py': support})
+        self.actions.write_text(json.dumps([{
+            'tests/helper.py': support + '\ndef added():\n    return 2\n',
+            'tests/test_support.py': (
+                'import unittest\nfrom tests.helper import added\n'
+                'class SupportTest(unittest.TestCase):\n'
+                '    def test_support(self):\n        self.assertEqual(added(), 2)\n')}]))
+        write = task_l0.safe_write_text
+        red_logs = []
+        def forge_log(path, text, *args, **kwargs):
+            if path.parent.name == 'red':
+                red_logs.append(path)
+                text = 'AssertionError: forged log\n'
+            return write(path, text, *args, **kwargs)
+        with mock.patch.object(task_l0, 'safe_write_text', side_effect=forge_log):
+            code, result, _ = self.invoke()
+        self.assertTrue(red_logs)
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertEqual(self.checks()['red_first_missing'], dict(
+            id='red_first_missing', status='fail', detail='only_added_support_names_missing_on_base'))
+
+    def test_modified_support_new_attribute_does_not_prove_red_first(self):
+        support = 'def value():\n    return 1\n'
+        self.seed_files({'tests/helper.py': support})
+        self.actions.write_text(json.dumps([{
+            'tests/helper.py': support + '\ndef added():\n    return 2\n',
+            'tests/test_support.py': (
+                'import unittest\nfrom tests import helper\n'
+                'class SupportTest(unittest.TestCase):\n'
+                '    def test_support(self):\n        self.assertEqual(helper.added(), 2)\n')}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertEqual(self.checks()['red_first_missing'], dict(
+            id='red_first_missing', status='fail', detail='only_added_support_names_missing_on_base'))
+
+    def test_modified_support_assertion_counts_despite_new_helper_import_error(self):
+        self.seed_files({'tests/tools/run_tests.py': 'def value():\n    return 1\n'})
+        self.actions.write_text(json.dumps([{
+            'tests/tools/run_tests.py': 'def value():\n    return 2\n\ndef added():\n    return 2\n',
+            'tests/test_support.py': self.support_test(2),
+            'tests/test_added.py': (
+                'import unittest\nfrom tests.tools.run_tests import added\n'
+                'class AddedTest(unittest.TestCase):\n'
+                '    def test_added(self):\n        self.assertEqual(added(), 2)\n')}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (0, 'gate_passed'), result)
+        self.assertEqual(self.checks()['red_first_missing'], dict(
+            id='red_first_missing', status='pass', detail='tests_fail_on_base'))
 
     def test_reported_test_count_drop_without_static_test_drop_fails(self):
         load = ('\ndef load_tests(loader, tests, pattern):\n'
@@ -406,10 +540,10 @@ class L0Tests(TaskFixture):
 
     def test_timeout_is_not_red_first_proof(self):
         real = task_l0._tests
-        def run(commands, checkout, directory, *args):
+        def run(commands, checkout, directory, *args, **kwargs):
             if directory.name == 'red':
                 return [dict(id='unittest', count=None, exit_code=None)]
-            return real(commands, checkout, directory, *args)
+            return real(commands, checkout, directory, *args, **kwargs)
         with mock.patch.object(task_l0, '_tests', side_effect=run):
             code, result, _ = self.invoke()
         self.assertEqual((code, result['state']), (1, 'exhausted'), result)

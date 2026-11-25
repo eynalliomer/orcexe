@@ -261,6 +261,73 @@ def _red_first_kind(path):
     return 'support'
 
 
+def _python_added_names(before, after):
+    """Certain module bindings only; unreadable helpers keep the existing evidence rule."""
+    def names(source):
+        found = set()
+        for node in ast.parse(source).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
+                while targets:
+                    target = targets.pop()
+                    if isinstance(target, ast.Name):
+                        found.add(target.id)
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        targets.extend(target.elts)
+                    elif isinstance(target, ast.Starred):
+                        targets.append(target.value)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                found.update(alias.asname or (alias.name.split('.')[0] if isinstance(node, ast.Import)
+                                             else alias.name) for alias in node.names if alias.name != '*')
+        return found
+    try:
+        return names(after) - names(before)
+    except (SyntaxError, ValueError, UnicodeError, RecursionError):
+        return set()
+
+
+def _only_added_support_failures(text, names):
+    """Veto only fully observed missing-symbol failures, never assertion evidence."""
+    if not names or re.search(
+            r'\bfailures=[1-9]\d*\b|^(?:E[ \t]+)?(?:[\w.]+\.)?AssertionError(?::|$)'
+            r'|^E[ \t]+assert\b|^FAILED .+ - (?:assert\b|AssertionError\b)', text, re.M):
+        return False
+    errors, reports, traceback = [], [], False
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line == 'Traceback (most recent call last):':
+            traceback = True
+        elif traceback and line and not line[0].isspace():
+            errors.append(line)
+            traceback = False
+        elif re.match(r'^E[ \t]+\S', line):
+            errors.append(re.sub(r'^E[ \t]+', '', line))
+        elif re.match(r'^(?:FAILED|ERROR) [^\n]+ - ', line):
+            reports.append(line.split(' - ', 1)[1])
+        elif (line.startswith('ImportError: Failed to import test module: ')
+              and index + 1 < len(lines) and lines[index + 1] == 'Traceback (most recent call last):'):
+            continue  # unittest's loader wrapper; the following traceback carries the cause.
+        elif re.match(r'^[\w.]+(?:Error|Exception|Interrupt|Exit)(?::|$)', line):
+            errors.append(line)
+    if traceback or not (errors or reports):
+        return False
+    # A runner may omit some tracebacks. Do not infer that unseen failures match.
+    totals = [int(n) for n in re.findall(r'\berrors=(\d+)\b', text)]
+    totals.extend(sum(int(n) for n in re.findall(r'\b(\d+) (?:failed|errors?)\b', line))
+                  for line in text.splitlines() if re.search(r'\bin \d+(?:\.\d+)?s\b', line))
+    if any(total > max(len(errors), len(reports)) for total in totals):
+        return False
+    for error in errors + reports:
+        match = re.match(r"ImportError: cannot import name ['\"]([^'\"]+)['\"]", error)
+        if match is None:
+            match = re.match(r"AttributeError: .+ has no attribute ['\"]([^'\"]+)['\"]", error)
+        if match is None or match[1] not in names:
+            return False
+    return True
+
+
 def is_doc(path):
     p = PurePosixPath(path)
     return (p.suffix.lower() in gate_lite._DOC
@@ -277,7 +344,7 @@ def test_commands(commands):
                                              c.id + ' ' + ' '.join(c.argv))]
 
 
-def _tests(commands, checkout, directory, timeout, deadline, scratch, interpreter=None):
+def _tests(commands, checkout, directory, timeout, deadline, scratch, interpreter=None, *, capture_text=False):
     """Keep runner exit evidence separate from timeout, missing and partial output."""
     env, _ = child_env()
     observations = []
@@ -286,6 +353,8 @@ def _tests(commands, checkout, directory, timeout, deadline, scratch, interprete
         if unavailable:
             safe_write_text(directory / (command.id + '.log'), 'not_seen: ' + unavailable + '\n')
             observations.append(dict(id=command.id, count=None, skips=None, skip_counts=None, exit_code=None))
+            if capture_text:
+                observations[-1]['text'] = ''
             continue
         lines, size = [], 0
         def capture(line):
@@ -306,6 +375,8 @@ def _tests(commands, checkout, directory, timeout, deadline, scratch, interprete
                         redact_text(text)[-4096:] + hint if complete else 'not_seen: incomplete\n')
         observations.append(dict(id=command.id, **runner_summary(text),
                                  exit_code=observed.returncode if complete else None))
+        if capture_text:
+            observations[-1]['text'] = text
     return observations
 
 
@@ -427,11 +498,20 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             _, final_files, fingerprints = gate_lite._collect(
                 Path(worktree.path), worktree.base_commit, None, deadline, set(), observed['tree'])
             final_oids = {fp[0][1:].split()[3] for fp in fingerprints if set(fp[0][1:].split()[3]) != {'0'}}
+            final_oids.update(fp[0][1:].split()[2] for file, fp in zip(final_files, fingerprints)
+                              if _red_first_kind(file['path']) == 'support' and file['path'].endswith('.py')
+                              and file['old_mode'] != '000000' and file['new_mode'] != '000000')
             final_blobs = gate_lite._blobs(Path(worktree.path), final_oids, deadline)
             overlaid = False
+            added_support_names = set()
             for file, fingerprint in zip(final_files, fingerprints):
                 kind = _red_first_kind(file['path'])
-                if kind is None or (kind == 'support' and file['old_mode'] != '000000'):
+                if kind == 'support' and file['old_mode'] != '000000':
+                    if file['path'].endswith('.py') and file['new_mode'] != '000000':
+                        old, new = fingerprint[0][1:].split()[2:4]
+                        added_support_names.update(_python_added_names(final_blobs[old], final_blobs[new]))
+                    continue
+                if kind is None:
                     continue
                 # Overlay named tests and new support; existing support may be the code under change.
                 if file['new_mode'] == '000000':
@@ -442,16 +522,23 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
                 safe_write_bytes(target, final_blobs[fingerprint[0][1:].split()[3]],
                                  mode=0o755 if file['new_mode'] == '100755' else 0o644)
                 overlaid = True
-            red_results = (_tests(selected, red, directory / 'red', command_timeout_s, deadline, red_root, interpreter)
+            # Preserve the ordinary runner call when no helper names need checking.
+            capture = dict(capture_text=True) if added_support_names else {}
+            red_results = (_tests(selected, red, directory / 'red', command_timeout_s, deadline, red_root, interpreter,
+                                  **capture)
                            if overlaid and selected else [])
-            failed = any(v['exit_code'] is not None and v['exit_code'] > 0 for v in red_results)
+            failures = [v for v in red_results if v['exit_code'] is not None and v['exit_code'] > 0]
+            only_support = bool(failures) and all(
+                _only_added_support_failures(v.get('text', ''), added_support_names) for v in failures)
+            failed = bool(failures) and not only_support
             unknown = not selected or any(v['exit_code'] is None for v in red_results)
             if docs_only(paths):
                 # T54c: a docs-only diff has no behaviour to prove red; other checks still run.
                 check('red_first_missing', 'pass', 'docs_only')
             else:
                 check('red_first_missing', 'pass' if failed else 'not_seen' if unknown else 'fail',
-                      'tests_fail_on_base' if failed else 'no_observed_failure_on_base')
+                      'tests_fail_on_base' if failed else 'only_added_support_names_missing_on_base'
+                      if only_support else 'no_observed_failure_on_base')
     except Exception:
         completed = {v['id'] for v in checks}
         for identifier in CHECK_IDS:
