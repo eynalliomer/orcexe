@@ -16,6 +16,37 @@ from orcexe import gate_lite, isolation
 
 
 class IsolationTests(unittest.TestCase):
+    def test_run_redirects_swift_and_clang_caches_to_step_scratch(self):
+        supplied = {key: '/caller/' + key for key in
+                    ('HOME', 'CFFIXED_USER_HOME', 'CLANG_MODULE_CACHE_PATH',
+                     'SWIFTPM_MODULECACHE_OVERRIDE')}
+
+        def check_environment(argv, *, cwd, env):
+            temporary = Path(env['TMPDIR'])
+            self.assertTrue(temporary.is_dir())
+            self.assertTrue(temporary.name.startswith('orcexe-step-'))
+            for key, name in (('CFFIXED_USER_HOME', 'home'),
+                              ('CLANG_MODULE_CACHE_PATH', 'clang-module-cache'),
+                              ('SWIFTPM_MODULECACHE_OVERRIDE', 'clang-module-cache')):
+                folder = Path(env[key])
+                self.assertEqual(folder, temporary / name)
+                self.assertTrue(folder.is_dir())
+                self.assertNotEqual(env[key], supplied[key])
+            self.assertEqual(env['CFFIXED_USER_HOME'], env['HOME'])
+            self.assertNotEqual(env['HOME'], supplied['HOME'])
+            return mock.sentinel.result
+
+        for mode in ('none', 'seatbelt', 'bwrap'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw, \
+                    mock.patch.object(isolation, 'backend', return_value=mode), \
+                    mock.patch.object(isolation.shutil, 'which', return_value='/fake/bwrap'), \
+                    mock.patch.object(isolation.proc, 'run', side_effect=check_environment) as run:
+                environment = dict(supplied)
+                self.assertIs(isolation.run(['runner'], cwd=raw, env=environment),
+                              mock.sentinel.result)
+                run.assert_called_once()
+                self.assertEqual(environment, supplied)
+
     def test_profile_canonical_paths_and_escaping(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()

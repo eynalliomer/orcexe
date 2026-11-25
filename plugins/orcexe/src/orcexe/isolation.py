@@ -221,6 +221,9 @@ def run(argv, *, cwd, env, **kwargs):
         temporary = Path(raw).resolve()
         environment = dict(env)
         for key, name in (('HOME', 'home'), ('USERPROFILE', 'home'),
+                          ('CFFIXED_USER_HOME', 'home'),
+                          ('CLANG_MODULE_CACHE_PATH', 'clang-module-cache'),
+                          ('SWIFTPM_MODULECACHE_OVERRIDE', 'clang-module-cache'),
                           ('XDG_CACHE_HOME', 'cache'), ('XDG_CONFIG_HOME', 'config'),
                           ('XDG_DATA_HOME', 'data'), ('CODEX_HOME', 'codex')):
             folder = temporary / name
