@@ -1,6 +1,6 @@
 {
   "name": "orcexe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Orchestrate AI coding tools through a Python CLI and Claude Code plugin.",
   "author": {"name": "Ömer Faruk Eynallı"},
   "license": "Apache-2.0",

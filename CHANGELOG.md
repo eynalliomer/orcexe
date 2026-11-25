@@ -1,4 +1,23 @@
-## Unreleased
+## 0.3.0 — 2026-11-25 (local; not tagged, not published)
+
+v0.3 adds the first real orchestration on this repository: real run A (T54)
+and real run B (T66) landed tasks through a real executor and a cross-family
+L1. New since 0.2.0: L1 fallback chain and verdict memory (T51), ledger
+authority with a CAS head ref (T55), macOS mach-lookup allow-list (T56),
+lane classifier v3 (T58, T68), partial plan approval and `deferred` (T59),
+KPI machine (T50), fixed gate interpreter (T52), minimal risky lane with
+contract approval and a cross-family auditor (T60), plan call budget (T61),
+spotdate failure cases (T62), CI on ubuntu and macOS (T63), slop precision on
+real repositories (T64b), class-bound security pack (T65) and the follow-ups
+found by real run B (T71–T74).
+
+Known gaps carried to v0.4+: the Claude Code executor still runs without Bash
+(F3/K16); `swift build` inside the macOS gate sandbox; on Linux, bwrap runs in
+CI on ubuntu-latest but `/run` hiding and ubuntu-22.04 are not measured;
+`orchestration_overhead` is not measured in real runs (no token samples);
+red-first can be falsely red when a task changes an existing test helper (T72
+covers added helpers only); quiet-machine suite time and stress were not
+re-measured; 300 s module timeouts under heavy load.
 
 ### T74 — v0.3 test runner, risk signals and sandbox cache follow-ups
 
@@ -19,11 +38,12 @@
   it validates the full original text, then truncates with a visible marker instead
   of rejecting the audit as invalid.
 
-### T72
+### T72 — red-first overlays only named test files
 
 - Red-first overlays identify test files by name. Existing helpers and runners
   under test directories stay at base; added support files are overlaid so
-  missing helper imports cannot supply false red-first evidence.
+  missing helper imports cannot supply false red-first evidence. This holds
+  for added helpers only: a changed existing helper stays at base.
 - Preserve the other L0 checks, deleted-file handling, overlay safety guard,
   deadlines and fresh base checkout. Add classification and task regressions.
 - Treat every source file under a `__tests__` directory as a named test for the

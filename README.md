@@ -4,9 +4,9 @@ orcexe is an open-source Python CLI and Claude Code plugin that orchestrates AI 
 It uses only the Python standard library and supports Python 3.9 and later.
 orcexe has no telemetry.
 
-Status: **v0.2.0** (local, not published): existing-project map, plan and standard lane. See `CHANGELOG.md` for known gaps.
+Status: **v0.3.0** (local, not published): existing-project map, plan, standard and minimal risky lanes, partial plan approval and a call budget. See `CHANGELOG.md` for known gaps.
 
-## v0.2 flow
+## Flow
 
 Start with `orcexe map`, then use `orcexe questions` and `orcexe answer` to
 resolve the saved form. Run `orcexe plan --goal "…"`, review its tasks and
@@ -999,8 +999,9 @@ The clipboard (`pbcopy`/`pbpaste`) is therefore refused inside a step; `ps` was 
 launchd also refuses `launchctl submit`/`bootstrap` requests from a sandboxed caller,
 so a step cannot start a job outside the profile. On Linux, `bwrap` runs with
 `--unshare-all` (all namespaces, network included) and a fresh `--tmpfs /run`, which
-hides the session bus (`/run/user/<uid>/bus`) and the docker socket; this is to be
-verified in CI on Linux hosts. Known limitation: Swift package builds (`swift build`)
+hides the session bus (`/run/user/<uid>/bus`) and the docker socket. CI on
+ubuntu-latest runs the real bwrap write, HOME and network denials; the `/run`
+hiding itself and ubuntu-22.04 are not yet verified. Known limitation: Swift package builds (`swift build`)
 do not work inside the macOS sandbox because SwiftPM's nested `sandbox-exec` is
 refused (`sandbox_apply: Operation not permitted`); this remains on the v0.4 backlog.
 The Swift/Clang cache redirection is preparatory. `TMPDIR`/`TEMP`/`TMP` point to the
