@@ -161,6 +161,7 @@ class FastL0PolicyTests(PrivateHomes):
                 '    def test_value(self):\n        self.assertEqual(value(), 1)\n')
         for case, red_exit in (('tests-only', 0), ('mixed', 0), ('hollow', 0), ('skip', 0),
                                ('tests-only-red', 1), ('tests-only-unknown', None),
+                               ('tests-only-unselected', None),
                                ('mixed-red', 1), ('mixed-unknown', None), ('unsafe-overlay', 0),
                                ('conftest', 0), ('nested-conftest', 0), ('nested', 0),
                                ('nested-red', 1), ('nested-unknown', None),
@@ -237,15 +238,16 @@ class FastL0PolicyTests(PrivateHomes):
                             lambda *args: False if case == 'unsafe-overlay' else inside_copy(*args))), \
                         mock.patch.object(task_l0, '_tests', side_effect=observe):
                     result = task_l0.run_l0(repo_path=root, worktree=SimpleNamespace(path=str(root), base_commit='base'),
-                        observed=observed, commands=[] if case == 'nested-unselected' else [
+                        observed=observed, commands=[] if case in ('tests-only-unselected', 'nested-unselected') else [
                             gate_lite.Command('unittest', ['python3', '-m', 'unittest'])],
                         gate={}, run_dir=run_dir)
                 checks = {c['id']: (c['status'], c['detail']) for c in result['checks']}
                 self.assertEqual(sorted(checks), sorted(task_l0.CHECK_IDS))
-                self.assertEqual(phases, ['base'] if case in ('unsafe-overlay', 'nested-unselected')
+                self.assertEqual(phases, ['base'] if case in ('unsafe-overlay', 'tests-only-unselected', 'nested-unselected')
                                  else ['base', 'red'])
                 self.assertEqual(checks['test_count_dropped'], ('not_seen', 'runner_count_not_seen')
-                                 if case == 'nested-unselected' else ('pass', 'base=[1]; candidate=[2]'))
+                                 if case in ('tests-only-unselected', 'nested-unselected')
+                                 else ('pass', 'base=[1]; candidate=[2]'))
                 self.assertEqual(checks['tests_missing'], ('pass', 'changed_tests=2'))
                 self.assertEqual(checks['skip_added'][0], 'fail' if case in ('hollow', 'skip') else 'pass')
                 self.assertEqual(checks['assertion_missing'][0], 'fail' if case == 'hollow' else 'pass')
@@ -253,6 +255,8 @@ class FastL0PolicyTests(PrivateHomes):
                     expected = ('not_seen', 'observation_unavailable')
                 elif case == 'nested-added-name':
                     expected = ('fail', 'only_added_support_names_missing_on_base')
+                elif case in ('tests-only-unknown', 'tests-only-unselected'):
+                    expected = ('not_seen', 'no_observed_failure_on_base')
                 elif case.startswith('mixed') or case in ('nested', 'nested-unknown', 'nested-unselected') or red_exit:
                     if red_exit:
                         expected = ('pass', 'tests_fail_on_base')
@@ -262,7 +266,7 @@ class FastL0PolicyTests(PrivateHomes):
                     expected = ('pass', 'tests_only')
                 self.assertEqual(checks['red_first_missing'], expected)
                 self.assertEqual(result['passed'], case in (
-                    'tests-only', 'tests-only-red', 'tests-only-unknown', 'mixed-red',
+                    'tests-only', 'tests-only-red', 'mixed-red',
                     'conftest', 'nested-conftest', 'nested-red'))
 
     def test_tests_only_predicate_is_not_a_hollow_test(self):

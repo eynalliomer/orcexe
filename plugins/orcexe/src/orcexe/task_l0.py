@@ -553,7 +553,7 @@ def run_l0(*, repo_path, worktree, observed, commands, gate, run_dir,
             if docs_only(paths):
                 # T54c: a docs-only diff has no behaviour to prove red; other checks still run.
                 check('red_first_missing', 'pass', 'docs_only')
-            elif not failed and tests_only(observed['files']):
+            elif not failed and not unknown and tests_only(observed['files']):
                 # T78: test-infrastructure diffs cannot prove red; real base evidence keeps its detail.
                 check('red_first_missing', 'pass', 'tests_only')
             else:
