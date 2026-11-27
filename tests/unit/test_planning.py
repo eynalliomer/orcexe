@@ -108,6 +108,54 @@ class PlanChecks(unittest.TestCase):
                          '<=256 alternatives', '<=4096 total characters', 'no_test_path', 'documentation-only'):
             self.assertIn(expected, brief)
 
+    def test_plan_brief_uses_validator_caps(self):
+        with mock.patch.multiple(planning, GOAL_CAP=317, DONE_CAP=9, NOTES_CAP=2017), \
+                mock.patch.multiple(mapping, OUTPUT_CAP=262161, TEXT_CAP=4017, LIST_CAP=117, GLOB_CAP=217), \
+                mock.patch.multiple(planning.globs, EXPANSION_CAP=273, EXPANDED_TEXT_CAP=4113):
+            brief = planning.build_brief('goal', project(), {'assumptions': []}, [])
+            for expected in (
+                    'Output <={} UTF-8 bytes'.format(mapping.OUTPUT_CAP),
+                    'Strings <={} characters'.format(mapping.TEXT_CAP),
+                    'lists <={} items'.format(mapping.LIST_CAP),
+                    'one sentence <={} characters'.format(planning.GOAL_CAP),
+                    'each done item <={} characters'.format(planning.GOAL_CAP),
+                    'done <={} items'.format(planning.DONE_CAP),
+                    'glob <={} characters'.format(mapping.GLOB_CAP),
+                    'Optional task notes <={} characters'.format(planning.NOTES_CAP),
+                    '<={} alternatives'.format(planning.globs.EXPANSION_CAP),
+                    '<={} total characters'.format(planning.globs.EXPANDED_TEXT_CAP)):
+                with self.subTest(expected=expected):
+                    self.assertIn(expected, brief)
+
+    def test_manager_accepts_caps_and_rejects_one_over(self):
+        cases = [
+            (planning.GOAL_CAP, lambda n: task(goal='界' * n), 'goal', 'too_long'),
+            (planning.GOAL_CAP, lambda n: task(done=['界' * n]), 'done[0]', 'too_long'),
+            (planning.DONE_CAP, lambda n: task(done=['done'] * n), 'done', 'too_many'),
+            (planning.NOTES_CAP, lambda n: task(notes='界' * n), 'notes', 'too_long'),
+            (mapping.GLOB_CAP, lambda n: task(files={'allow': ['x' * n]}), 'files.allow[0]', 'too_long'),
+            (mapping.TEXT_CAP, lambda n: task(id='T' + '1' * (n - 1)), 'id', 'too_long'),
+            (mapping.LIST_CAP, lambda n: task(files={'allow': ['x'] * n}), 'files.allow', 'too_many'),
+        ]
+        for cap, make_task, field, reason in cases:
+            with self.subTest(field=field):
+                value = manager([make_task(cap)])
+                self.assertEqual(planning.parse_manager(json.dumps(value)), value)
+                with self.assertRaises(mapping.ManagerOutputInvalid) as caught:
+                    planning.parse_manager(json.dumps(manager([make_task(cap + 1)])))
+                self.assertEqual(caught.exception.detail,
+                                 'tasks[0].{} {} ({} > {})'.format(field, reason, cap + 1, cap))
+
+        value = manager([task(goal='界')])
+        text = json.dumps(value, ensure_ascii=False)
+        text += ' ' * (mapping.OUTPUT_CAP - len(text.encode('utf-8')))
+        self.assertEqual(len(text.encode('utf-8')), mapping.OUTPUT_CAP)
+        self.assertEqual(planning.parse_manager(text), value)
+        with self.assertRaises(mapping.ManagerOutputInvalid) as caught:
+            planning.parse_manager(text + ' ')
+        self.assertEqual(caught.exception.detail,
+                         'output too_long ({} > {})'.format(mapping.OUTPUT_CAP + 1, mapping.OUTPUT_CAP))
+
     def test_glob_intersections_include_future_paths(self):
         for left, right, expected in [
             ('src/*.py', 'src/new.py', True), ('src/*.py', 'src/sub/new.py', False),
