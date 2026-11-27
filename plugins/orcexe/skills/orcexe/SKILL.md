@@ -15,8 +15,7 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 <!-- plan-violation-reasons -->
 | Violation | Reason |
 | --- | --- |
-| `empty_goal`, `empty_allow`, `empty_done` | Cleaned goal, allowed paths or done criteria are empty. |
-| `duplicate_id`, `unknown_dependency`, `cycle` | Task IDs or dependency graph are invalid. |
+| `empty_goal`, `empty_allow`, `empty_done`, `duplicate_id`, `unknown_dependency`, `cycle` | Cleaned goal, allowed paths or done criteria are empty; task IDs or dependency graph are invalid. |
 | `size_l`, `too_many_tasks`, `no_tasks` | Tasks must have size S/M and number 1–12. |
 | `parallel_overlap`, `invalid_glob` | Unordered parallel scopes overlap, or a glob is invalid/exceeds limits. |
 | `no_test_path` | A resolved standard/risky task allows non-documentation paths but no L0 test path. |
@@ -156,5 +155,6 @@ Reason/result tables below use `| reason | code | meaning |`. `planrun` means `p
 | `task_running` | 2 | planrun: Another dispatch holds the repository lock. |
 | `task_unknown` | 2 | task: The task ID is absent from the approved plan. |
 | `test_floor` | 1 | do: Tests were removed or skip markers were added. |
+| `timeout` | 1 | task: Executor timed out; the attempt is consumed and retried while budget remains, then the task is exhausted. |
 | `write_failed` | 2 | map, questions: Publishing private state failed. |
 <!-- /shared-exit-reasons -->

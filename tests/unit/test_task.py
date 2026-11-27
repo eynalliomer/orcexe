@@ -126,7 +126,7 @@ class TaskFixture(GitFixture):
                          + '\n\nDispatch: ' + dispatch_id)
 
     def invoke(self, identifier=None, task_id='T1', before=None, after=None, json_output=True,
-               repo=None, timeout='0.5'):
+               repo=None, timeout='0.5', run_statuses=()):
         def factory():
             adapter = CodexAdapter(env=self.env, kill_grace_s=.1)
             real = adapter.run
@@ -136,6 +136,10 @@ class TaskFixture(GitFixture):
                 if before:
                     before(request)
                 result = real(request)
+                if len(self.requests) <= len(run_statuses):
+                    result['status'] = run_statuses[len(self.requests) - 1]
+                    result['exit_code'] = 1
+                    task.safe_write_json(Path(request.run_dir) / 'result.json', result, mode=0o600)
                 if after:
                     after(request)
                 return result
@@ -406,6 +410,58 @@ class TaskTests(TaskFixture):
     def ended_empty(self):
         return ['empty_diff' in r['data']['warnings'] for r in self.log().records(event='attempt.ended')]
 
+    def assert_executor_timeout_retries(self, lane):
+        if lane == 'fast':
+            self.saved = self.save([plan_task()])
+            self.actions.write_text(json.dumps([{'README.md': 'Example corrected\n'}]))
+        code, result, error = self.invoke(run_statuses=('timeout',))
+        self.assertEqual((code, result['state'], result['attempts'], error),
+                         (0, self.accepted_state if lane == 'fast' else 'gate_passed', 2, ''), result)
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'timeout'), 'gate.passed'])
+        self.assertEqual([r['data']['attempt'] for r in self.log().records(event='attempt.started')], [1, 2])
+        ended = list(self.log().records(event='attempt.ended'))
+        self.assertEqual([r['data']['status'] for r in ended], ['timeout', 'completed'])
+        self.assertEqual(self.counter.read_text(), '2')
+        self.assertEqual(self.requests[0].workdir, self.requests[1].workdir)
+        self.assertIn('"attempt": 1', self.briefs[1])
+        self.assertIn('"id": "run_status", "status": "fail", "detail": "timeout"', self.briefs[1])
+        self.assertNotIn('internal_error', json.dumps(list(self.log().records())))
+
+    def test_standard_executor_timeout_retries_once_then_passes(self):
+        self.assert_executor_timeout_retries('standard')
+
+    def test_fast_executor_timeout_retries_once_then_passes(self):
+        self.assert_executor_timeout_retries('fast')
+
+    def test_executor_timeouts_exhaust_contract_attempt_budget(self):
+        with mock.patch.object(task_l0, 'run_l0') as l0, \
+                mock.patch.object(task_l1, 'evaluate') as l1:
+            code, result, error = self.invoke(run_statuses=('timeout',) * 3)
+        self.assertEqual((code, result['state'], result['reason'], result['attempts'], error),
+                         (1, 'exhausted', 'exhausted', 3, ''), result)
+        frozen = list(self.log().records(event='contract.frozen'))[0]['data']
+        contract = json.loads((self.main / frozen['path']).read_text())
+        self.assertEqual(result['attempts'], contract['budget']['attempts'])
+        self.assertEqual(self.counter.read_text(), '3')
+        self.assertEqual([r['data']['attempt'] for r in self.log().records(event='attempt.started')], [1, 2, 3])
+        self.assertEqual([r['data']['status'] for r in self.log().records(event='attempt.ended')], ['timeout'] * 3)
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'timeout')] * 3)
+        terminal = list(self.log().records(event='task.state'))[-1]['data']
+        self.assertEqual((terminal['from'], terminal['to'], terminal['reason']),
+                         ('gate.failed', 'exhausted', 'exhausted'))
+        self.assertNotIn('internal_error', json.dumps(list(self.log().records())))
+        self.assertIsNone(result['land'])
+        l0.assert_not_called()
+        l1.assert_not_called()
+
+    def test_executor_timeout_does_not_retry_outside_allow(self):
+        self.actions.write_text(json.dumps([{'README.md': 'Unexpected\n'}]))
+        code, result, error = self.invoke(run_statuses=('timeout',))
+        self.assertEqual((code, result['state'], result['reason'], result['attempts'], error),
+                         (1, 'rejected', 'outside_allow', 1, ''), result)
+        self.assertEqual(self.gate_reasons(), [('gate.failed', 'outside_allow')])
+        self.assertEqual(self.counter.read_text(), '1')
+
     def test_retry_after_project_check_timeout_without_new_edit_is_accepted(self):
         # Attempt 1 makes the right edit; the check times out. Attempt 2 finds
         # the work done and changes nothing: the cumulative tree is gated.
@@ -672,7 +728,10 @@ class TaskTests(TaskFixture):
 
 
     def test_docs_have_every_task_reason_and_exit(self):
+        self.assertEqual(task.EXIT_REASONS['timeout'], 1)
         for name in ('README.md', 'plugins/orcexe/skills/orcexe/SKILL.md'):
             text = (ROOT / name).read_text()
+            if name.endswith('SKILL.md'):
+                self.assertLessEqual(len(text.splitlines()), 160)
             for reason, code in task.EXIT_REASONS.items():
                 self.assertIn('| `' + reason + '` | ' + str(code) + ' |', text, name)

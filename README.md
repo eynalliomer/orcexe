@@ -414,8 +414,7 @@ The violation codes are `empty_goal`, `empty_allow`, `empty_done`, `duplicate_id
 <!-- plan-violation-reasons -->
 | Violation | Reason |
 | --- | --- |
-| `empty_goal`, `empty_allow`, `empty_done` | Cleaned goal, allowed paths or done criteria are empty. |
-| `duplicate_id`, `unknown_dependency`, `cycle` | Task IDs or dependency graph are invalid. |
+| `empty_goal`, `empty_allow`, `empty_done`, `duplicate_id`, `unknown_dependency`, `cycle` | Cleaned goal, allowed paths or done criteria are empty; task IDs or dependency graph are invalid. |
 | `size_l`, `too_many_tasks`, `no_tasks` | Tasks must have size S/M and number 1–12. |
 | `parallel_overlap`, `invalid_glob` | Unordered parallel scopes overlap, or a glob is invalid/exceeds limits. |
 | `no_test_path` | A resolved standard/risky task allows non-documentation paths but no L0 test path. |
@@ -1136,6 +1135,7 @@ exit-2 diagnostics also appear on stderr as `not_seen: <reason>`.
 | `task_deferred` | 2 | The task is deferred by the latest plan decision; open it with `plan --approve PLAN_ID --open`. |
 | `task_running` | 1 | Another dispatch holds the repository lock. |
 | `task_unknown` | 2 | The task ID is absent from the approved plan. |
+| `timeout` | 1 | Executor timed out; the attempt is consumed and retried while budget remains, then the task is exhausted. |
 <!-- /task-exit-reasons -->
 
 Failure reasons above appear on stderr as `not_seen: <reason>`. Map, questions

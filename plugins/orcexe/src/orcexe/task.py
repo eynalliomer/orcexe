@@ -30,7 +30,7 @@ EXIT_REASONS = {
     'budget': 1,
     'auditor_wrote': 1, 'same_failure': 1, 'state_tampered': 1, 'exhausted': 1, 'outside_allow': 1, 'risk_path_touched': 1,
     'contract_tampered': 1, 'main_repository_changed': 1, 'git_controls_changed': 1,
-    'pipes_held': 1, 'observation_unavailable': 1,
+    'pipes_held': 1, 'observation_unavailable': 1, 'timeout': 1,
     'git_identity_missing': 1, 'task_running': 1, 'internal_error': 70,
     'cancelled': 130, 'run_interrupted': 2,
     **{reason: 2 for reason in (
@@ -876,6 +876,9 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
                 l1_reason = 'isolation_unavailable'
                 l1_accepted = False
             reason = failed['id'] if failed else l1_reason
+            if failed is not None and failed['id'] == 'run_status' and result['status'] == 'timeout':
+                # Executor timeouts use the normal attempt/feedback budget, not an internal error.
+                reason = 'timeout'
             failure = None
             if risky_lane and not passed and failed is not None and not risky.environmental(
                     result, failed, failure_stage.get(id(failed), 'gate')):
