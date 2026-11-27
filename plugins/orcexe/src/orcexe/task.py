@@ -439,7 +439,8 @@ def run_task(plan_id, task_id, repo=None, *, timeout=1800, _context=None, _resum
             return finish('blocked', 'git_identity_missing')
         do._exclude(main)
         base = planrun.ensure_chain(main, plan, log)
-        resuming = _resume and prior['state'] in planrun.UNFINISHED and prior['contract'] is not None
+        resuming = (_resume and prior['contract'] is not None
+                    and (prior['state'] in planrun.UNFINISHED or planrun.resumable_timeout(main, prior)))
         approved_contract = None
         if constraints is not None and task['lane'] != 'risky':
             summary['detail'] = 'not_a_risky_task'

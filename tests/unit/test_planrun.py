@@ -20,7 +20,8 @@ from orcexe.adapters import CodexAdapter
 
 
 class PlanRunTests(TaskFixture):
-    def invoke_plan(self, resume=False, before=None, accepted=True, identifier=None):
+    def invoke_plan(self, resume=False, before=None, accepted=True, identifier=None, run_statuses=()):
+        statuses = iter(run_statuses)
         def factory():
             adapter = CodexAdapter(env=self.env, kill_grace_s=.1)
             real = adapter.run
@@ -29,7 +30,12 @@ class PlanRunTests(TaskFixture):
                 self.briefs.append(Path(request.brief_path).read_text())
                 if before:
                     before(request)
-                return real(request)
+                result = real(request)
+                status = next(statuses, None)
+                if status is not None:
+                    result.update(status=status, exit_code=1)
+                    task.safe_write_json(Path(request.run_dir) / 'result.json', result, mode=0o600)
+                return result
             adapter.run = run
             return adapter
         out, err = io.StringIO(), io.StringIO()
@@ -272,6 +278,112 @@ class PlanRunTests(TaskFixture):
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(len(list(self.log().records(event='contract.frozen'))), 1)
         self.assertEqual(len(list(self.log().records(event='attempt.ended'))), 3)
+
+    def timeout_ended(self):
+        # Reproduce a dispatch that ends after its timeout gate, before the next attempt.
+        with mock.patch.object(task, '_feedback', side_effect=ValueError('timeout')):
+            code, result, error = self.invoke_plan(run_statuses=('timeout',))
+        self.assertEqual((code, result['tasks'][0]['attempts'], error), (1, 1, ''), result)
+        terminal = list(self.log().records(event='task.state'))[-1]['data']
+        self.assertEqual((terminal['to'], terminal['reason']), ('rejected', 'timeout'))
+        return list(self.log().records(event='contract.frozen'))[-1]['data']
+
+    def assert_timeout_resume(self, standard=False):
+        if standard:
+            test_task_l1.EvaluatorTests.evaluator(self, [rubric()])
+        else:
+            self.docs([plan_task()])
+        frozen = self.timeout_ended()
+        contents = (self.main / frozen['path']).read_bytes()
+        self.assertEqual([(t['state'], t['reason'], t['attempts']) for t in self.status()['tasks']],
+                         [('pending', 'timeout', 1)])
+        before = self.log().path.read_bytes()
+        code, unchanged, _ = self.invoke_plan()
+        self.assertEqual((code, unchanged['tasks']), (1, self.status()['tasks']))
+        self.assertEqual(self.log().path.read_bytes(), before)
+        self.assertEqual(len(self.requests), 1)
+        code, resumed, error = self.invoke_plan(resume=True)
+        self.assertEqual((code, resumed['state'], error), (0, 'completed', ''), resumed)
+        self.assertEqual((resumed['tasks'][0]['state'], resumed['tasks'][0]['attempts']), ('accepted', 2))
+        self.assertEqual([r['data']['attempt'] for r in self.log().records(event='attempt.started')], [1, 2])
+        self.assertTrue(all(r['data']['contract_sha256'] == frozen['contract_sha256']
+                            for r in self.log().records(event='attempt.started')))
+        self.assertEqual(len(list(self.log().records(event='contract.frozen'))), 1)
+        self.assertEqual((self.main / frozen['path']).read_bytes(), contents)
+        self.assertEqual(self.status()['tasks'], resumed['tasks'])
+
+    def test_resume_timeout_uses_remaining_fast_attempts_without_refreezing(self):
+        self.assert_timeout_resume()
+
+    def test_resume_timeout_uses_remaining_standard_attempts_without_refreezing(self):
+        self.assert_timeout_resume(standard=True)
+
+    def test_resume_timeout_gate_without_terminal_state_keeps_frozen_contract(self):
+        self.docs([plan_task()])
+        with mock.patch.object(task, '_feedback', side_effect=SystemExit('stopped after gate')):
+            with self.assertRaises(SystemExit):
+                self.invoke_plan(run_statuses=('timeout',))
+        self.assertEqual(list(self.log().records())[-1]['event'], 'gate.failed')
+        self.assertEqual(planrun.task_records(self.saved, self.log())['T1']['state'], 'running')
+        self.assertEqual(self.status()['tasks'][0]['state'], 'pending')
+        before = self.log().path.read_bytes()
+        code, result, _ = self.invoke_plan()
+        self.assertEqual((code, result['reason']), (2, 'run_interrupted'), result)
+        self.assertEqual(self.log().path.read_bytes(), before)
+        self.assertEqual(len(self.requests), 1)
+        code, result, _ = self.invoke_plan(resume=True)
+        self.assertEqual((code, result['tasks'][0]['state'], result['tasks'][0]['attempts']),
+                         (0, 'accepted', 2), result)
+        self.assertEqual(len(list(self.log().records(event='contract.frozen'))), 1)
+        self.assertEqual([r['data']['attempt'] for r in self.log().records(event='attempt.started')], [1, 2])
+
+    def test_timeout_resumability_requires_current_attempt_contract_and_remaining_budget(self):
+        self.docs([plan_task()])
+        frozen = self.timeout_ended()
+        records = list(self.log().records())
+        latest = planrun.task_records(self.saved, self.log())['T1']
+        self.assertTrue(planrun.resumable_timeout(self.main, latest))
+        for state, reason, attempts in [('accepted', 'accepted', 1), ('exhausted', 'exhausted', 1),
+                                        ('blocked', 'dependency_failed', 1), ('rejected', 'outside_allow', 1),
+                                        ('rejected', 'timeout', 3)]:
+            with self.subTest(state=state, reason=reason, attempts=attempts):
+                item = dict(latest, state=state, reason=reason, attempts=attempts)
+                self.assertFalse(planrun.resumable_timeout(self.main, item))
+        next_attempt = dict(task='T1', event='attempt.started', data=dict(
+            attempt=2, run_id='next-run', contract_sha256=frozen['contract_sha256']))
+        stale_gate = next(r for r in records if r['event'] == 'gate.failed')
+        for suffix in ([next_attempt], [next_attempt, stale_gate],
+                       [dict(task='T1', event='contract.frozen', data=frozen), stale_gate]):
+            with self.subTest(events=[r['event'] for r in suffix]):
+                log = mock.Mock()
+                log.records.return_value = iter(records + suffix)
+                item = planrun.task_records(self.saved, log)['T1']
+                self.assertFalse(planrun.resumable_timeout(self.main, item))
+
+    def test_resume_timeouts_exhausts_frozen_budget_and_stays_terminal(self):
+        self.docs([plan_task()])
+        self.timeout_ended()
+        code, result, _ = self.invoke_plan(resume=True, run_statuses=('timeout', 'timeout'))
+        self.assertEqual((code, result['tasks'][0]['state'], result['tasks'][0]['attempts']),
+                         (1, 'exhausted', 3), result)
+        self.assertEqual([r['data']['attempt'] for r in self.log().records(event='attempt.started')], [1, 2, 3])
+        self.assertEqual([r['data']['reason'] for r in self.log().records(event='gate.failed')], ['timeout'] * 3)
+        self.assertEqual(len(list(self.log().records(event='contract.frozen'))), 1)
+        before = self.log().path.read_bytes()
+        self.assertEqual(self.invoke_plan(resume=True)[:2], (1, result))
+        self.assertEqual(self.log().path.read_bytes(), before)
+        self.assertEqual(len(self.requests), 3)
+
+    def test_resume_non_timeout_rejection_and_dependency_block_are_terminal(self):
+        self.docs([plan_task(), plan_task('T2', depends_on=['T1'])])
+        self.actions.write_text(json.dumps([{'src/forbidden.py': 'outside\n'}]))
+        code, result, _ = self.invoke_plan(run_statuses=('timeout',))
+        self.assertEqual((code, [(t['state'], t['reason']) for t in result['tasks']]),
+                         (1, [('rejected', 'outside_allow'), ('blocked', 'dependency_failed')]), result)
+        before = self.log().path.read_bytes()
+        self.assertEqual(self.invoke_plan(resume=True)[:2], (1, result))
+        self.assertEqual(self.log().path.read_bytes(), before)
+        self.assertEqual(len(self.requests), 1)
 
 
     def test_resume_rejects_tampered_contract_without_refreezing_or_dispatch(self):

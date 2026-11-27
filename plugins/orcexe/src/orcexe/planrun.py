@@ -72,7 +72,8 @@ def task_records(plan, log):
     identifier = plan['plan_id']
     result = {t['id']: dict(task_id=t['id'], state='pending', reason=None,
                            attempts=0, contract=None, l1_basis=None, l1_pass=None,
-                           proposal=None, audit_pass=None, auditor=None) for t in plan['tasks']}
+                           proposal=None, audit_pass=None, auditor=None,
+                           attempt_run_id=None, gate_failure=None) for t in plan['tasks']}
     owners = {}
     for record in log.records():
         key, event, data = record['task'], record['event'], record['data']
@@ -83,11 +84,15 @@ def task_records(plan, log):
         item = result[key]
         if event == 'contract.frozen':
             item.update(state='contract.frozen', reason=None, attempts=0, contract=data,
-                        l1_basis=None, l1_pass=None, proposal=None, auditor=None)
+                        l1_basis=None, l1_pass=None, proposal=None, auditor=None,
+                        attempt_run_id=None, gate_failure=None)
         elif event == 'contract.proposed':
             item['proposal'] = data['approval_sha256']
         elif event == 'attempt.started':
-            item.update(state='running', reason=None, attempts=data['attempt'], l1_pass=None, audit_pass=None)
+            item.update(state='running', reason=None, attempts=data['attempt'], l1_pass=None, audit_pass=None,
+                        attempt_run_id=data['run_id'], gate_failure=None)
+        elif event in ('gate.failed', 'gate.passed') and data['run_id'] == item['attempt_run_id']:
+            item['gate_failure'] = data['reason'] if event == 'gate.failed' else None
         elif event == 'audit.started':
             item['audit_pass'] = dict(model=data['model'], same_model_as_l1=data.get('same_model_as_l1') is True)
         elif event == 'audit.verdict':
@@ -194,9 +199,30 @@ def land(main, plan, log):
     return form
 
 
-def public_tasks(records):
-    return [{k: item[k] for k in ('task_id', 'state', 'reason', 'attempts', 'l1_basis')}
-            for item in records.values()]
+def resumable_timeout(main, item):
+    """Only the current attempt's timeout can reopen a task's frozen budget."""
+    if (item['gate_failure'] != 'timeout' or item['contract'] is None
+            or item['state'] not in UNFINISHED | {'gate.failed', 'rejected'}
+            or (item['state'] == 'rejected' and item['reason'] != 'timeout')):
+        return False
+    from orcexe import task
+    saved = item['contract']
+    try:
+        contract = task.read_contract(main / saved['path'], saved['contract_sha256'])
+        return (contract['task_id'] == item['task_id'] and contract['plan_id'] == saved['plan_id']
+                and 0 < item['attempts'] < contract['budget']['attempts'])
+    except (ValueError, KeyError):
+        return False
+
+
+def public_tasks(records, main):
+    tasks = []
+    for item in records.values():
+        public = {k: item[k] for k in ('task_id', 'state', 'reason', 'attempts', 'l1_basis')}
+        if resumable_timeout(main, item):
+            public.update(state='pending', reason='timeout')
+        tasks.append(public)
+    return tasks
 
 
 def run_state(records):
@@ -220,7 +246,7 @@ def status(main, plan, log):
     # P3-2: the ledger's approval.revoked wins over a plan file that still says approved.
     revoked = plan.get('status') == 'approved' and planning.revoked(plan['plan_id'], log)
     result = dict(schema='orcexe.status.v1', plan_id=plan['plan_id'],
-                  plan_status='revoked' if revoked else plan['status'], tasks=public_tasks(records),
+                  plan_status='revoked' if revoked else plan['status'], tasks=public_tasks(records, main),
                   land=land(main, plan, log))
     approvals = contract_approvals(plan, records)
     if approvals:
@@ -345,7 +371,7 @@ def run_plan(identifier, repo=None, *, resume=False, max_calls=None, max_minutes
         # The same approval/hash/HEAD/tamper checks as task, once under the lock.
         plan = task._read_plan(main, identifier, None, log)
         records = task_records(plan, log)
-        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
+        result.update(state=run_state(records), tasks=public_tasks(records, main), land=land(main, plan, log))
         if any(t['state'] in UNFINISHED for t in records.values()) and not resume:
             raise ValueError('run_interrupted')
         ensure_chain(main, plan, log)
@@ -354,9 +380,10 @@ def run_plan(identifier, repo=None, *, resume=False, max_calls=None, max_minutes
                 handlers[sig] = signal.signal(sig, interrupted)
         for item in _order(plan):
             records = task_records(plan, log)
-            result['tasks'] = public_tasks(records)
+            result['tasks'] = public_tasks(records, main)
             key = item['id']
-            if records[key]['state'] in FINAL or key not in plan['approval']['approved']:
+            if (key not in plan['approval']['approved'] or
+                    (records[key]['state'] in FINAL and not (resume and resumable_timeout(main, records[key])))):
                 continue  # T59: a deferred task is never dispatched; the run ends partial.
             states = [records[dep]['state'] for dep in item['depends_on']]
             if any(s in FINAL and s != 'accepted' for s in states):
@@ -393,7 +420,7 @@ def run_plan(identifier, repo=None, *, resume=False, max_calls=None, max_minutes
                     break  # T61: the task was left interrupted (resumable); later tasks stay pending.
             write_status(main, plan, log)
         records = task_records(plan, log)
-        result.update(state=run_state(records), tasks=public_tasks(records), land=land(main, plan, log))
+        result.update(state=run_state(records), tasks=public_tasks(records, main), land=land(main, plan, log))
         if budget is not None:
             result['calls'] = budget.calls
             if budget.reason is not None:
@@ -407,7 +434,7 @@ def run_plan(identifier, repo=None, *, resume=False, max_calls=None, max_minutes
         return result, 0 if result['state'] == 'completed' else 1
     except (KeyboardInterrupt, do._Cancelled):
         if plan is not None:
-            result.update(tasks=public_tasks(task_records(plan, log)), land=land(main, plan, log))
+            result.update(tasks=public_tasks(task_records(plan, log), main), land=land(main, plan, log))
             write_status(main, plan, log)
         result['state'] = 'interrupted'
         return result, 130
