@@ -567,13 +567,58 @@ def _security(path, text):
     return hooks, mcp
 
 
+_CODE_NAME = re.compile(r'[A-Za-z_]\w*\.[A-Za-z_]')
+_AT_SIGN = re.compile('@')
+
+
+def _code_at(text, i, *, context=None):
+    """Recognize code; callers may reuse a token's (first colon, has URL)."""
+    if text[i] != '@':
+        return False
+    # Narrower than a non-word boundary: '+' and '-' can end email local parts.
+    # Wrappers must open at a boundary, not trail a local part ending in quotes.
+    boundary = i
+    while boundary and text[boundary - 1] in '`\'"([{<':
+        boundary -= 1
+    if boundary and not text[boundary - 1].isspace():
+        return False
+    if not _CODE_NAME.match(text, i + 1):
+        return False
+    if context is None:
+        start, end = boundary, i + 1
+        while start and not text[start - 1].isspace():
+            start -= 1
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        context = (text.find(':', start, end), text.find('://', start, end) >= 0)
+    colon, has_url = context
+    return not has_url and (colon < 0 or colon > i)
+
+
 def _clean(value):
     # Fields are allow-listed before this defense-in-depth output redaction.
     if isinstance(value, str):
         value = re.sub('[\ud800-\udfff]', '[REDACTED:unicode]', value)
         value = re.sub(r'(?:/(?:Users|home)/[^\s/"\']+|/root)(?:/[^\s"\']*)?|[A-Za-z]:[\\/]Users[\\/][^\s"\']+',
                        '[REDACTED:home]', value)
-        return redact_text(value).replace('[REDACTED:email]', '[REDACTED:pii]')
+        protect = '\ue000' not in value
+        if protect:
+            chunks, cursor = [], 0
+            # Inspect each token once, even when it contains many at signs.
+            for token in re.finditer(r'\S+', value):
+                start, end = token.span()
+                context = (value.find(':', start, end), value.find('://', start, end) >= 0)
+                for at in _AT_SIGN.finditer(value, start, end):
+                    i = at.start()
+                    if _code_at(value, i, context=context):
+                        chunks.extend((value[cursor:i], '\ue000'))
+                        cursor = i + 1
+            chunks.append(value[cursor:])
+            value = ''.join(chunks)
+        value = redact_text(value)
+        if protect:
+            value = value.replace('\ue000', '@')
+        return value.replace('[REDACTED:email]', '[REDACTED:pii]')
     if isinstance(value, list):
         return [_clean(v) for v in value]
     if isinstance(value, dict):

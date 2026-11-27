@@ -11,12 +11,106 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
-from unittest import mock
+from unittest import TestCase, mock
 
 from tests.unit.test_gitutil import GitFixture
 from tests.security import capture_children
 from tests.security.test_no_pii_in_outputs import pii_canaries, PRIVATE_KEYS
 from orcexe import cli, intake, proc
+
+
+class CleanTests(TestCase):
+    def test_code_at_predicate_is_importable_and_checks_context(self):
+        from orcexe.intake import _code_at
+
+        marker = chr(64) + 'unittest.' + 'skip'
+        for prefix in ('', ' ', '\t', '\n', '`', "'", '"', '(', '[', '{', '<',
+                       ' (`\'', '\u2003('):
+            text = prefix + marker
+            with self.subTest(prefix=prefix):
+                self.assertTrue(_code_at(text, len(prefix)))
+        for prefix in ('x', 'é', '1', '_', '+', '-', '.', '/', ':',
+                       "fixture'", 'fixture`', "fixture''", 'fixture``',
+                       'label:(', 'https:' + '//('):
+            text = prefix + marker
+            with self.subTest(prefix=prefix):
+                self.assertFalse(_code_at(text, len(prefix)))
+        for tail in ('plain', '1module.name', 'module.1name', 'module.',
+                     'module.name/' + 'https:' + '//host'):
+            with self.subTest(tail=tail):
+                self.assertFalse(_code_at(chr(64) + tail, 0))
+        text = 'label: https:' + '//host ' + marker + ':reason'
+        self.assertTrue(_code_at(text, text.index(chr(64))))
+        self.assertFalse(_code_at('module.name', 0))
+
+    def test_clean_preserves_code_markers_bare_and_wrapped(self):
+        for module in ('unittest.', 'pytest.mark.'):
+            for suffix in ('', "('fixture reason')"):
+                marker = chr(64) + module + 'skip' + suffix
+                for left, right in (('', ''), ('`', '`'), ("'", "'"),
+                                    ('"', '"'), ('(', ')'), ('[', ']'),
+                                    ('{', '}'), ('<', '>')):
+                    text = left + marker + right
+                    with self.subTest(module=module, suffix=suffix, left=left):
+                        self.assertEqual(intake._clean(text), text)
+
+    def test_clean_still_redacts_addresses_with_punctuation(self):
+        for ending in ('', '+', '-', "'", '`', "''", '``'):
+            address = 'fixture' + ending + chr(64) + 'example.invalid'
+            for left, right in (('', ''), ('`', '`'), ("'", "'"), ('"', '"')):
+                with self.subTest(ending=ending, left=left):
+                    result = intake._clean(left + address + right)
+                    self.assertEqual(result.strip('`\'"'), '[REDACTED:pii]')
+
+    def test_clean_still_redacts_url_userinfo_with_punctuation(self):
+        for ending in ('!', '$', ')', ']', '.', '-'):
+            userinfo = 'ad' + 'min:' + 'Fixture9Value' + ending
+            text = 'https:' + '//' + userinfo + chr(64) + 'example.invalid/path'
+            with self.subTest(ending=ending):
+                result = intake._clean(text)
+                self.assertNotIn(userinfo, result)
+                self.assertNotIn('Fixture9Value', result)
+                self.assertIn('[REDACTED:', result)
+
+    def test_clean_protects_only_code_at_signs_before_redaction(self):
+        marker = chr(64) + 'unittest.' + 'skip'
+        address = 'fixture' + chr(64) + 'example.invalid'
+        assignment = 'pass' + 'word' + '=' + 'Fixture9Value'
+        text = marker + ' ' + address + ' ' + assignment
+        with mock.patch.object(intake, 'redact_text', wraps=intake.redact_text) as redact:
+            result = intake._clean(text)
+        redact.assert_called_once_with('\ue000' + marker[1:] + ' ' + address + ' ' + assignment)
+        self.assertIn(marker, result)
+        self.assertIn('[REDACTED:pii]', result)
+        self.assertNotIn(address, result)
+        self.assertNotIn('Fixture9Value', result)
+        self.assertNotIn('\ue000', result)
+
+    def test_clean_existing_sentinel_skips_protection_and_restoration(self):
+        marker = chr(64) + 'pytest.mark.' + 'skip'
+        text = '\ue000 ' + marker
+        with mock.patch.object(intake, 'redact_text', return_value=text) as redact:
+            self.assertEqual(intake._clean(text), text)
+        redact.assert_called_once_with(text)
+        self.assertEqual(intake._clean('\ue000'), '\ue000')
+
+    def test_clean_many_at_signs_in_one_token_finishes_within_budget(self):
+        script = '''
+from unittest import mock
+from orcexe import intake
+
+for prefix in ('(', '<', '((', ' '):
+    unit = prefix + chr(64) + 'a.b'
+    text = unit * (intake.FILE_CAP // len(unit))
+    with mock.patch.object(intake, 'redact_text', side_effect=lambda value: value):
+        if intake._clean(text) != text:
+            raise AssertionError('code marker round trip failed')
+'''
+        env = dict(os.environ, PYTHONPATH=str(Path(intake.__file__).resolve().parents[1]),
+                   PYTHONDONTWRITEBYTECODE='1')
+        result = subprocess.run([sys.executable, '-c', script], env=env,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class IntakeTests(GitFixture):
