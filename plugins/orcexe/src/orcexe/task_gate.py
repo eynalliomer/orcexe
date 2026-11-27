@@ -121,7 +121,9 @@ def standard_gate(*, repo_path, worktree, run_result, run_dir, controls_before,
             check('secrets', gate_lite._secret_line(after, added) is None, 'secret_suspected')
             old_tests, old_skips = gate_lite._counts(file['old_path'] or file['path'], before)
             new_tests, new_skips = gate_lite._counts(file['path'], after)
-            check('test_floor', new_tests >= old_tests and new_skips <= old_skips, 'test_floor')
+            check('test_floor', new_tests >= old_tests and new_skips <= old_skips,
+                  gate_lite._test_floor_detail(file['path'], (old_tests, old_skips),
+                                               (new_tests, new_skips)))
         selected = gate_lite._commands(commands)
         check('project_commands', bool(selected), 'no_commands')
         cache = Path(os.environ.get('ORCEXE_STATE_DIR') or Path.home() / '.cache/orcexe') / 'gate'

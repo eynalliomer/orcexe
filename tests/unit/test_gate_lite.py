@@ -222,10 +222,31 @@ class GateTests(GitFixture):
         self.classification = Classification("write", "fast", ("tests/test_value.py",), ())
         original = (self.path / "tests/test_value.py").read_text()
         for content in (original.replace("def test_value", "def helper"),
-                        original.replace("    def test_value", "    @unittest.skip('reason')\n    def test_value")):
+                        original.replace("    def test_value", "    @" + "unittest." +
+                                         "skip('reason')\n    def test_value")):
             with self.subTest(content=content):
                 self.edit(content, "tests/test_value.py")
                 self.outcome(self.call(commands=self.marker_command), "escalated", "code_unchanged")
+                self.assertFalse(self.marker.exists())
+
+    def test_test_floor_detail_names_file_and_count_changes(self):
+        name = "tests/test_value.py"
+        self.classification = Classification("write", "fast", (name,), ())
+        original = (self.path / name).read_text()
+        decorated = original.replace("    def test_value", "    @" + "unittest." +
+                                     "skip('reason')\n    def test_value")
+        for content, change in ((decorated, "skips 0->1"),
+                                (original.replace("def test_value", "def helper"), "tests 1->0"),
+                                (decorated.replace("def test_value", "def helper"),
+                                 "tests 1->0 skips 0->1")):
+            with self.subTest(change=change):
+                self.edit(content, name)
+                # Code edits normally stop earlier; isolate the floor's diagnostics.
+                with mock.patch.object(gl, "_same_code", return_value=True):
+                    result = self.call(commands=self.marker_command)
+                self.outcome(result, "needs_fix", "test_floor")
+                failed = next(c for c in result["checks"] if c["id"] == "test_floor")
+                self.assertEqual(failed["detail"], "test_floor: " + name + " " + change)
                 self.assertFalse(self.marker.exists())
 
     def test_project_failure(self):
@@ -1291,6 +1312,69 @@ class InterpreterTests(GitFixture):
         self.assertIn("interpreter", result["checks"][-1]["detail"])
 
 
+class SkipCountTests(unittest.TestCase):
+    def test_python_decorators_bare_called_and_definition_kinds(self):
+        markers = (["unittest." + part for part in
+                    ("skip", "skipIf", "skipUnless", "expectedFailure")]
+                   + ["pytest.mark." + part for part in ("skip", "skipif", "xf" + "ail")])
+        for marker in markers:
+            for arguments in ("", "(True)"):
+                for definition in ("def test_one(): pass", "async def test_one(): pass",
+                                   "class Example: pass"):
+                    with self.subTest(marker=marker, arguments=arguments, definition=definition):
+                        source = "@" + marker + arguments + "\n" + definition + "\n"
+                        self.assertEqual(gl._counts("a.py", source),
+                                         (int(not definition.startswith("class")), 1))
+
+    def test_python_calls_and_decorator_arguments_count_once(self):
+        for marker in ("self." + "skipTest", "unittest." + "skip", "pytest." + "skip"):
+            with self.subTest(marker=marker):
+                self.assertEqual(gl._counts("a.py", marker + "('reason')\n"), (0, 1))
+        source = ("@" + "unittest." + "skip(" + "pytest." + "skip('reason'))\n"
+                  "def test_one(): pass\n")
+        self.assertEqual(gl._counts("a.py", source), (1, 2))
+        source = ("@" + "unittest." + "skip('reason')\n@" + "pytest.mark." + "skip\n"
+                  "def test_one():\n    " + "self." + "skipTest('reason')\n")
+        self.assertEqual(gl._counts("a.py", source), (1, 3))
+
+    def test_python_ignores_strings_docstrings_comments_and_unrelated_names(self):
+        markers = ["@" + "unittest." + "skip('reason')",
+                   "@" + "unittest." + "expectedFailure",
+                   "@" + "pytest.mark." + "skipif(True)",
+                   "@" + "pytest.mark." + "xf" + "ail",
+                   "self." + "skipTest('reason')", "unittest." + "skip('reason')",
+                   "pytest." + "skip('reason')"]
+        for marker in markers:
+            source = ('"""' + marker + '"""\nvalue = ' + repr(marker)
+                      + '\n# ' + marker + '\ndef test_one():\n    """' + marker
+                      + '"""\n    pass\nclass Example:\n    """' + marker + '"""\n')
+            with self.subTest(marker=marker):
+                self.assertEqual(gl._counts("a.PY", source), (1, 0))
+        for marker in ("unittest." + "skipOther", "pytest.mark." + "skipOther",
+                       "pytest.mark." + "xfailOther", "other." + "skipTest",
+                       "other." + "skip", "self.other." + "skipTest",
+                       "pkg.unittest." + "skip", "pkg.pytest.mark." + "skip"):
+            with self.subTest(marker=marker):
+                self.assertEqual(gl._counts("a.py", "@" + marker + "()\n"
+                                            "def test_one(): pass\n" + marker + "()\n"), (1, 0))
+        source = ("unittest." + "skipIf(True)\npytest.mark." + "skip()\n"
+                  "pytest.mark." + "xf" + "ail()\n" + "xf" + "ail\n")
+        self.assertEqual(gl._counts("a.py", source), (0, 0))
+
+    def test_fallback_retains_regex_and_test_counting(self):
+        source = "@" + "unittest." + "skip('reason')\ninvalid (\n"
+        self.assertEqual(gl._counts("a.py", source), (0, 1))
+        self.assertEqual(gl._counts("a.py", source + "\0"), (0, 1))
+        source = "value = " + repr("pytest." + "skip('reason')") + "\n"
+        with mock.patch.object(gl, "parse_python", side_effect=ValueError("invalid source")):
+            self.assertEqual(gl._counts("a.py", source), (0, 1))
+        for suffix in (".txt", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(gl._counts("a" + suffix, source), (0, 1))
+        # Test definitions retain their regex behavior, including text in a string.
+        self.assertEqual(gl._counts("a.py", '"""\ndef test_one(): pass\n"""\n'), (1, 0))
+
+
 class DetectionTests(GitFixture):
     @classmethod
     def setUpClass(cls):
@@ -1365,11 +1449,14 @@ class DetectionTests(GitFixture):
 
     def test_static_test_floor_language_table(self):
         for name, text, tests, skips in (
-            ("a.py", "def test_one(): pass\nasync def test_two(): pass\n@unittest.skip('x')\n"
-             "@pytest.mark.skipif(True)\npytest.skip('x')\nxfail\n", 2, 4),
-            ("a.ts", "it('x'); test('x'); describe('x'); it.skip('x'); test.only('x'); xit('x'); xdescribe('x');", 3, 4),
-            ("a.go", "func TestOne(t *testing.T) {}\nt.Skip('x')", 1, 1),
-            ("a.rs", "#[test]\nfn a() {}\n#[ignore]", 1, 1),
-            ("a.java", "@Test\n@Disabled", 1, 1), ("a.kt", "@Test\n@Disabled", 1, 1)):
+            ("a.py", "@" + "unittest." + "skip('x')\n@" + "pytest.mark." + "skipif(True)\n@"
+             + "pytest.mark." + "xf" + "ail\ndef test_one(): pass\n"
+             + "async def test_two(): pass\n" + "pytest." + "skip('x')\n", 2, 4),
+            ("a.ts", "it('x'); test('x'); describe('x'); it." + "skip('x'); test."
+             + "only('x'); " + "x" + "it('x'); " + "x" + "describe('x');", 3, 4),
+            ("a.go", "func TestOne(t *testing.T) {}\nt." + "Skip('x')", 1, 1),
+            ("a.rs", "#[test]\nfn a() {}\n" + "#[" + "ignore]", 1, 1),
+            ("a.java", "@Test\n@" + "Disabled", 1, 1),
+            ("a.kt", "@Test\n@" + "Disabled", 1, 1)):
             with self.subTest(name=name):
                 self.assertEqual(gl._counts(name, text), (tests, skips))

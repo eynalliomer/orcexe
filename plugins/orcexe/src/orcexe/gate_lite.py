@@ -614,8 +614,52 @@ def _counts(name, text):
     suffix = {".ts": ".js", ".jsx": ".js", ".tsx": ".js", ".mjs": ".js",
               ".cjs": ".js", ".kt": ".java", ".kts": ".java"}.get(suffix, suffix)
     pattern = _TESTS.get(suffix)
+    skips = len(_SKIPS.findall(text))
+    if suffix == ".py":
+        try:
+            skips = _python_skip_count(parse_python(text))
+        except (SyntaxError, ValueError):
+            pass
     return (len(re.findall(pattern, text)) if pattern else 0,
-            len(_SKIPS.findall(text)))
+            skips)
+
+
+def _dotted_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        if parent:
+            return parent + "." + node.attr
+    return None
+
+
+def _python_skip_count(tree):
+    decorators = {"unittest.skip", "unittest.skipIf", "unittest.skipUnless",
+                  "unittest.expectedFailure", "pytest.mark.skip", "pytest.mark.skipif",
+                  "pytest.mark." + "xf" + "ail"}
+    counted = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for decorator in node.decorator_list:
+                target = decorator.func if isinstance(decorator, ast.Call) else decorator
+                if _dotted_name(target) in decorators:
+                    counted.add(id(decorator))
+    skips = len(counted)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and id(node) not in counted
+                and _dotted_name(node.func) in {"self.skipTest", "unittest.skip", "pytest.skip"}):
+            skips += 1
+    return skips
+
+
+def _test_floor_detail(name, before, after):
+    changes = []
+    if after[0] < before[0]:
+        changes.append("tests {}->{}".format(before[0], after[0]))
+    if after[1] > before[1]:
+        changes.append("skips {}->{}".format(before[1], after[1]))
+    return "test_floor: " + name + " " + " ".join(changes) if changes else "test_floor"
 
 
 _DOC = frozenset('.md .markdown .rst .txt .adoc'.split())
@@ -1345,7 +1389,8 @@ def gate(*, repo_path, worktree, classification, run_result, run_dir,
                         old_tests, old_skips = _counts(name, before)
                         new_tests, new_skips = _counts(name, after)
                         if new_tests < old_tests or new_skips > old_skips:
-                            status, detail = 'fail', 'test_floor: ' + name
+                            status, detail = 'fail', _test_floor_detail(
+                                name, (old_tests, old_skips), (new_tests, new_skips))
                             break
                 else:
                     selected = _commands(commands) if commands is not None else _detect(repo_path, base, deadline)
