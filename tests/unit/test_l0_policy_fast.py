@@ -161,13 +161,24 @@ class FastL0PolicyTests(PrivateHomes):
                 '    def test_value(self):\n        self.assertEqual(value(), 1)\n')
         for case, red_exit in (('tests-only', 0), ('mixed', 0), ('hollow', 0), ('skip', 0),
                                ('tests-only-red', 1), ('tests-only-unknown', None),
-                               ('mixed-red', 1), ('mixed-unknown', None), ('unsafe-overlay', 0)):
+                               ('mixed-red', 1), ('mixed-unknown', None), ('unsafe-overlay', 0),
+                               ('conftest', 0), ('nested-conftest', 0), ('nested', 0),
+                               ('nested-red', 1), ('nested-unknown', None),
+                               ('nested-unselected', None), ('nested-added-name', 1)):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 run_dir = root / 'run'
                 (run_dir / 'gate').mkdir(parents=True)
                 before = {'src/app.py': APP, 'tests/test_app.py': TEST}
-                edits = {'tests/_fixtures.py': helper, 'tests/test_fixtures.py': test}
+                helper_path = ('tests/conftest.py' if case == 'conftest' else
+                               'tests/unit/conftest.py' if case == 'nested-conftest' else
+                               'tests/tools/tool.py' if case.startswith('nested') else 'tests/_fixtures.py')
+                edits = {helper_path: helper, 'tests/test_fixtures.py': test.replace(
+                    'tests._fixtures', helper_path[:-3].replace('/', '.'))}
+                if case == 'nested-added-name':
+                    before[helper_path] = helper
+                    edits[helper_path] += '\ndef added():\n    return 1\n'
+                    edits['tests/test_fixtures.py'] = edits['tests/test_fixtures.py'].replace('value', 'added')
                 if case.startswith('mixed'):
                     edits['src/app.py'] = APP + '\n'
                 elif case == 'hollow':
@@ -200,17 +211,21 @@ class FastL0PolicyTests(PrivateHomes):
                         path.write_text(text)
                     return copy
 
-                def observe(commands, checkout, directory, *args):
+                def observe(commands, checkout, directory, *args, **kwargs):
                     phases.append(directory.name)
                     self.assertEqual((checkout / 'src/app.py').read_text(), APP)
                     if directory.name == 'red':
-                        for name in ('tests/_fixtures.py', 'tests/test_fixtures.py'):
-                            self.assertEqual((checkout / name).read_text(), edits[name])
+                        self.assertEqual((checkout / helper_path).read_text(),
+                                         helper if case == 'nested-added-name' else edits[helper_path])
+                        self.assertEqual((checkout / 'tests/test_fixtures.py').read_text(),
+                                         edits['tests/test_fixtures.py'])
                     else:
-                        self.assertFalse((checkout / 'tests/_fixtures.py').exists())
+                        self.assertEqual((checkout / helper_path).exists(), case == 'nested-added-name')
                     return [dict(count=2 if directory.name == 'red' else 1,
                                  skip_counts=dict(skipped=0, xfailed=0, expected_failures=0),
-                                 exit_code=red_exit if directory.name == 'red' else 0)]
+                                 exit_code=red_exit if directory.name == 'red' else 0,
+                                 text="ImportError: cannot import name 'added' from 'tests.tools.tool'\n"
+                                 if case == 'nested-added-name' else '')]
 
                 inside_copy = gate_lite._inside_copy
                 with mock.patch.dict(os.environ, ORCEXE_STATE_DIR=str(root / 'state')), \
@@ -222,18 +237,23 @@ class FastL0PolicyTests(PrivateHomes):
                             lambda *args: False if case == 'unsafe-overlay' else inside_copy(*args))), \
                         mock.patch.object(task_l0, '_tests', side_effect=observe):
                     result = task_l0.run_l0(repo_path=root, worktree=SimpleNamespace(path=str(root), base_commit='base'),
-                        observed=observed, commands=[gate_lite.Command('unittest', ['python3', '-m', 'unittest'])],
+                        observed=observed, commands=[] if case == 'nested-unselected' else [
+                            gate_lite.Command('unittest', ['python3', '-m', 'unittest'])],
                         gate={}, run_dir=run_dir)
                 checks = {c['id']: (c['status'], c['detail']) for c in result['checks']}
                 self.assertEqual(sorted(checks), sorted(task_l0.CHECK_IDS))
-                self.assertEqual(phases, ['base'] if case == 'unsafe-overlay' else ['base', 'red'])
-                self.assertEqual(checks['test_count_dropped'], ('pass', 'base=[1]; candidate=[2]'))
+                self.assertEqual(phases, ['base'] if case in ('unsafe-overlay', 'nested-unselected')
+                                 else ['base', 'red'])
+                self.assertEqual(checks['test_count_dropped'], ('not_seen', 'runner_count_not_seen')
+                                 if case == 'nested-unselected' else ('pass', 'base=[1]; candidate=[2]'))
                 self.assertEqual(checks['tests_missing'], ('pass', 'changed_tests=2'))
                 self.assertEqual(checks['skip_added'][0], 'fail' if case in ('hollow', 'skip') else 'pass')
                 self.assertEqual(checks['assertion_missing'][0], 'fail' if case == 'hollow' else 'pass')
                 if case == 'unsafe-overlay':
                     expected = ('not_seen', 'observation_unavailable')
-                elif case.startswith('mixed') or red_exit:
+                elif case == 'nested-added-name':
+                    expected = ('fail', 'only_added_support_names_missing_on_base')
+                elif case.startswith('mixed') or case in ('nested', 'nested-unknown', 'nested-unselected') or red_exit:
                     if red_exit:
                         expected = ('pass', 'tests_fail_on_base')
                     else:
@@ -242,10 +262,13 @@ class FastL0PolicyTests(PrivateHomes):
                     expected = ('pass', 'tests_only')
                 self.assertEqual(checks['red_first_missing'], expected)
                 self.assertEqual(result['passed'], case in (
-                    'tests-only', 'tests-only-red', 'tests-only-unknown', 'mixed-red'))
+                    'tests-only', 'tests-only-red', 'tests-only-unknown', 'mixed-red',
+                    'conftest', 'nested-conftest', 'nested-red'))
 
     def test_tests_only_predicate_is_not_a_hollow_test(self):
-        source = inspect.getsource(task_l0.tests_only).encode()
+        self.assertEqual(task_l0.tests_only.__name__, '_tests_only')
+        source = (inspect.getsource(task_l0.tests_only) +
+                  inspect.getsource(task_l0._exempt_test_path)).encode()
         observed = dict(versions=[(dict(path='plugins/orcexe/src/orcexe/task_l0.py'), ('old', 'new'))])
         self.assertEqual(task_l0._skip_added(observed, dict(old=b'', new=source)), [])
 
@@ -257,8 +280,25 @@ class FastL0PolicyTests(PrivateHomes):
                 ('empty', [], False),
                 ('added-test', [file('tests/test_new.py')], True),
                 ('added-helper', [file('tests/_fixtures.py')], True),
+                ('direct-helper', [file('tests/helper.py')], True),
+                ('nested-support', [file('tests/tools/tool.py')], False),
+                ('nested-runner', [file('tests/tools/run_tests.py')], False),
+                ('nested-support-and-test', [file('tests/tools/tool.py'), file('tests/test_x.py')], False),
+                ('conftest', [file('tests/conftest.py')], True),
+                ('nested-conftest', [file('tests/unit/conftest.py')], True),
+                ('nested-private-helper', [file('tests/tools/_helpers.py')], True),
+                ('nested-private-non-python', [file('tests/tools/_helpers.js')], False),
+                ('product-private-helper', [file('src/_helpers.py')], False),
+                ('product-conftest', [file('src/conftest.py')], False),
+                ('singular-test-directory', [file('test/helper.js')], True),
+                ('case-insensitive-directory', [file('Tests/helper.py')], True),
+                ('nested-named-test', [file('tests/tools/test_tool.py')], True),
+                ('named-js-test', [file('tests/tools/tool.spec.js')], True),
+                ('dunder-test-directory', [file('src/__tests__/helpers/tool.js')], True),
                 ('modified-test', [file('tests/test_app.py', 'tests/test_app.py')], True),
                 ('test-rename', [file('tests/test_new.py', 'tests/test_old.py')], True),
+                ('nested-support-to-test', [file('tests/test_x.py', 'tests/tools/tool.py')], False),
+                ('test-to-nested-support', [file('tests/tools/tool.py', 'tests/test_x.py')], False),
                 ('product-to-test', [file('tests/test_app.py', 'src/app.py')], False),
                 ('test-to-product', [file('src/app.py', 'tests/test_app.py')], False),
                 ('doc-to-test', [file('tests/test_app.py', 'README.md')], False),

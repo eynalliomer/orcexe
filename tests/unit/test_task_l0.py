@@ -413,6 +413,19 @@ class L0Tests(TaskFixture):
         self.assertEqual(self.checks()['red_first_missing']['status'], 'fail')
         self.assertEqual(self.checks()['red_first_missing']['detail'], 'no_observed_failure_on_base')
 
+    def test_noop_nested_support_and_named_test_do_not_get_tests_only_exemption(self):
+        support = 'def value():\n    return 1\n'
+        self.seed_files({'tests/tools/tool.py': support})
+        self.actions.write_text(json.dumps([{
+            'tests/tools/tool.py': support + '\n# no behaviour change\n',
+            'tests/test_support.py': self.support_test(1).replace('tools/run_tests.py', 'tools/tool.py')}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (1, 'exhausted'), result)
+        self.assertEqual(self.checks()['red_first_missing'], dict(
+            id='red_first_missing', status='fail', detail='no_observed_failure_on_base'))
+        self.assertTrue(self.receipts())
+        self.assertTrue(all(not receipt['passed'] for receipt in self.receipts()))
+
     def test_added_support_is_overlaid_without_fake_import_failure(self):
         self.actions.write_text(json.dumps([{
             'src/app.py': APP + '\n',

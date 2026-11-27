@@ -339,10 +339,17 @@ def docs_only(paths):
     return bool(paths) and all(is_doc(p) and not is_test(p) for p in paths)
 
 
+def _exempt_test_path(path):
+    p = PurePosixPath(path)
+    return (is_test(path) and (_red_first_kind(path) == 'test' or p.name == 'conftest.py'
+            or (p.suffix == '.py' and p.stem.startswith('_'))
+            or p.parent.name.lower() in ('test', 'tests')))
+
+
 def _tests_only(files):
     """True only for a non-empty test diff with at least one surviving file."""
     return (bool(files) and any(f['new_mode'] != '000000' for f in files)
-            and all(is_test(f['path']) and (not f.get('old_path') or is_test(f['old_path']))
+            and all(_exempt_test_path(f['path']) and (not f.get('old_path') or _exempt_test_path(f['old_path']))
                     for f in files))
 
 
