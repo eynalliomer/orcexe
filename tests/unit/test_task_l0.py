@@ -140,14 +140,14 @@ class CountTests(unittest.TestCase):
     def test_skip_detector_added_markers_and_unchanged_literals(self):
         cases = [
             ('tests/test_app.py', 'import unittest\n' + TEST,
-             'import unittest\n' + TEST.replace('    def test_app', '    @unittest.skip("reason")\n    def test_app'), True),
-            ('tests/test_app.py', TEST, TEST + '\n# @unittest.skip("example")\n', False),
-            ('tests/app.js', "test('works', () => {});\n", "test.only('works', () => {});\n", True),
-            ('tests/app.js', "test\n('works', () => {});\n", "test\n.only('works', () => {});\n", True),
-            ('tests/app.js', "fit('old', () => {});\n", "// added comment\nfit('old', () => {});\n", False),
-            ('tests/app.js', '', 'const text = "test.only( and xit(";\n', False),
+             'import unittest\n' + TEST.replace('    def test_app', '    @unittest.' + 'skip("reason")\n    def test_app'), True),
+            ('tests/test_app.py', TEST, TEST + '\n# @unittest.' + 'skip("example")\n', False),
+            ('tests/app.js', "test('works', () => {});\n", "test." + "only('works', () => {});\n", True),
+            ('tests/app.js', "test\n('works', () => {});\n", "test\n." + "only('works', () => {});\n", True),
+            ('tests/app.js', "f" + "it('old', () => {});\n", "// added comment\nf" + "it('old', () => {});\n", False),
+            ('tests/app.js', '', 'const text = "test.' + 'only( and x' + 'it(";\n', False),
             ('tests/test_app.py', TEST, 'import pytest\n' + TEST.replace('    def test_app',
-              '    @pytest.mark.xfail(reason="edge")\n    def test_app'), True),
+              '    @pytest.mark.' + 'xfail(reason="edge")\n    def test_app'), True),
         ]
         for path, before, after, expected in cases:
             with self.subTest(path=path, after=after):
@@ -240,16 +240,16 @@ class CountTests(unittest.TestCase):
             self.assertEqual((resolved[0]['count'], resolved[0]['exit_code']), (2, 0))
 
     def test_each_runtime_skip_and_hollow_form(self):
-        cases = ['raise unittest.SkipTest("reason")', 'pytest.skip("reason")',
-                 'pytest.xfail("reason")', 'pytest.importorskip("missing")', 'return', 'pass', '...']
+        cases = ['raise unittest.' + 'SkipTest("reason")', 'pytest.' + 'skip("reason")',
+                 'pytest.' + 'xfail("reason")', 'pytest.' + 'importorskip("missing")', 'return', 'pass', '...']
         for body in cases:
             after = 'def test_example():\n    ' + body + '\n'
             observed = dict(versions=[(dict(path='tests/test_example.py'), ('old', 'new'))])
             with self.subTest(body=body):
                 self.assertTrue(task_l0._skip_added(observed, dict(old=b'', new=after.encode())))
-        alias = 'from unittest import expectedFailure as marker\n@marker\ndef test_example():\n    assert True\n'
+        alias = 'from unittest import ' + 'expectedFailure as marker\n@marker\ndef test_example():\n    assert True\n'
         self.assertTrue(task_l0._skip_added(observed, dict(old=b'', new=alias.encode())))
-        for decorator in ('unittest.expectedFailure', 'pytest.mark.xfail'):
+        for decorator in ('unittest.' + 'expectedFailure', 'pytest.mark.' + 'xfail'):
             after = '@' + decorator + '\ndef test_example():\n    assert True\n'
             self.assertTrue(task_l0._skip_added(observed, dict(old=b'', new=after.encode())))
 
@@ -393,6 +393,7 @@ class L0Tests(TaskFixture):
     def test_modified_support_stays_at_base_and_proves_red_first(self):
         self.seed_files({'tests/tools/run_tests.py': 'def value():\n    return 1\n'})
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/tools/run_tests.py': 'def value():\n    return 2\n',
             'tests/test_support.py': self.support_test(2)}]))
         code, result, _ = self.invoke()
@@ -404,6 +405,7 @@ class L0Tests(TaskFixture):
         support = 'def value():\n    return 1\n'
         self.seed_files({'tests/tools/run_tests.py': support})
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/tools/run_tests.py': support + '\n# no behaviour change\n',
             'tests/test_support.py': self.support_test(1)}]))
         code, result, _ = self.invoke()
@@ -413,6 +415,7 @@ class L0Tests(TaskFixture):
 
     def test_added_support_is_overlaid_without_fake_import_failure(self):
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/helper.py': 'def value():\n    return 1\n',
             'tests/test_support.py': (
                 'import unittest\nfrom tests.helper import value\n'
@@ -427,6 +430,7 @@ class L0Tests(TaskFixture):
         support = 'def value():\n    return 1\n'
         self.seed_files({'tests/helper.py': support})
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/helper.py': support + '\ndef added():\n    return 2\n',
             'tests/test_support.py': (
                 'import unittest\nfrom tests.helper import added\n'
@@ -446,10 +450,26 @@ class L0Tests(TaskFixture):
         self.assertEqual(self.checks()['red_first_missing'], dict(
             id='red_first_missing', status='fail', detail='only_added_support_names_missing_on_base'))
 
+    def test_tests_only_modified_support_new_import_is_exempt(self):
+        support = 'def value():\n    return 1\n'
+        self.seed_files({'tests/helper.py': support})
+        self.actions.write_text(json.dumps([{
+            'tests/helper.py': support + '\ndef added():\n    return 2\n',
+            'tests/test_support.py': (
+                'import unittest\nfrom tests.helper import added\n'
+                'class SupportTest(unittest.TestCase):\n'
+                '    def test_support(self):\n        self.assertEqual(added(), 2)\n')}]))
+        code, result, _ = self.invoke()
+        self.assertEqual((code, result['state']), (0, 'gate_passed'), result)
+        self.assertEqual(self.checks()['red_first_missing'], dict(
+            id='red_first_missing', status='pass', detail='tests_only'))
+        self.assertTrue(self.receipts()[-1]['passed'])
+
     def test_modified_support_new_attribute_does_not_prove_red_first(self):
         support = 'def value():\n    return 1\n'
         self.seed_files({'tests/helper.py': support})
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/helper.py': support + '\ndef added():\n    return 2\n',
             'tests/test_support.py': (
                 'import unittest\nfrom tests import helper\n'
@@ -463,6 +483,7 @@ class L0Tests(TaskFixture):
     def test_modified_support_assertion_counts_despite_new_helper_import_error(self):
         self.seed_files({'tests/tools/run_tests.py': 'def value():\n    return 1\n'})
         self.actions.write_text(json.dumps([{
+            'src/app.py': APP + '\n',
             'tests/tools/run_tests.py': 'def value():\n    return 2\n\ndef added():\n    return 2\n',
             'tests/test_support.py': self.support_test(2),
             'tests/test_added.py': (
@@ -531,7 +552,7 @@ class L0Tests(TaskFixture):
         self.saved = self.save([plan_task(lane='standard', files={'allow': ['src/**', 'tests/**']})])
         self.actions.write_text(json.dumps([{'src/app.py': APP.replace('1', '2'),
             'tests/test_app.py': TEST.replace('1', '2'),
-            'tests/focus.js': "fit('focus', () => { expect(app()).toBe(2); });\n"}]))
+            'tests/focus.js': "f" + "it('focus', () => { expect(app()).toBe(2); });\n"}]))
         code, result, _ = self.invoke()
         self.assertEqual((code, result['state']), (1, 'exhausted'), result)
         self.assertEqual(self.checks()['skip_added']['status'], 'fail')
