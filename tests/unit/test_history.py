@@ -1,16 +1,89 @@
 """Fixed-date offline history fixtures; gh replays measured byte streams."""
 from contextlib import redirect_stdout
 import io
+from itertools import product
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
-from unittest import mock
+from unittest import TestCase, mock
 
 from tests.unit.test_gitutil import GitFixture, ROOT
 from tests.security import capture_children
-from orcexe import cli, history, proc
+from orcexe import cli, history, intake, proc
+
+
+class HistoryCleanTests(TestCase):
+    def test_email_matches_original_language(self):
+        original = re.compile(r'[^\s<>"/\\]+' + chr(64) + r'[^\s<>"/\\]+')
+        alphabet = ('x', chr(64), ' ', '\n', '<', '>', '"', '/', '\\', "'", '`')
+        for size in range(5):
+            for parts in product(alphabet, repeat=size):
+                text = ''.join(parts)
+                self.assertEqual([m.span() for m in history.EMAIL.finditer(text)],
+                                 [m.span() for m in original.finditer(text)], repr(text))
+
+    def test_clean_preserves_code_markers_bare_and_wrapped(self):
+        for module in ('unittest.', 'pytest.mark.'):
+            for suffix in ('', "('fixture reason')"):
+                marker = chr(64) + module + 'skip' + suffix
+                for left, right in (('', ''), ('`', '`'), ("'", "'"),
+                                    ('"', '"'), ('(', ')')):
+                    text = 'context ' + left + marker + right
+                    with self.subTest(module=module, suffix=suffix, left=left):
+                        self.assertEqual(history._clean(text, []), text)
+
+    def test_clean_still_redacts_addresses_with_punctuation(self):
+        for ending in ('', '+', '-', "'", '`'):
+            address = 'fixture' + ending + chr(64) + 'example.invalid'
+            for left, right in (('', ''), ('`', '`'), ("'", "'"), ('"', '"')):
+                with self.subTest(ending=ending, left=left):
+                    result = history._clean(left + address + right, [])
+                    self.assertEqual(result.strip('`\'"'), '[REDACTED:pii]')
+
+    def test_clean_still_redacts_url_userinfo_with_punctuation(self):
+        for ending in ('!', '$', ')', ']', '.', '-'):
+            userinfo = 'ad' + 'min:' + 'Fixture9Value' + ending
+            text = 'https:' + '//' + userinfo + chr(64) + 'example.invalid/path'
+            with self.subTest(ending=ending):
+                result = history._clean(text, [])
+                self.assertNotIn(userinfo, result)
+                self.assertNotIn('Fixture9Value', result)
+                self.assertIn('[REDACTED:pii]', result)
+
+    def test_clean_uses_shared_predicate_with_original_context(self):
+        self.assertIs(history._code_at, intake._code_at)
+        marker = chr(64) + 'unittest.' + 'skip'
+        for prefix in ('context (', 'https:' + '//('):
+            text = prefix + marker + ')'
+            with self.subTest(prefix=prefix):
+                with mock.patch.object(history, '_code_at', wraps=intake._code_at) as predicate:
+                    result = history._clean(text, [])
+                predicate.assert_called_once_with(text, text.index(chr(64)))
+                if prefix.startswith('context'):
+                    self.assertEqual(result, text)
+                else:
+                    self.assertEqual(result, 'https:' + '//[REDACTED:pii]')
+
+    def test_clean_checks_every_at_sign_in_a_match(self):
+        marker = chr(64) + 'unittest.' + 'skip'
+        text = '(' + marker + chr(64) + 'example.invalid)'
+        self.assertTrue(intake._code_at(text, text.index(chr(64))))
+        self.assertFalse(intake._code_at(text, text.rindex(chr(64))))
+        self.assertEqual(history._clean(text, []), '[REDACTED:pii]')
+
+    def test_clean_preserves_markers_alongside_sensitive_prose(self):
+        marker = chr(64) + 'pytest.mark.' + 'skip'
+        address = 'fixture' + chr(64) + 'example.invalid'
+        assignment = 'pass' + 'word' + '=' + 'Fixture9Value'
+        text = '(' + marker + ') ' + address + ' ' + assignment
+        result = history._clean(text, [])
+        self.assertIn('(' + marker + ')', result)
+        self.assertIn('[REDACTED:pii]', result)
+        self.assertNotIn(address, result)
+        self.assertNotIn('Fixture9Value', result)
 
 
 class HistoryTests(GitFixture):

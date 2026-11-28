@@ -11,6 +11,7 @@ import time
 from types import FunctionType
 
 from orcexe import fsio, intake, proc
+from orcexe.intake import _code_at
 
 FIX = re.compile(r'\b(?:fix|fixes|fixed|hotfix|revert|reverts|reverted)\b', re.I)
 REVERT = re.compile(r'\b(?:this\s+)?reverts?\s+(?:commit\s+)?([0-9a-f]{40})\b', re.I)
@@ -53,7 +54,14 @@ def _clean(value, identities, field=None):
                                                         or identity.casefold() in COMMON_WORDS)
             value = re.sub(r'(?<!\w)' + pattern + r'(?!\w)', '[REDACTED:pii]', value,
                            flags=0 if sensitive else re.I)
-        return intake._clean(EMAIL.sub('[REDACTED:pii]', value))
+        def redact_email(match):
+            # Use the full token context, including URL prefixes outside EMAIL.
+            if all(_code_at(value, match.start() + index)
+                   for index, char in enumerate(match[0]) if char == '@'):
+                return match[0]
+            return '[REDACTED:pii]'
+
+        return intake._clean(EMAIL.sub(redact_email, value))
     if isinstance(value, list):
         return [_clean(item, identities) for item in value]
     if isinstance(value, dict):
